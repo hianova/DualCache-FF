@@ -1,0 +1,8 @@
+[package]
+name = "dual_cache_ff"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow=">0"
+crossbeam="=0"
