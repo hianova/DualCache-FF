@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 anyhow=">0"
+tracing="=0"
 crossbeam="=0"
+arc-swap = ">0"
