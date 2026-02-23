@@ -1,113 +1,53 @@
-use std::mem::MaybeUninit;
-use std::thread;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use anyhow::Result;
 use arc_swap::ArcSwap;
-use crossbeam::channel::{self, Receiver, Sender};
 
-pub struct DualCacheFF<K, V, T> {
-    main: Paginated<T>,
-    mirror: ArcSwap<Paginated<T>>,
+pub struct DualCacheFF<K, V> {
+    nodes: Vec<Node<K, V>>,
     index: HashMap<K, usize>,
-    ring_buffer: Vec<Node<K, V>>,
-    ring_read: usize,
-    ring_write: usize,
-    counter_sum: usize,
-    evict_point: usize,
-    lazy_update: Sender<usize>,
+    areana: Paginated,
+    mirror: ArcSwap<Paginated>,
+    nodes_write: usize,
+    counter_sum: u64,
 }
-pub struct Config {
-    capacity: usize,
-}
-
-impl<K, V, T> From<Config> for DualCacheFF<K, V, T> {
-    fn from(config: Config) -> Self {
-        let (tx, rx): (Sender<usize>, Receiver<usize>) = channel::bounded(1000);
-        thread::spawn(|| {
-            Self::daemon(rx);
-        });
-        Self {
-            main: Paginated {
-                pages: Vec::with_capacity(config.capacity),
-            },
-            mirror: ArcSwap::from_pointee(Paginated {
-                pages: Vec::with_capacity(config.capacity),
-            }),
-            index: HashMap::with_capacity(config.capacity),
-            ring_buffer: Vec::with_capacity(config.capacity),
-            ring_read: 0,
-            ring_write: 0,
-            counter_sum: 0,
-            evict_point: 0,
-            lazy_update: tx,
-        }
-    }
-}
-impl<K, V, T> DualCacheFF<K, V, T> {
+impl<K, V> DualCacheFF<K, V> {
     pub fn new() -> Self {
         let config = Config { capacity: 10 ^ 7 };
-        DualCacheFF::from(config)
+        Self::from(config)
     }
-    pub fn add(&mut self) -> Result<()> {
-        Ok(())
-    }
-    pub fn get(&mut self) -> Result<()> {
-        Ok(())
-    }
-    fn daemon(rx: Receiver<usize>) {}
+    pub fn put(&mut self, key: K, value: V) {}
+    pub fn get(&mut self, key: K) {}
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn add() {
-        let result = DualCacheFF::<usize, usize, usize>::new().add();
-        assert!(result.is_ok());
-    }
-    #[test]
-    fn get() {
-        let result = DualCacheFF::<usize, usize, usize>::new().get();
-        assert!(result.is_ok());
-    }
+struct Config {
+    capacity: usize,
 }
-
-const PAGE_SIZE: usize = 1024;
-const SHIFT: usize = 10;
-const MASK: usize = 1023;
-
-#[derive(Clone, Debug)]
-pub struct Node<K, V> {
-    pub key: K,
-    pub value: Arc<V>,
-    pub counter: u64,
-    pub time_stamp: u64,
-}
-struct Paginated<T> {
-    pages: Vec<Arc<Page<T>>>,
-}
-impl<T: Clone> Clone for Paginated<T> {
-    fn clone(&self) -> Self {
+impl<K, V> From<Config> for DualCacheFF<K, V> {
+    fn from(config: Config) -> Self {
         Self {
-            pages: self.pages.clone(),
+            nodes: Vec::with_capacity(config.capacity),
+            index: HashMap::with_capacity(config.capacity),
+            areana: Paginated::new(),
+            mirror: ArcSwap::from_pointee(Paginated::new()),
+            nodes_write: 0,
+            counter_sum: 0,
         }
     }
 }
-struct Page<T> {
-    data: [T; PAGE_SIZE],
+
+struct Node<K, V> {
+    key: K,
+    value: V,
+    time_stamp: u64,
+    counter: u64,
 }
-impl<T: Clone> Clone for Page<T> {
-    fn clone(&self) -> Self {
-        let mut new_page: MaybeUninit<Page<T>> = MaybeUninit::uninit();
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                &self.data as *const T,
-                new_page.as_mut_ptr() as *mut T,
-                PAGE_SIZE,
-            );
-            new_page.assume_init()
-        }
+struct Paginated {
+    pages: Vec<Page>,
+}
+impl Paginated {
+    fn new() -> Self {
+        Self { pages: Vec::new() }
     }
 }
+
+struct Page {}
