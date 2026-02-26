@@ -1,14 +1,14 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
 pub struct DualCacheFF<K, V> {
-    nodes: Vec<Node<K, V>>,
+    nodes: Vec<Arc<Node<K, V>>>,
     index: HashMap<K, usize>,
     areana: Paginated,
     mirror: ArcSwap<Paginated>,
-    nodes_write: usize,
-    counter_sum: u64,
+    counter: u64,
 }
 impl<K, V> DualCacheFF<K, V> {
     pub fn new() -> Self {
@@ -29,8 +29,7 @@ impl<K, V> From<Config> for DualCacheFF<K, V> {
             index: HashMap::with_capacity(config.capacity),
             areana: Paginated::new(),
             mirror: ArcSwap::from_pointee(Paginated::new()),
-            nodes_write: 0,
-            counter_sum: 0,
+            counter: 0,
         }
     }
 }
@@ -39,7 +38,6 @@ struct Node<K, V> {
     key: K,
     value: V,
     time_stamp: u64,
-    counter: u64,
 }
 struct Paginated {
     pages: Vec<Page>,
