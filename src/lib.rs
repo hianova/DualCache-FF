@@ -1,12 +1,14 @@
 mod ai;
 
+use std::collections::HashMap;
+use std::fmt::Debug;
 use std::hash::Hash;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
-use std::{collections::HashMap, fmt::Debug};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use arc_swap::ArcSwap;
-use tracing::{Level, event, instrument};
+use tracing::instrument;
 
 /// 一個雙層緩存實現（FIFO 和 LFU）
 ///
@@ -77,6 +79,7 @@ where
         };
         Self::from(default)
     }
+
     /// 將鍵值對放入緩存
     ///
     /// 如果緩存已滿，會根據 FIFO 策略淘汰最舊的項目
@@ -188,11 +191,36 @@ struct Node<K, V> {
 }
 struct Paginated {
     pages: Vec<Page>,
+    len: usize,
 }
 impl Paginated {
     fn new() -> Self {
-        Self { pages: Vec::new() }
+        Self {
+            pages: Vec::new(),
+            len: 0,
+        }
+    }
+    fn clone(&self) -> Self {
+        Self {
+            pages: self.pages.clone(),
+            len: self.len,
+        }
     }
 }
 
-struct Page {}
+struct Page {
+    data: [usize; 1024],
+}
+impl Clone for Page {
+    fn clone(&self) -> Self {
+        let mut new_page: MaybeUninit<Page> = MaybeUninit::uninit();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &self.data as *const usize,
+                new_page.as_mut_ptr() as *mut usize,
+                1024,
+            );
+            new_page.assume_init()
+        }
+    }
+}
