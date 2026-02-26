@@ -200,6 +200,8 @@ impl Paginated {
             len: 0,
         }
     }
+}
+impl Clone for Paginated {
     fn clone(&self) -> Self {
         Self {
             pages: self.pages.clone(),
