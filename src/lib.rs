@@ -6,14 +6,16 @@ use arc_swap::ArcSwap;
 pub struct DualCacheFF<K, V> {
     nodes: Vec<Arc<Node<K, V>>>,
     index: HashMap<K, usize>,
-    areana: Paginated,
+    arena: Paginated,
     mirror: ArcSwap<Paginated>,
-    counter: u64,
+    lookup_count: u64,
 }
 impl<K, V> DualCacheFF<K, V> {
     pub fn new() -> Self {
-        let config = Config { capacity: 10 ^ 7 };
-        Self::from(config)
+        let default = Config {
+            capacity: (10 as usize).pow(7),
+        };
+        Self::from(default)
     }
     pub fn put(&mut self, key: K, value: V) {}
     pub fn get(&mut self, key: K) {}
@@ -27,9 +29,9 @@ impl<K, V> From<Config> for DualCacheFF<K, V> {
         Self {
             nodes: Vec::with_capacity(config.capacity),
             index: HashMap::with_capacity(config.capacity),
-            areana: Paginated::new(),
+            arena: Paginated::new(),
             mirror: ArcSwap::from_pointee(Paginated::new()),
-            counter: 0,
+            lookup_count: 0,
         }
     }
 }
@@ -37,7 +39,7 @@ impl<K, V> From<Config> for DualCacheFF<K, V> {
 struct Node<K, V> {
     key: K,
     value: V,
-    time_stamp: u64,
+    epoch: u64,
 }
 struct Paginated {
     pages: Vec<Page>,
