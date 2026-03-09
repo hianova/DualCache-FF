@@ -58,6 +58,7 @@ for i in 0..150 {
 assert!(cache.get(&0).is_err());  // 最早的鍵可能已被淘汰
 assert!(cache.get(&149).is_ok()); // 最新的鍵應該存在
 ```"#]
+#[repr(align(128))]
 pub struct DualCacheFF<K, V> {
     nodes: Vec<Arc<Node<K, V>>>,
     index: HashMap<K, usize>,
@@ -184,7 +185,7 @@ impl<K, V> From<Config> for DualCacheFF<K, V> {
         } else if config.capacity % PAGE_SIZE == 0 {
             config.capacity
         } else {
-            config + config.capacity % PAGE_SIZE
+            config.capacity + config.capacity % PAGE_SIZE
         };
         let paginated_count = capacity / PAGE_SIZE;
         let nodes = Vec::with_capacity(capacity);
@@ -203,11 +204,13 @@ impl<K, V> From<Config> for DualCacheFF<K, V> {
     }
 }
 
+#[repr(align(128))]
 struct Node<K, V> {
     key: K,
     value: Arc<V>,
     epoch: u64,
 }
+
 struct Paginated {
     pages: Vec<Page>,
     len: usize,
