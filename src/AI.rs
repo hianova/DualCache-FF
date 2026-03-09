@@ -9,3 +9,6 @@ macro_rules! AI {
         todo!("AI generation not yet implemented")
     };
 }
+
+#[cfg(test)]
+mod tests {}
