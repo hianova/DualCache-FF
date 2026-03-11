@@ -1,225 +1,159 @@
-mod ai;
+mod ai; 
 
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::mem::MaybeUninit;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use anyhow::Result;
 use arc_swap::ArcSwap;
+use crossbeam::channel::{bounded, Sender}; 
 use tracing::instrument;
 
-const DEFAULT_CAPACITY: usize = 10;
 const PAGE_SIZE: usize = 1024;
-const SHIFT: usize = 10;
-const MASK: usize = 1023;
+const _SHIFT: usize = 10;
+const _MASK: usize = 1023; 
 
-#[doc = r#"一個雙層緩存實現（FIFO 和 LFU）
-
-# 範例
-
-```
-use your_crate::DualCacheFF;
-
-// 創建一個新的緩存實例
-let mut cache = DualCacheFF::new();
-
-// 放入數據
-cache.put("key1", 100).unwrap();
-cache.put("key2", 200).unwrap();
-
-// 獲取數據
-let value = cache.get("key1").unwrap();
-assert_eq!(*value, 100);
-
-// 獲取不存在的鍵
-let result = cache.get("key3");
-assert!(result.is_err());
-```
-
-# 容量管理範例
+#[doc = r#"
+# Example
 
 ```
-use your_crate::{DualCacheFF, Config};
+use dual_cache_ff::DualCacheFF;
 
-// 使用自定義配置
+let cache = DualCacheFF::new();
+
+cache.put("A", 100);
+cache.put("B", 200);
+
+let value = cache.get(&"A").unwrap();
+assert_eq!(value, 100);
+
+let result = cache.get(&"C");
+assert!(result.is_none());
+```
+
+# Fn `from` customize capacity
+custom capacity will round to 1024 multiple
+
+```
+use dual_cache_ff::{DualCacheFF, Config};
+
 let config = Config {
     capacity: 100,
 };
-let mut cache = DualCacheFF::from(config);
+let cache = DualCacheFF::from(config);
 
-// 放入多個項目
-for i in 0..150 {
-    cache.put(i, format!("value_{}", i)).unwrap();
+for i in 0..1024 {
+    cache.put(i, format!("value_{}", i));
 }
 
-// 由於 FIFO 策略，最早的項目應該被淘汰
-assert!(cache.get(&0).is_err());  // 最早的鍵可能已被淘汰
-assert!(cache.get(&149).is_ok()); // 最新的鍵應該存在
+assert!(cache.get(&0).is_none());
+assert!(cache.get(&1023).is_some());
 ```"#]
 #[repr(align(128))]
 pub struct DualCacheFF<K, V> {
-    nodes: Vec<Arc<Node<K, V>>>,
-    index: HashMap<K, usize>,
-    arena: Paginated,
-    mirror: ArcSwap<Paginated>,
-    lookup_count: u64,
+    main: Mutex<Cache<K, V>>,
+    mirror: ArcSwap<Cache<K, V>>,
+    lazy_tx: Sender<K>,
 }
+
 impl<K, V> DualCacheFF<K, V>
 where
-    K: Hash + Eq + Clone + Debug,
-    V: Clone + Debug,
+    K: Hash + Eq + Clone + Send + Sync + 'static + Debug,
+    V: Clone + Send + Sync + 'static + Debug,
 {
-    /// 創建一個新的緩存實例，使用默認配置（容量 10,000,000）
-    ///
-    /// # 範例
-    ///
-    /// ```
-    /// # use your_crate::DualCacheFF;
-    /// let cache = DualCacheFF::<String, i32>::new();
-    /// ```
     pub fn new() -> Self {
-        let default = Config {
-            capacity: PAGE_SIZE.pow(DEFAULT_CAPACITY as u32),
-        };
-        Self::from(default)
+        Self::default()
     }
 
-    #[doc = r#"將鍵值對放入緩存
-
-如果緩存已滿，會根據 FIFO 策略淘汰最舊的項目
-
-# 參數
-* `key` - 要存儲的鍵
-* `value` - 要存儲的值
-
-# 範例
-
-```
-# use your_crate::DualCacheFF;
-let mut cache = DualCacheFF::new();
-
-// 基本使用
-cache.put("user:1", "Alice").unwrap();
-cache.put("user:2", "Bob").unwrap();
-
-// 更新已存在的鍵
-cache.put("user:1", "Alice Updated").unwrap();
-```
-
-# 錯誤處理
-
-```
-# use your_crate::DualCacheFF;
-let mut cache = DualCacheFF::new();
-
-// 正常操作不會返回錯誤
-assert!(cache.put("key", "value").is_ok());
-```"#]
+    #[doc = r#"將鍵值對放入緩存 (透過 Mutex 或 Channel 異步處理)"#]
     #[instrument(skip(self, value), fields(key = ?key))]
-    pub fn put(&mut self, key: K, value: V) -> Result<()> {
+    pub fn put(&self, key: K, value: V) -> Option<()> {
         AI!()
     }
 
-    #[doc = r#"從緩存中獲取值
-
-獲取值時會增加該鍵的使用次數（用於 LFU 策略）
-
-# 參數
-* `key` - 要查詢的鍵
-
-# 返回值
-返回 `Result<&V>`，如果鍵不存在則返回錯誤
-
-# 範例
-
-```
-# use your_crate::DualCacheFF;
-let mut cache = DualCacheFF::new();
-cache.put("answer", 42).unwrap();
-
-// 成功獲取
-let value = cache.get("answer").unwrap();
-assert_eq!(*value, 42);
-
-// 多次獲取會增加使用頻率
-cache.get("answer").unwrap();
-cache.get("answer").unwrap();
-
-// 獲取不存在的鍵
-assert!(cache.get("nonexistent").is_err());
-```
-
-# 使用模式範例
-
-```
-# use your_crate::DualCacheFF;
-let mut cache = DualCacheFF::new();
-
-// 常見的 get-or-insert 模式
-let key = "user:profile";
-let value = match cache.get(key) {
-    Ok(v) => v,
-    Err(_) => {
-        // 從數據庫加載
-        let new_value = "profile data";
-        cache.put(key, new_value).unwrap();
-        cache.get(key).unwrap()
-    }
-};
-```"#]
+    #[doc = r#"從唯讀快照中獲取緩存，並發送 Lazy Read 訊號"#]
     #[instrument(skip(self), fields(key = ?key))]
-    pub fn get(&mut self, key: K) -> Result<V> {
+    pub fn get(&self, key: &K) -> Option<V> { 
         AI!()
     }
 }
 
-struct Config {
-    capacity: usize,
+pub struct Config {
+    pub capacity: usize,
 }
-impl<K, V> From<Config> for DualCacheFF<K, V> {
+
+impl<K, V> Default for DualCacheFF<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static + Debug,
+    V: Clone + Send + Sync + 'static + Debug,
+{
+    fn default() -> Self {
+        Config { capacity: PAGE_SIZE }.into()
+    }
+}
+
+impl<K, V> From<Config> for DualCacheFF<K, V>
+where
+    K: Hash + Eq + Clone + Send + Sync + 'static + Debug,
+    V: Clone + Send + Sync + 'static + Debug,
+{
     fn from(config: Config) -> Self {
         let capacity = if config.capacity < PAGE_SIZE {
             PAGE_SIZE
         } else if config.capacity % PAGE_SIZE == 0 {
             config.capacity
         } else {
-            config.capacity + config.capacity % PAGE_SIZE
+            config.capacity + (PAGE_SIZE - (config.capacity % PAGE_SIZE))
         };
         let paginated_count = capacity / PAGE_SIZE;
-        let nodes = Vec::with_capacity(capacity);
-        let index = HashMap::with_capacity(capacity);
-        let arena = Paginated::from(paginated_count);
-        let mirror = ArcSwap::from_pointee(arena.clone());
-        let lookup_count = 0;
+        let state = Cache {
+            nodes: Vec::with_capacity(capacity),
+            index: HashMap::with_capacity(capacity),
+            arena: Paginated::from(paginated_count),
+            lookup_count: 0,
+            ring_pointer: 0,
+        };
+        let (lazy_tx, _lazy_rx) = bounded(10_000);
 
         Self {
-            nodes,
-            index,
-            arena,
-            mirror,
-            lookup_count,
+            mirror: ArcSwap::from_pointee(state.clone()),
+            main: Mutex::new(state),
+            lazy_tx,
         }
     }
 }
 
-#[repr(align(128))]
-struct Node<K, V> {
-    key: K,
-    value: Arc<V>,
-    epoch: u64,
+#[derive(Clone)]
+struct Cache<K, V> {
+    nodes: Vec<Node<K, V>>,
+    index: HashMap<K, usize>,
+    arena: Paginated,
+    lookup_count: u64,
+    ring_pointer: usize,
 }
 
+#[repr(align(128))]
+#[derive(Clone)]
+struct Node<K, V> { 
+    key: K,
+    value: V,
+    epoch: u64,
+    counter: u64,
+}
+
+#[derive(Clone)]
 struct Paginated {
     pages: Vec<Page>,
     len: usize,
 }
+
 impl Paginated {
     fn new() -> Self {
-        Self::from(DEFAULT_CAPACITY)
+        Self::from(PAGE_SIZE)
     }
 }
+
 impl From<usize> for Paginated {
     fn from(value: usize) -> Self {
         Self {
@@ -228,18 +162,11 @@ impl From<usize> for Paginated {
         }
     }
 }
-impl Clone for Paginated {
-    fn clone(&self) -> Self {
-        Self {
-            pages: self.pages.clone(),
-            len: self.len,
-        }
-    }
-}
 
 struct Page {
     data: [usize; PAGE_SIZE],
 }
+
 impl Clone for Page {
     fn clone(&self) -> Self {
         let mut new_page: MaybeUninit<Page> = MaybeUninit::uninit();
