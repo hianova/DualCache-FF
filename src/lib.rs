@@ -276,14 +276,8 @@ impl<K, V> Cache<K, V> {
     }
 
     fn next(&mut self)->usize{
-        let next = self.ring_pointer+1;
-        if next <self.config.capacity{
-            self.ring_pointer=next.clone();
-            next
-        }else{
-            self.ring_pointer=0;
-            0
-        }
+        self.ring_pointer = (self.ring_pointer + 1) % self.config.capacity;
+        self.ring_pointer
     }
     fn apply(&mut self,keys: impl IntoIterator<Item = K>){}
 }
