@@ -1,7 +1,5 @@
-mod ai;
-
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -9,6 +7,7 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use ahash::AHashMap;
 use arc_swap::ArcSwap;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
@@ -32,7 +31,7 @@ let cache = DualCacheFF::new();
 cache.put("A", 100);
 cache.put("B", 200);
 
-assert_eq!(cache.get("A"), Some(100);
+assert_eq!(cache.get("A"), Some(100));
 assert!(cache.get("C").is_none());
 ```
 
@@ -40,26 +39,28 @@ assert!(cache.get("C").is_none());
 
 ```
 use dual_cache_ff::{DualCacheFF, Config};
+use std::thread;
 
 let config = Config {
     capacity: 100, duration: 5000,
 };
-let (cache,rx) = DualCacheFF::build(config);
-thread::spawn(|| {
-   cache.daemon(rx);
- });
+let (cache, rx) = DualCacheFF::build(config);
+let cache_clone = cache.clone();
+thread::spawn(move || {
+   cache_clone.daemon(rx);
+});
 for i in 0..100 {
     cache.put(i, format!("value_{}", i));
 }
 
-assert!(cache.get(0).is_some());
-assert!(cache.get(99).is_some());
+assert!(cache.get(&0).is_some());
+assert!(cache.get(&99).is_some());
 ```"#]
 #[repr(align(128))]
 pub struct DualCacheFF<K, V> {
     main: Mutex<Cache<K, V>>,
     mirror: ArcSwap<Cache<K, V>>,
-    lazy_tx: Sender<K>,
+    lazy_tx: Sender<Action<K>>,
 }
 
 impl<K, V> DualCacheFF<K, V>
@@ -77,18 +78,17 @@ where
         std::thread::spawn(move || {
             cache_clone.daemon(rx);
         });
-        cache    
+        cache
     }
 
-    fn build(config: Config) -> (Arc<Self>, Receiver<K>) {
+    pub fn build(config: Config) -> (Arc<Self>, Receiver<Action<K>>) {
         let capacity = config.capacity;
         let state = Cache {
             nodes: Vec::with_capacity(capacity),
-            index: HashMap::with_capacity(capacity),
+            index: AHashMap::with_capacity(capacity),
             arena: Vec::with_capacity(capacity),
             evict_point: 0,
             lookup_count: 0,
-            ring_pointer: 0,
             config,
         };
         let (lazy_tx, rx) = bounded(10_000);
@@ -103,71 +103,105 @@ where
         )
     }
 
-    #[doc = r#"
+#[doc = r#"
     # Feature
-    - **First in first out** 
-    - **Arena evict probation** 
-    - **Count evict probation**
+    - **Arena evict probation** (鐘擺掃描淘汰)
+    - **Count evict probation** (所得稅衰減機制)
 
     # Example
-    ## First in first out
-    struct `cache` field `ring_pointer` loop throw `nodes` to push and overwrite
-    ```
-    use dual_cache_ff::DualCacheFF;
 
-    ```
+    ## Evict Probation (滿載淘汰測試)
+    當 Cache 達到 capacity 時，會自動淘汰最舊或最少使用的節點。
+    ```rust
+    use dual_cache_ff::{DualCacheFF, Config};
+    use std::thread;
 
-    ## Arena evict probation
-    struct `cache` field `evict_ponit` index above 
-    ```
-    use dual_cache_ff::DualCacheFF;
+    // 設定容量只有 2
+    let config = Config { capacity: 2, duration: 5000 };
+    let (cache, rx) = DualCacheFF::build(config);
+    
+    // 啟動背景 Daemon
+    let cache_clone = cache.clone();
+    thread::spawn(move || { cache_clone.daemon(rx); });
 
-    ```
+    // 塞入 3 筆資料，必定會觸發淘汰機制
+    cache.put("A", 100);
+    cache.put("B", 200);
+    cache.put("C", 300); // "A" 或 "B" 將被淘汰 (取決於鐘擺指針)
 
-    ## Count evict probation
-    struct `node` field `count` greater than (struct `cache` field `lookup_count`) / (struct `cache` field `capacity`)
-    ```
-    use dual_cache_ff::DualCacheFF;
-
+    // 驗證容量維持在 2，且新資料 "C" 必定存在
+    assert!(cache.get(&"C").is_some());
     ```
     "#]
     #[instrument(skip(self, value), fields(key = ?key))]
     pub fn put(&self, key: K, value: V) {
-        AI!()
-    }
+        let mut cache = self.main.lock().unwrap();
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time err")
+            .as_secs();
+            
+        if let Some(&rank) = cache.index.get(&key) {
+            let physical_idx = cache.arena[rank];
+            cache.nodes[physical_idx].value = value;
+            cache.nodes[physical_idx].epoch = epoch;
+            return;
+        }
 
-    #[doc = r#"
+        let node = Node {
+            key: key.clone(),
+            value,
+            epoch,
+            count: 0,
+        };
+        
+        if cache.arena.len() < cache.config.capacity {
+            let index = cache.nodes.len();
+            cache.nodes.push(node);
+            cache.arena.push(index);
+            cache.index.insert(key, index);
+            return;
+        }
+        
+        let rank = cache.next();
+        let physical_idx = cache.arena[rank];
+        
+        let old_key = cache.nodes[physical_idx].key.clone();
+        cache.index.remove(&old_key);
+        
+        cache.nodes[physical_idx] = node;
+        cache.index.insert(key, rank);
+    }
+#[doc = r#"
     # Feature
-    - **Outdated check** 
-    - **Count progress**
-    - **Arena progress** 
-    - **Count rest**  
+    - **Outdated check** (時間戳過期檢查)
+    - **Count progress** (讀取計數增加)
 
     # Example 
-    ## Outdated check
-    check (`SystemTime::now()` - `node.epoch`) < `cache.epoch_duration`
-    ```
-    use dual_cache_ff::DualCacheFF;
 
-    ```
-    ## Count progress
-    `node.count` +1 every call
-    ```
-    use dual_cache_ff::DualCacheFF;
+    ## Outdated check (過期自動清理)
+    當資料存活時間超過 `duration`，`get` 會回傳 None 並發送清理訊號。
+    ```rust
+    use dual_cache_ff::{DualCacheFF, Config};
+    use std::thread;
+    use std::time::Duration;
 
-    ```
-    ## Arena progress
-    `pagenated.page` move `node` index forward every call
-    ```
-    use dual_cache_ff::DualCacheFF;
+    // 設定存活時間只有 1 秒
+    let config = Config { capacity: 10, duration: 1 };
+    let (cache, rx) = DualCacheFF::build(config);
+    
+    let cache_clone = cache.clone();
+    thread::spawn(move || { cache_clone.daemon(rx); });
 
-    ```
-    ## Count rest
-    beyond (cache.lookup_count/cache.capacity) *10  node count will freeze   
-    ```
-    use dual_cache_ff::DualCacheFF;
+    cache.put("TempKey", 999);
+    assert_eq!(cache.get(&"TempKey"), Some(999)); // 剛放入，讀取成功
 
-    ```  
+    // 等待 2 秒，讓資料過期
+    thread::sleep(Duration::from_secs(2));
+    
+    // 再次讀取，應該被判定為過期 (Outdated)
+    assert!(cache.get(&"TempKey").is_none());
+    ```
     "#]
     #[instrument(skip(self), fields(key = ?key))]
     pub fn get<Q>(&self, key: &Q) -> Option<V>
@@ -175,111 +209,169 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized + Debug,
     {
-        AI!()
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("err").as_secs();
+        let cache = self.mirror.load();
+        let index = cache.index.get(key);
+        
+        match index {
+            Some(&idx) => {
+                let page = cache.arena[idx];
+                if cache.nodes[page].key.borrow() == key {
+                    if now.saturating_sub(cache.nodes[page].epoch) > cache.config.duration {
+                        let _ = self.lazy_tx.send(Action::CleanGhost(cache.nodes[page].key.clone()));
+                        return None;
+                    }
+                    let out = cache.nodes[page].value.clone();
+                    let _ = self.lazy_tx.send(Action::Hit(cache.nodes[page].key.clone()));
+                    Some(out)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
     }
 
-    pub fn daemon(&self, rx: Receiver<K>) {
-        // let mut batch_size: u64 = 1024;
-        // let mut sma: VecDeque<u64> = VecDeque::with_capacity(5);
+    pub fn daemon(&self, rx: Receiver<Action<K>>) {
+        let mut batch_size: u64 = 1024;
+        let mut sma: VecDeque<u64> = VecDeque::with_capacity(5);
+        let mut sma_sum: u64 = 0;
 
-        // while let Ok(first_key) = rx.recv() {
-        //     let mut state = self.main.lock().unwrap();
-        //     let mut processed_count = 0;
-        //     let start_epoch = SystemTime::now();
+        while let Ok(first_action) = rx.recv() {
+            let mut state = self.main.lock().unwrap();
+            let mut processed_count = 0;
+            let start_time = SystemTime::now();
 
-        //     // 將 K 轉換為 usize index 才能 climb
-        //     if let Some(&idx) = state.index.get(&first_key) {
-        //         state.climb(idx);
-        //     }
-        //     processed_count += 1;
+            state.apply(first_action);
+            processed_count += 1;
 
-        //     while processed_count < batch_size {
-        //         match rx.try_recv() {
-        //             Ok(key) => {
-        //                 if let Some(&idx) = state.index.get(&key) {
-        //                     state.climb(idx);
-        //                 }
-        //                 processed_count += 1;
-        //             }
-        //             Err(_) => break,
-        //         }
-        //     }
+            while processed_count < batch_size {
+                match rx.try_recv() {
+                    Ok(action) => {
+                        state.apply(action);
+                        processed_count += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
 
-        //     state.lookup_count = state.lookup_count.saturating_add(processed_count as u64);
+            state.lookup_count = state.lookup_count.saturating_add(processed_count as u64);
 
-        //     if state.lookup_count > u64::MAX / 2 {
-        //         state.refresh();
-        //     }
-        //     state.calibrate();
+            let new_snapshot = Arc::new(state.clone());
+            self.mirror.store(new_snapshot);
 
-        //     let new_snapshot = Arc::new(state.clone());
-        //     self.mirror.store(new_snapshot);
+            if sma.len() == 5 {
+                if let Some(popped) = sma.pop_front() {
+                    sma_sum = sma_sum.saturating_sub(popped);
+                }
+            }
 
-        //     if sma.len() == 5 {
-        //         sma.pop_front();
-        //     }
+            let elapsed_ms = start_time.elapsed().unwrap_or_default().as_millis() as u64;
+            let elapsed_ms = elapsed_ms.max(1);
+            let current_sma = batch_size / elapsed_ms;
+            
+            sma.push_back(current_sma);
+            sma_sum += current_sma;
 
-        //     // 避免除以 0 的情況
-        //     let elapsed_ms = start_epoch.elapsed().unwrap_or_default().as_secs().max(1);
-        //     sma.push_back(batch_size / elapsed_ms);
-
-        //     todo!("adjust BATCH_SIZE with SMA if intense batch bigger vise versa")
-        // }
+            if (sma_sum >> 5) > 100 {
+                batch_size = batch_size >> 10;
+            } else {
+                batch_size = batch_size * 10;
+            }
+            batch_size = batch_size.clamp(1, 100_000); 
+        }
     }
 }
 
 #[derive(Clone)]
 struct Cache<K, V> {
     nodes: Vec<Node<K, V>>,
-    index: HashMap<K, usize>,
+    index: AHashMap<K, usize>,
     arena: Vec<usize>,
-    evict_point: usize,
+    evict_point: isize,
     lookup_count: u64,
-    ring_pointer: usize,
     config: Config,
 }
 
-impl<K, V> Cache<K, V> {
+impl<K, V> Cache<K, V> 
+where 
+    K: Hash + Eq + Clone 
+{
     fn climb(&mut self, index: usize) {
-        self.arena.swap(index, index - 1);
-    }
-
-    fn refresh(&mut self) {
-        self.lookup_count = 0;
-        let epoch = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("somewhat went wrong")
-            .as_secs();
-
-        for nxt in self.nodes.iter_mut() {
-            nxt.count = 0;
-            nxt.epoch = epoch;
+        if index > 0 && index < self.arena.len() {
+            self.arena.swap(index, index - 1);
+            let key_a = self.nodes[self.arena[index]].key.clone();
+            let key_b = self.nodes[self.arena[index - 1]].key.clone();
+            self.index.insert(key_a, index);
+            self.index.insert(key_b, index - 1);
         }
     }
+    
+    fn next(&mut self) -> usize { 
+        let capacity = self.config.capacity as isize;
+        if capacity == 0 { return 0; }
+        let avg = self.lookup_count / (capacity as u64).max(1);
 
-    fn calibrate(&mut self) {
-        let prev_idx = self.evict_point.saturating_sub(1);
-        let latter_idx = self.evict_point.saturating_add(1);
-        let prev_node = self.nodes.get(prev_idx);
-        let latter_node = self.nodes.get(latter_idx);
-        let capacity = self.config.capacity as u64;
+        loop {
+            let is_forward = self.evict_point >= 0;
+            let rank = if is_forward {
+                self.evict_point
+            } else {
+                !self.evict_point
+            } as usize;
 
-        if let Some(prev) = prev_node {
-            if let Some(latter) = latter_node {
-                if (self.lookup_count /capacity) < prev.count {
-                    self.evict_point = self.evict_point.saturating_sub(1);
-                } else if (self.lookup_count / capacity) < latter.count {
-                    self.evict_point = self.evict_point.saturating_add(1);
+            if rank >= self.arena.len() {
+                self.evict_point = 0;
+                continue;
+            }
+
+            let physical_idx = self.arena[rank];
+            let node = &mut self.nodes[physical_idx];
+
+            if node.count > avg {
+                node.count -= avg;
+                self.evict_point = if is_forward {
+                    !(rank as isize)
+                } else {
+                    rank as isize
+                };
+            } else {
+                let victim_rank = rank;
+                let next_rank = if is_forward {
+                    rank as isize + 1
+                } else {
+                    rank as isize - 1
+                };
+                
+                if next_rank < 0 {
+                    self.evict_point = 1;
+                } else if next_rank >= capacity {
+                    self.evict_point = !(capacity - 2);
+                } else {
+                    self.evict_point = if is_forward { next_rank } else { !next_rank };
                 }
+                
+                return victim_rank;
             }
         }
     }
 
-    fn next(&mut self)->usize{
-        self.ring_pointer = (self.ring_pointer + 1) % self.config.capacity;
-        self.ring_pointer
+    fn apply(&mut self, action: Action<K>) {
+        match action {
+            Action::Hit(k) => {
+                if let Some(&idx) = self.index.get(&k) {
+                    self.climb(idx);
+                    let physical_idx = self.arena[idx];
+                    if self.nodes[physical_idx].count < (self.lookup_count / self.config.capacity as u64).saturating_mul(10) {
+                        self.nodes[physical_idx].count += 1;
+                    }
+                }
+            },
+            Action::CleanGhost(k) => {
+                self.index.remove(&k);
+            },
+        }
     }
-    fn apply(&mut self,keys: impl IntoIterator<Item = K>){}
 }
 
 #[repr(align(128))]
@@ -289,4 +381,9 @@ struct Node<K, V> {
     value: V,
     epoch: u64,
     count: u64,
+}
+
+pub enum Action<K> {
+    Hit(K),
+    CleanGhost(K),
 }
