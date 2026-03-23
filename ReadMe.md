@@ -5,35 +5,48 @@
 
 ---
 
-**DualCacheFF** 是一個專為極端高併發場景設計的 Rust 記憶體內快取庫 (In-Memory Cache)。
+# DualCacheFF
 
-它徹底拋棄了傳統的 `Mutex<HashMap>` 與標準 LRU 鏈表設計，採用了原創的 **「多重輪轉池 (Multi-State Rotation Pool)」** 併發模型與 **「鐘擺掃描 (Pendulum Scan)」** 淘汰演算法。在保證 **100% 無鎖讀取 (Wait-Free Read)** 的同時，達到了寫入與淘汰的 **零記憶體分配 (Zero-Allocation)**。
+**DualCacheFF** is a high-performance, in-memory caching library for Rust, designed for extreme concurrency and strict latency bounds. 
 
-## ✨ 核心架構與亮點 (Core Features)
+It abandons traditional `Mutex<HashMap>` and standard LRU linked-list designs in favor of a **Sharded Dual-Buffer Architecture** and a novel **Pendulum Eviction Algorithm**. By decoupling the read and write paths, DualCacheFF achieves **100% wait-free reads** and **zero-allocation evictions**, making it highly suitable for read-heavy, latency-sensitive applications.
 
-### 1. 絕對無鎖讀取 (100% Lock-Free Read)
-讀取路徑上沒有任何 `Mutex` 或 `RwLock`。前端透過 `ArcSwap` 直接讀取唯讀快照，耗時僅需數奈秒。讀取命中後，透過非同步 Channel 發送 `Action::Hit` 訊號，**讀取操作永遠不會被寫入阻塞**。
+## 🏗️ Architecture Overview
 
-### 2. 多重輪轉池併發模型 (Multi-State Rotation Pool)
-受 `left-right` 併發模式啟發，但專為 Cache 負載進行了深度魔改：
-* **消滅 `clone()` 災難**：背景 Daemon 維護 3~5 個備用 Cache 實例（Object Pool）。
-* **無鎖寫入與切換**：Daemon 透過 `Arc::get_mut` 取得獨佔權進行修改，修改後透過 `ArcSwap::swap` 瞬間切換前端視角。
-* **免疫讀者滯留 (Reader Stalling)**：當舊實例被慢速讀者卡住時，Daemon 會直接從 Pool 中拿出下一個乾淨的實例繼續處理，**寫入吞吐量永遠不會被慢讀者拖垮**。
+DualCacheFF is built upon the principle of **Data-Oriented Design (DOD)** and **Multi-Version Concurrency Control (MVCC)**. The system is strictly divided into a lightweight frontend handle and an exclusive background engine.
 
-### 3. 日誌壓縮與時序一致性 (Log Compaction & Epoch)
-* **連續 Hit 聚合**：Daemon 在收集前端訊號時，會自動將對同一個 Key 的連續 `Hit` 壓縮為單一的權重增加操作（Run-Length Encoding 概念），將重播 (Replay) 效能提升百倍。
-* **絕對時間錨點**：`Put` 操作自帶前端時間戳，保證在多個實例間重播時，過期邏輯的絕對一致性。
+### 1. Wait-Free Read Path (The Frontend)
+The frontend (`DualCacheFF`) holds an `ArcSwap` pointing to a read-only snapshot (`CacheView`). 
+* **Zero Contention**: Read operations (`get`) never acquire a mutex or block. They perform a direct lookup in the snapshot and emit an asynchronous `Action::Hit` signal via a bounded channel.
+* **Lazy Expiration**: Expiration checks are performed passively during reads. Expired items return `None` and emit an `Action::Delete` signal, offloading the cleanup to the background.
 
-### 4. 原創淘汰引擎：鐘擺與稅演算法 (Pendulum & Flat-Tax Decay)
-傳統的 LRU/LFU 需要維護昂貴的雙向鏈表或 Min-Heap，而 DualCacheFF 採用了極致的 $O(1)$ 陣列覆寫：
-* **零分配覆寫 (Zero-Allocation)**：滿載後，底層 `Vec` 絕對不執行 `push` 或 `remove`，只做原地覆寫，極大化 CPU L1 Cache 命中率。
-* **鐘擺掃描 (Pendulum Scan)**：淘汰指針在陣列中雙向遊走。撞到熱點牆即反轉，在冷資料區來回掃蕩，形成天然的 A/B Zone (冷熱分離)。
-* **稅衰減 (Flat-Tax Decay)**：指針撞擊熱點時，不採用比例扣除，而是精準扣除「系統平均存取量」。完美解決了假熱點的「Legacy 沉澱」問題，讓舊熱點隨時間自然冷卻。
-* **幽靈清理 (Ghost Cleaning)**：前端讀取到過期資料時，發送 `CleanGhost` 訊號。Daemon 會將其標記為垃圾，當鐘擺掃過時無條件覆寫，實現極低成本的延遲刪除 (Lazy Deletion)。
+### 2. Asynchronous Write Engine (The Daemon)
+All mutations (inserts, updates, evictions) are serialized and processed by a dedicated background thread (`DaemonEngine`).
+* **Copy-On-Write (COW)**: The daemon batches incoming actions and applies them to a standby instance. It utilizes `Arc::make_mut` to ensure that the underlying `Vec` and `HashMap` are only cloned when necessary, achieving zero-copy for read-heavy workloads.
+* **Atomic Publishing**: Once a batch is applied, the daemon publishes the new state via `ArcSwap::swap`, instantly updating the frontend's view.
 
----
+## ⚙️ Core Algorithms
 
-## 📦 快速開始 (Quick Start)
+### The Pendulum Eviction Scan
+Traditional LRU/LFU caches rely on doubly-linked lists or min-heaps, which suffer from poor cache locality and pointer-chasing overhead. DualCacheFF utilizes a contiguous array (`arena`) and a bidirectional scanning pointer (`evict_point`).
+
+1. **Zero-Allocation Overwrite**: Once the cache reaches capacity, the underlying `Vec` never grows or shrinks. New items are written by overwriting existing victims in-place.
+2. **Flat-Tax Decay**: When the pendulum pointer encounters a "hot" item (access count > system average), it deducts the average count (a "flat tax") and reverses direction. This naturally creates A/B zones (hot/cold separation) and prevents legacy items from starving new entries.
+3. **O(1) Rank Promotion**: When an item is accessed (`Hit`), its logical rank is promoted by swapping indices within the `arena` array. This operation is strictly $O(1)$ and avoids mutating the `HashMap` index, eliminating write amplification.
+
+### Tombstone Teleportation (Instant GC)
+When an item is explicitly deleted or lazily expired, its physical node is marked as a tombstone (`epoch = 0`). To guarantee $O(1)$ reclamation without waiting for the pendulum to scan the entire array, the tombstone's rank is instantly swapped with the current `evict_point`. The next `Put` operation will immediately overwrite this tombstone.
+
+## 🚀 Quick Start
+
+Add `dual_cache_ff` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+dual_cache_ff = "0.1"
+```
+
+### Basic Usage
 
 ```rust
 use dual_cache_ff::{DualCacheFF, Config};
@@ -41,71 +54,48 @@ use std::thread;
 use std::time::Duration;
 
 fn main() {
-    // 1. 設定 Cache 容量與過期時間 (秒)
+    // 1. Initialize configuration
     let config = Config {
-        capacity: 100_000,
-        duration: 60, 
+        capacity: 100_000, // Maximum number of items
+        duration: 60,      // TTL in seconds
     };
 
-    // 2. 建立 Cache 句柄與背景接收器
-    let (cache, rx) = DualCacheFF::build(config);
+    // 2. Build the cache and start the background daemon
+    let cache = DualCacheFF::build(config);
 
-    // 3. 啟動背景 Daemon 引擎 (負責日誌壓縮與雙星輪轉)
-    let cache_clone = cache.clone();
-    thread::spawn(move || {
-        cache_clone.daemon(rx);
-    });
+    // 3. Asynchronous, backpressured writes
+    cache.put("user:1", "Alice");
+    cache.put("user:2", "Bob");
 
-    // 4. 極速寫入 (非同步發送 Put 訊號)
-    cache.put("User:1001", "Alice");
-    cache.put("User:1002", "Bob");
+    // Allow a brief moment for the daemon to process the batch
+    thread::sleep(Duration::from_millis(10));
 
-    // 5. 絕對無鎖讀取 (Wait-Free)
-    assert_eq!(cache.get(&"User:1001"), Some("Alice"));
+    // 4. Wait-free reads
+    assert_eq!(cache.get(&"user:1"), Some("Alice"));
     
-    // 測試過期機制
-    thread::sleep(Duration::from_secs(61));
-    assert!(cache.get(&"User:1001").is_none()); // 觸發 CleanGhost 延遲刪除
+    // 5. Zero-copy iteration
+    let items: Vec<_> = cache.iter().collect();
+    println!("Cache contains {} items", items.len());
 }
 ```
 
----
+## 📊 Performance Characteristics
 
-## 🔬 效能與複雜度 (Performance Characteristics)
-
-| 操作 (Operation) | 時間複雜度 | 鎖競爭 (Lock Contention) | 記憶體分配 (Allocation) |
+| Operation | Time Complexity | Concurrency Model | Memory Allocation |
 | :--- | :--- | :--- | :--- |
-| **`get` (讀取)** | $O(1)$ | **無鎖 (Wait-Free)** | 零分配 |
-| **`put` (寫入)** | $O(1)$ | **無鎖 (Channel Send)** | 零分配 (滿載後) |
-| **`daemon` (背景重播)** | $O(B)$* | 獨佔修改 (無競爭) | 零分配 |
-| **淘汰掃描 (Eviction)** | $O(1)$ | 獨佔修改 (無競爭) | 零分配 |
+| **`get`** | $O(1)$ | **Wait-Free** (ArcSwap load) | Zero |
+| **`put`** | $O(1)$ | **Async** (Channel send) | Zero (after warmup) |
+| **`delete`** | $O(1)$ | **Async** (Channel send) | Zero |
+| **`iter`** | $O(N)$ | **Wait-Free** (Snapshot iteration) | Zero |
+| **Eviction** | $O(1)$ | Exclusive to Daemon | Zero |
 
-*\* $B$ 為壓縮後的 Batch Size。由於連續 Hit 會被壓縮，實際重播次數遠小於前端請求數。*
+*Note: `put` and `delete` operations may block if the internal channel reaches capacity (backpressure), ensuring memory safety under extreme load.*
 
----
+## 🗺️ Roadmap
 
-## 🏗️ 內部記憶體佈局 (Memory Layout)
-
-DualCacheFF 拒絕了會導致 Cache Line 破碎的節點指標，採用了極度緊湊的物理陣列設計：
-
-```rust
-struct Cache<K, V> {
-    nodes: Vec<Node<K, V>>,      // 物理儲存區：滿載後長度固定，只做原地覆寫
-    arena: Vec<usize>,           // 邏輯排名區：僅儲存 usize，climb() 時只交換 8 bytes
-    index: AHashMap<K, usize>,   // 快速路由表：Key -> 邏輯排名
-    evict_point: usize,          // 鐘擺指針
-    direction: isize,            // 鐘擺方向 (1 或 -1)
-}
-```
-這種設計保證了在執行 `climb` (排名晉升) 或 `evict` (淘汰) 時，CPU 的硬體預取器 (Hardware Prefetcher) 能夠發揮最大效能。
-
----
-
-## 🗺️ 未來展望 (Roadmap)
-
-- [ ] **Criterion Benchmarks**: 加入與 `moka`、`scc`、`dashmap` 的極限吞吐量對比測試。
-- [ ] **Zipfian Hit-Rate Simulation**: 驗證「鐘擺與稅演算法」在真實長尾分佈下的快取命中率。
-- [ ] **Sync Put API**: 提供基於 `oneshot` channel 的強一致性寫入 API，讓使用者在「極致吞吐量」與「讀己之寫 (Read-After-Write) 一致性」之間自由選擇。
+- [ ] **Criterion Benchmarks**: Comprehensive throughput and latency comparisons against `std::sync::RwLock`, `moka`, and `dashmap` under Zipfian distributions.
+- [ ] **Sync API**: Optional `oneshot` channel integration for strict Read-After-Write consistency.
+- [ ] **Sharding**: Horizontal scaling across multiple daemon engines to alleviate channel contention in 64+ core environments.
 
 ---
 *project supported by gemini 3.1 pro*
