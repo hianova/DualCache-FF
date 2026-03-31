@@ -2,7 +2,6 @@ use ahash::AHashMap;
 use arc_swap::ArcSwap;
 use crossbeam::channel::{Receiver, Sender};
 use crossbeam::epoch::Atomic;
-use dashmap::DashMap;
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::sync::Arc;
