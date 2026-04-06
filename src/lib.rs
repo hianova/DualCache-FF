@@ -22,7 +22,7 @@ const MASK: usize = 63;
 // Inv₅ (epoch monotone):       epoch only increments, never wraps within duration window
 // Inv₆ (hot⊆cold):             ∀ k ∈ hot_cache. ∃ k ∈ cold_cache
 //                               hot eviction must also update cold_cache index
-// Inv₇ (buffer ring):          buffer_point < buffer.capacity()
+// Inv₇ (get_buffer ring):      buffer_point < buffer.capacity()
 //                               buffer is flushed before overwrite (send before wrap)
 // Inv₈ (count_sum):            count_sum = Σ records[i].count  (maintained incrementally)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ impl<K, V> DualCacheFF<K, V> {
             //            try_send(Action::Remove(global_idx))
             //            return None
             // 10. push global_idx to get_buffer
-            // 11. flush get_buffer if full             -- try_send(Action::Gets), then clear
+            // 11. flush get_buffer if full             -- Inv₇:try_send(Action::Gets), then clear
             // 12. return Some(node.value.clone())
         )
     }
