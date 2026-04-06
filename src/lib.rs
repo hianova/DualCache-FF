@@ -35,8 +35,10 @@ const MASK: usize = 63;
 pub struct DualCacheFF<K, V> {
     hot_cache: Arc<ArcSwap<AHashMap<K, V>>>,
     cold_cache: Arc<ArcSwap<Cache<K, V>>>,
-    action_tx: Sender<Vec<Action<K, V>>>,
-    buffer: Vec<Action<K, V>>,
+    action_tx: Sender<Action<K, V>>,
+    epoch: Arc<AtomicU32>, // Daemon 寫，前端 Relaxed 讀
+    duration: u32,
+    get_buffer: Vec<usize>, // 私有，只装 Get(global_idx)
     buffer_point: usize,
 }
 
@@ -70,14 +72,14 @@ impl<K, V> DualCacheFF<K, V> {
             //    Arc::new(ArcSwap::from_pointee(cold))
             //
             // 4. build channel:
-            //    crossbeam::channel::bounded(1)   -- channel carries Vec<Action>, 1 slot
-            //    buffer capacity = capacity / 10  -- ring buffer size
+            //    crossbeam::channel::bounded(1024)   -- channel carries Action, bounded
+            //    buffer capacity = capacity / 10  -- get batch buffer size
             //    buffer_point = 0
             //
             // 5. spawn Daemon:
             //    thread::spawn(move || daemon.start(config))
             //
-            // 6. return Self { hot_cache, cold_cache, action_tx, buffer, buffer_point:0 }
+            // 6. return Self { hot_cache, cold_cache, action_tx, epoch, duration, get_buffer, buffer_point:0 }
         )
     }
 
@@ -87,11 +89,7 @@ impl<K, V> DualCacheFF<K, V> {
             // POST: Action::Insert(key,value) queued; Daemon will apply to cold_cache
             //       and possibly promote to hot_cache if count qualifies
             //
-            // 1. push Action::Insert(key, value) into buffer[buffer_point]
-            // 2. buffer_point = (buffer_point + 1) % buffer.capacity()   -- Inv₇
-            // 3. if buffer_point == 0:                                    -- ring wrapped
-            //        try_send(buffer.clone())   -- non-blocking; drop if channel full
-            //        buffer.clear()
+            // 1. 直接 try_send(Action::Insert(key, value))，丟掉就丟掉，快取語義允許
         )
     }
 
@@ -99,13 +97,13 @@ impl<K, V> DualCacheFF<K, V> {
         todo!(
             // PRE:  (none)
             // POST: returns Some(v) iff key exists and epoch not expired
-            //       Action::Get(global_idx) queued for Daemon count update
+            //       Action::Gets(buffer) queued for Daemon count update
             //
             // FAST PATH — hot_cache (L1/L2 hit):
             // 1. guard = hot_cache.load()              -- wait-free ArcSwap load
             // 2. if let Some(v) = guard.get(key):
-            //        push Action::Get(HOT_SENTINEL) to buffer   -- signal hot hit
-            //        flush buffer if full                        -- Inv₇
+            //        push HOT_SENTINEL to get_buffer   -- signal hot hit
+            //        flush get_buffer if full          -- try_send(Action::Gets), then clear
             //        return Some(v.clone())
             //
             // SLOW PATH — cold_cache (L3):
@@ -114,15 +112,14 @@ impl<K, V> DualCacheFF<K, V> {
             // 5. global_idx = cold_guard.index[shard_idx].get(key)?
             // 6. page_idx = global_idx >> SHIFT                              -- Inv₃
             // 7. offset   = global_idx &  MASK                               -- Inv₃
-            // 8. node = cold_guard.pages[page_idx][offset]
+            // 8. node = cold_guard.pages[page_idx].nodes.get(offset)?
             // 9. epoch check:
             //        now = self.epoch.load(Relaxed)
-            //        if now - node.epoch > config.duration:                  -- Inv₅
-            //            push Action::Remove(global_idx) to buffer
-            //            flush buffer if full
+            //        if now - node.epoch > self.duration:                    -- Inv₅
+            //            try_send(Action::Remove(global_idx))
             //            return None
-            // 10. push Action::Get(global_idx) to buffer
-            // 11. flush buffer if full                                        -- Inv₇
+            // 10. push global_idx to get_buffer
+            // 11. flush get_buffer if full             -- try_send(Action::Gets), then clear
             // 12. return Some(node.value.clone())
         )
     }
@@ -135,8 +132,7 @@ impl<K, V> DualCacheFF<K, V> {
             // 1. cold_guard = cold_cache.load()
             // 2. shard_idx  = cold_guard.hasher.hash(key) & (SHARD_SIZE-1)
             // 3. global_idx = cold_guard.index[shard_idx].get(key)?  -- None → return
-            // 4. push Action::Remove(global_idx) to buffer
-            // 5. flush buffer if full                                  -- Inv₇
+            // 4. 直接 try_send(Action::Remove(global_idx))
         )
     }
 
@@ -144,10 +140,7 @@ impl<K, V> DualCacheFF<K, V> {
         todo!(
             // POST: Action::Clear queued; Daemon will clear both hot and cold
             //
-            // 1. push Action::Clear to buffer
-            // 2. force flush buffer immediately (don't wait for ring wrap)
-            //        try_send(buffer.clone())
-            //        buffer.clear(); buffer_point = 0
+            // 1. 直接 try_send(Action::Clear)
         )
     }
 }
@@ -161,10 +154,9 @@ impl<K, V> DualCacheFF<K, V> {
 struct Daemon<K, V> {
     hot_cache: Arc<ArcSwap<AHashMap<K, V>>>,
     cold_cache: Arc<ArcSwap<Cache<K, V>>>,
-    action_rx: Receiver<Vec<Action<K, V>>>,
+    action_rx: Receiver<Action<K, V>>,
     epoch: Arc<AtomicU32>,
-    // hit_counts: AHashMap<global_idx → accumulated hit weight this batch>
-    hit_counts: AHashMap<usize, u32>,
+    hit_counts: AHashMap<usize, u32>, // batch 間複用，減少重複分配
     arena: Arena,
 }
 
@@ -175,7 +167,7 @@ impl<K, V> Daemon<K, V> {
             //
             // loop:
             //   1. recv_timeout(10ms):
-            //        Ok(batch)  → process batch (steps 2-6)
+            //        Ok(action)   → collect action, then try_recv remaining into batch
             //        Err(timeout) → if hit_counts non-empty, still apply (step 4-6)
             //                       else continue
             //
@@ -197,11 +189,11 @@ impl<K, V> Daemon<K, V> {
     fn compress_action(&mut self, batch: Vec<Action<K, V>>) {
         todo!(
             // PRE:  batch is the raw Vec<Action> received from channel
-            // POST: self.hit_counts[idx] = Σ weights of Get(idx) in batch
+            // POST: self.hit_counts[idx] = Σ weights of Gets(idx) in batch
             //       structural actions (Insert/Remove/Clear) preserved in order
             //
             // 1. for action in batch:
-            //      Action::Get(idx)       → hit_counts.entry(idx).or_default() += 1
+            //      Action::Gets(idxs)     → for idx in idxs: hit_counts.entry(idx).or_default() += 1
             //      Action::Insert(k,v)    → push to insert_queue (local Vec)
             //      Action::Remove(idx)    → push to remove_queue (local Vec)
             //      Action::Clear          → clear both queues, hit_counts.clear(), mark clear=true
@@ -289,7 +281,7 @@ impl<K, V> Cache<K, V> {
             // 3. index = array_init(|| Arc::new(AHashMap::with_capacity(capacity/SHARD_SIZE)))
             // 4. pages_cap = capacity / PAGE_SIZE
             //    pages = (0..pages_cap).map(|_| Arc::new(Page { nodes: Vec::with_capacity(PAGE_SIZE) }))
-            //    unsafe { nodes.set_len(PAGE_SIZE) }  -- skip zero-init, Daemon owns writes
+            //    -- 讓 Daemon 在 insert 時 push，page 未滿的 slot 根本不存在
         )
     }
 
@@ -304,8 +296,12 @@ impl<K, V> Cache<K, V> {
             // 2. Arc::make_mut(&mut index[shard_idx]).insert(key, global_idx)  -- COW shard
             // 3. page_idx = global_idx >> SHIFT                             -- Inv₃
             //    offset   = global_idx &  MASK
-            // 4. Arc::make_mut(&mut pages[page_idx]).nodes[offset] =
-            //        Node { key, value, epoch: current_epoch }              -- COW page
+            // 4. let nodes = &mut Arc::make_mut(&mut pages[page_idx]).nodes
+            //    if offset == nodes.len() {
+            //        nodes.push(Node { key, value, epoch: current_epoch })
+            //    } else {
+            //        nodes[offset] = Node { key, value, epoch: current_epoch }
+            //    }
         )
     }
 
@@ -442,7 +438,7 @@ impl Arena {
 #[derive(Clone)]
 enum Action<K, V> {
     Insert(K, V),
-    Get(usize),
+    Gets(Vec<usize>), // batch gets 降低 channel 壓力
     Remove(usize),
     Clear,
 }
