@@ -1,9 +1,9 @@
 [package]
 name = "dualcache-ff"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2024"
 authors = ["hianova"]
-description = "A Cache system aim for read more write less"
+description = "Read More Write Less"
 license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/hianova/DualCache-FF"
 readme = "./ReadMe.md"
