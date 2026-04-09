@@ -86,7 +86,6 @@ fn main() {
 | **`get`** | $O(1)$ | **Wait-Free** (ArcSwap load) | Zero |
 | **`put`** | $O(1)$ | **Async** (Channel send) | Zero (after warmup) |
 | **`delete`** | $O(1)$ | **Async** (Channel send) | Zero |
-| **`iter`** | $O(N)$ | **Wait-Free** (Snapshot iteration) | Zero |
 | **Eviction** | $O(1)$ | Exclusive to Daemon | Zero |
 
 *Note: `put` and `delete` operations may block if the internal channel reaches capacity (backpressure), ensuring memory safety under extreme load.*
