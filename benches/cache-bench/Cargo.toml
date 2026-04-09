@@ -14,7 +14,7 @@ harness = false               # 使用 criterion 的异步/自定义主函数
 [dependencies]
 moka = { version = "0.12", features = ["sync"] }
 rand = "0.8"
-zipf = "0.2"
+rand_distr = "0.4"          # 新增
 dualcache-ff = { path = "../../" }
 
 [dev-dependencies]

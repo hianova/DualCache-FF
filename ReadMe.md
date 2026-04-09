@@ -90,11 +90,17 @@ fn main() {
 
 *Note: `put` and `delete` operations may block if the internal channel reaches capacity (backpressure), ensuring memory safety under extreme load.*
 
-## 🗺️ Roadmap
+## Benchmark
 
-- [ ] **Criterion Benchmarks**: Comprehensive throughput and latency comparisons against `std::sync::RwLock`, `moka`, and `dashmap` under Zipfian distributions.
-- [ ] **Sync API**: Optional `oneshot` channel integration for strict Read-After-Write consistency.
-- [ ] **Sharding**: Horizontal scaling across multiple daemon engines to alleviate channel contention in 64+ core environments.
+2026/4/10
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.2s.
+test cache_throughput/Moka/uniform ... bench:   722310729 ns/iter (+/- 79398602)
+test cache_throughput/DualCacheFF/uniform ... bench:    67477691 ns/iter (+/- 1157578)
+test cache_throughput/Moka/zipf ... bench:   323833229 ns/iter (+/- 4998824)
+test cache_throughput/DualCacheFF/zipf ... bench:    87517654 ns/iter (+/- 3867528)
 
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.7s.
+test cache_throughput/Moka/scan ... bench:   742587166 ns/iter (+/- 15568079)
+test cache_throughput/DualCacheFF/scan ... bench:    59215109 ns/iter (+/- 4319769)
 ---
 *project supported by gemini 3.1 pro*

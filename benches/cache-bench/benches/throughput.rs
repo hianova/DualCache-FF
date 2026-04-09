@@ -3,9 +3,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use moka::sync::Cache as MokaCache;
 use rand::distributions::Distribution;
 use rand::prelude::*;
+use rand_distr::Zipf;
 use std::sync::Arc;
 use std::time::Duration;
-use zipf::ZipfDistribution;
 
 const CAPACITY: u64 = 100_000;
 const KEY_SPACE: u64 = 1_000_000; // 键总数远大于容量，模拟真实场景
@@ -24,25 +24,25 @@ where
         _ => panic!("unknown workload"),
     }
 }
-fn bench_workload_parallel<C>(cache: Arc<C>, workload: &str, thread_count: usize)
-where
-    C: Cache<u64, u64> + 'static,
-{
-    let ops_per_thread = OPS_PER_BENCH / thread_count as u64;
-    std::thread::scope(|s| {
-        for _ in 0..thread_count {
-            let cache = Arc::clone(&cache);
-            s.spawn(move || {
-                todo!("测量多线程并发吞吐量")
-                match workload {
-                    "uniform" => run_uniform_ops(cache, ops_per_thread),
-                    // ... 类似实现带 ops 参数的版本
-                    _ => {}
-                }
-            });
-        }
-    });
-}
+// fn bench_workload_parallel<C>(cache: Arc<C>, workload: &str, thread_count: usize)
+// where
+//     C: Cache<u64, u64> + 'static,
+// {
+//     let ops_per_thread = OPS_PER_BENCH / thread_count as u64;
+//     std::thread::scope(|s| {
+//         for _ in 0..thread_count {
+//             let cache = Arc::clone(&cache);
+//             s.spawn(move || {
+//                 todo!("测量多线程并发吞吐量");
+//                 match workload {
+//                     "uniform" => run_uniform_ops(cache, ops_per_thread),
+//                     // ... 类似实现带 ops 参数的版本
+//                     _ => {}
+//                 }
+//             });
+//         }
+//     });
+// }
 // 均匀随机
 fn run_uniform<C>(cache: Arc<C>)
 where
@@ -67,8 +67,7 @@ where
     C: Cache<u64, u64> + 'static,
 {
     let mut rng = rand::thread_rng();
-    // Zipf 参数：通常 1.0 左右模拟真实热点
-    let zipf = ZipfDistribution::new(KEY_SPACE as usize, 1.0).unwrap();
+    let zipf = Zipf::new(KEY_SPACE, 1.0).unwrap(); // 参数：元素个数，指数
     for _ in 0..OPS_PER_BENCH {
         let key = zipf.sample(&mut rng) as u64;
         if let Some(v) = cache.get(&key) {
