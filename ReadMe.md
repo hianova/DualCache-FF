@@ -92,15 +92,23 @@ fn main() {
 
 ## Benchmark
 
-2026/4/10
-Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.2s.
-test cache_throughput/Moka/uniform ... bench:   722310729 ns/iter (+/- 79398602)
-test cache_throughput/DualCacheFF/uniform ... bench:    67477691 ns/iter (+/- 1157578)
-test cache_throughput/Moka/zipf ... bench:   323833229 ns/iter (+/- 4998824)
-test cache_throughput/DualCacheFF/zipf ... bench:    87517654 ns/iter (+/- 3867528)
+2026/4/10 
+$ cargo bench --bench throughput -- --verbose --output-format bencher
 
-Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.7s.
-test cache_throughput/Moka/scan ... bench:   742587166 ns/iter (+/- 15568079)
-test cache_throughput/DualCacheFF/scan ... bench:    59215109 ns/iter (+/- 4319769)
+#### Gnuplot not found, using plotters backend
+- test cache_throughput/Moka/uniform ... bench:   468757010 ns/iter (+/- 8921837)
+- test cache_throughput/DualCacheFF/uniform ... bench:    27683901 ns/iter (+/- 455613)
+
+#### Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 9.2s or enable flat sampling.
+- test cache_throughput/Moka/zipf ... bench:   175735348 ns/iter (+/- 9346232)
+- test cache_throughput/DualCacheFF/zipf ... bench:    80750417 ns/iter (+/- 2047880)
+
+#### Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.0s.
+- test cache_throughput/Moka/scan ... bench:   957736958 ns/iter (+/- 114978011)
+- test cache_throughput/DualCacheFF/scan ... bench:    36916407 ns/iter (+/- 1171607)
+
+#### uniform:  468ms vs  27ms → 16.9x
+#### zipf:     175ms vs  80ms →  2.2x
+#### scan:     957ms vs  36ms → 25.9x
 ---
 *project supported by gemini 3.1 pro*
