@@ -40,7 +40,6 @@ pub struct DualCacheFF<K, V> {
     epoch: Arc<AtomicU32>,
     duration: u32,
     get_buffer: Arc<GetBuffer>,
-    negative_ring: Arc<NegativeRing>,
 }
 
 impl<K, V> Clone for DualCacheFF<K, V> {
@@ -53,7 +52,6 @@ impl<K, V> Clone for DualCacheFF<K, V> {
             epoch: self.epoch.clone(),
             duration: self.duration,
             get_buffer: self.get_buffer.clone(),
-            negative_ring: self.negative_ring.clone(),
         }
     }
 }
@@ -98,7 +96,6 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
         ));
 
         let get_buffer = Arc::new(GetBuffer::new(capacity / 10));
-        let negative_ring = Arc::new(NegativeRing::new());
 
         let mut daemon = Daemon {
             t1: t1.clone(),
@@ -125,7 +122,6 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
             epoch,
             duration: config.duration,
             get_buffer,
-            negative_ring,
         }
     }
 
@@ -139,15 +135,6 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
     // POST: returns Some(v) iff key exists and epoch not expired
     //       get_buffer updated for Daemon count tracking
     pub fn get(&self, key: &K) -> Option<V> {
-        // negative_ring fast rejection
-        {
-            let cache_guard = self.cache.load();
-            let hash = cache_guard.hasher.hash_one(key) as u32;
-            if self.negative_ring.check(hash) {
-                return None;
-            }
-        }
-
         // T1 — L1 hit
         {
             let t1_guard = self.t1.load();
@@ -165,9 +152,6 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
         let global_idx = match cache_guard.index[shard_idx].get(key).copied() {
             Some(idx) => idx,
             None => {
-                // record miss in negative ring
-                let hash = cache_guard.hasher.hash_one(key) as u32;
-                self.negative_ring.record(hash, now);
                 return None;
             }
         };
@@ -802,45 +786,6 @@ impl GetBuffer {
         Self {
             buffer: crossbeam::queue::ArrayQueue::new(cap.max(1)),
         }
-    }
-}
-
-// ─── NegativeRing ─────────────────────────────────────────────────────────────
-//
-// hash-addressed fixed ring: slot = hash & 1023
-// stored value: upper 32 bits = epoch, lower 32 bits = hash signature
-// no Daemon involvement; updated inline on miss — wait-free
-
-struct NegativeRing {
-    ring: Box<[AtomicU32; 1024]>,
-}
-
-impl NegativeRing {
-    fn new() -> Self {
-        // SAFETY: AtomicU32 is zero-initializable
-        let ring = (0..1024)
-            .map(|_| AtomicU32::new(0))
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap_or_else(|_| panic!("NegativeRing init"));
-        Self {
-            ring: Box::new(ring),
-        }
-    }
-
-    #[inline]
-    fn record(&self, hash: u32, epoch: u32) {
-        let slot = (hash as usize) & 1023;
-        // pack: upper 16 bits of epoch, lower 16 bits of hash (best-effort, not exact)
-        let packed = (epoch << 16) | (hash & 0xFFFF);
-        self.ring[slot].store(packed, Ordering::Relaxed);
-    }
-
-    #[inline]
-    fn check(&self, hash: u32) -> bool {
-        let slot = (hash as usize) & 1023;
-        let stored = self.ring[slot].load(Ordering::Relaxed);
-        (stored & 0xFFFF) == (hash & 0xFFFF) && (stored >> 16) != 0
     }
 }
 

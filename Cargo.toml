@@ -1,6 +1,6 @@
 [package]
 name = "dualcache-ff"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2024"
 authors = ["hianova"]
 description = "Read More Write Less"
