@@ -5,11 +5,12 @@ use rand::distributions::Distribution;
 use rand_distr::Zipf;
 use std::sync::Arc;
 use std::time::Duration;
+use tinyufo::TinyUfo;
 
 const CAPACITY: u64 = 100_000;
 const KEY_SPACE: u64 = 1_000_000; // 键总数远大于容量，模拟真实场景
-const THREADS: usize = 4;
-const OPS_PER_BENCH: u64 = 1_000_000;
+const THREADS: usize = 16;
+const OPS_PER_BENCH: u64 = 10_000_000;
 
 // ----- 统一测试函数 -----
 fn bench_workload<C>(cache: Arc<C>, workload: &str, keys: &[u64]) -> u64
@@ -185,6 +186,45 @@ fn bench_throughput(c: &mut Criterion) {
                     for _ in 0..iters {
                         let start = std::time::Instant::now();
                         let _ = bench_workload(Arc::clone(&my_cache), wl, keys_to_use);
+                        total += start.elapsed();
+                    }
+                    total
+                });
+            },
+        );
+
+        // --- TinyUFO measurement run for stats ---
+        println!("\n=== TinyUFO Workload: {} ===", workload);
+        let ufo_stat = Arc::new(TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
+        for i in 0..10_000u64 {
+            ufo_stat.insert(i, i);
+        }
+        let u_start = std::time::Instant::now();
+        let u_misses = bench_workload(Arc::clone(&ufo_stat), workload, keys_to_use);
+        let u_elapsed = u_start.elapsed();
+        let u_throughput = OPS_PER_BENCH as f64 / u_elapsed.as_secs_f64();
+        let u_hitrate = 100.0 * (1.0 - (u_misses as f64 / OPS_PER_BENCH as f64));
+        println!("  - Throughput (引擎空轉吞吐): {:.2} ops/s", u_throughput);
+        println!("  - DB Penetrates (潛在穿透次數): {}", u_misses);
+        println!("  - Hit Rate (真實業務命中率): {:.2}%\n", u_hitrate);
+
+        // 獨立建立 TinyUFO 實例
+        let ufo_cache = Arc::new(TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
+
+        for i in 0..10_000u64 {
+            ufo_cache.insert(i, i);
+        }
+
+        // 測試 TinyUFO
+        group.bench_with_input(
+            BenchmarkId::new("TinyUFO", workload),
+            &workload,
+            |b, &wl| {
+                b.iter_custom(|iters| {
+                    let mut total = Duration::new(0, 0);
+                    for _ in 0..iters {
+                        let start = std::time::Instant::now();
+                        let _ = bench_workload(Arc::clone(&ufo_cache), wl, keys_to_use);
                         total += start.elapsed();
                     }
                     total
