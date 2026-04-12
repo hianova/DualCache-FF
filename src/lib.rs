@@ -71,17 +71,17 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
     // POST: self satisfies Inv₁..Inv₉ at t=0
     pub fn new(config: Config) -> Self {
         // Inv₁: align capacity to PAGE_SIZE boundary
-        let capacity = (config.capacity + PAGE_SIZE - 1) & !(PAGE_SIZE - 1); //TODO: make sure capacity will round up to multiple of PAGE_SIZE and 0 will throw error
+        let capacity = (config.capacity + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         debug_assert!(capacity % PAGE_SIZE == 0);
 
-        let hot_cap = capacity / 10;
+        let hot_cap = (capacity / 10).max(1);
 
         let t1 = Arc::new(ArcSwap::from_pointee(AHashMap::with_capacity_and_hasher(
             hot_cap,
             RandomState::new(),
         )));
 
-        let t2_cap = capacity / 5;
+        let t2_cap = (capacity / 5).max(1);
         let t2 = Arc::new(ArcSwap::from_pointee(T2::new(t2_cap)));
 
         let cache = Arc::new(ArcSwap::from_pointee(Cache::new(capacity)));
@@ -232,13 +232,25 @@ struct Daemon<K, V> {
     remove_queue: Vec<usize>,
     clear_flag: bool,
     hot_capacity: usize,
-    // t2_capacity: usize,
 }
-// TODO: Daemon impl Drop trait, capa
+impl<K, V> Drop for Daemon<K, V> {
+    fn drop(&mut self) {
+        self.hit_counts.clear();
+        self.insert_queue.clear();
+        self.remove_queue.clear();
+        self.arena.clear();
+    }
+}
+
 impl<K: Hash + Eq + Clone, V: Clone> Daemon<K, V> {
     // LOOP invariant: Inv₁..Inv₉ hold at start of every iteration
     fn start(&mut self, duration: u32) {
         loop {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32;
+            self.epoch.store(now, Ordering::Relaxed); // Inv₅
             let mut batch = Vec::new();
             match self
                 .action_rx
@@ -250,7 +262,7 @@ impl<K: Hash + Eq + Clone, V: Clone> Daemon<K, V> {
                         batch.push(act);
                     }
                 }
-                Err(_) => {
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                     if self.hit_counts.is_empty()
                         && self.insert_queue.is_empty()
                         && self.remove_queue.is_empty()
@@ -259,14 +271,10 @@ impl<K: Hash + Eq + Clone, V: Clone> Daemon<K, V> {
                         continue;
                     }
                 }
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
             }
-
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as u32;
-            self.epoch.store(now, Ordering::Relaxed); // Inv₅
-
             self.compress_action(batch);
             self.apply_batch(now, duration);
             self.hit_counts.clear();

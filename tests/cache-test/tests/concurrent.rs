@@ -65,3 +65,21 @@ test_runner!(test_concurrent_ops, {
     
     assert_eq!(ops.load(Ordering::Relaxed), 8);
 });
+
+#[cfg(not(loom))]
+#[test]
+fn test_ttl_mechanic() {
+    use std::time::Duration;
+    
+    let cache = DualCacheFF::new(Config {
+        capacity: 128,
+        duration: 1,
+    });
+    
+    cache.insert(1, 100);
+    
+    // sleep past duration
+    thread::sleep(Duration::from_secs(2));
+    
+    assert_eq!(cache.get(&1), None);
+}

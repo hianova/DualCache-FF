@@ -1,5 +1,4 @@
 use std::hash::Hash;
-use std::sync::Arc;
 
 pub trait Cache<K, V>: Send + Sync {
     fn get(&self, key: &K) -> Option<V>;
