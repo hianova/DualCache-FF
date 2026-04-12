@@ -71,7 +71,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
     // POST: self satisfies Inv₁..Inv₉ at t=0
     pub fn new(config: Config) -> Self {
         // Inv₁: align capacity to PAGE_SIZE boundary
-        let capacity = (config.capacity + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let capacity = (config.capacity + PAGE_SIZE - 1) & !(PAGE_SIZE - 1); //TODO: make sure capacity will round up to multiple of PAGE_SIZE and 0 will throw error
         debug_assert!(capacity % PAGE_SIZE == 0);
 
         let hot_cap = capacity / 10;
@@ -82,7 +82,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
         )));
 
         let t2_cap = capacity / 5;
-        let t2 = Arc::new(ArcSwap::from_pointee(T2::new(capacity)));
+        let t2 = Arc::new(ArcSwap::from_pointee(T2::new(t2_cap)));
 
         let cache = Arc::new(ArcSwap::from_pointee(Cache::new(capacity)));
 
@@ -109,7 +109,6 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
             remove_queue: Vec::new(),
             clear_flag: false,
             hot_capacity: hot_cap,
-            t2_capacity: t2_cap,
         };
 
         std::thread::spawn(move || daemon.start(config.duration));
@@ -233,9 +232,9 @@ struct Daemon<K, V> {
     remove_queue: Vec<usize>,
     clear_flag: bool,
     hot_capacity: usize,
-    t2_capacity: usize,
+    // t2_capacity: usize,
 }
-
+// TODO: Daemon impl Drop trait, capa
 impl<K: Hash + Eq + Clone, V: Clone> Daemon<K, V> {
     // LOOP invariant: Inv₁..Inv₉ hold at start of every iteration
     fn start(&mut self, duration: u32) {
