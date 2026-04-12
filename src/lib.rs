@@ -81,8 +81,7 @@ impl<K: Hash + Eq + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'sta
             RandomState::new(),
         )));
 
-        let t2_cap = (capacity / 5).max(1);
-        let t2 = Arc::new(ArcSwap::from_pointee(T2::new(t2_cap)));
+        let t2 = Arc::new(ArcSwap::from_pointee(T2::new(capacity)));
 
         let cache = Arc::new(ArcSwap::from_pointee(Cache::new(capacity)));
 
