@@ -32,7 +32,7 @@ where
             };
 
             handles.push(s.spawn(move || match workload {
-                "uniform" | "zipf" => run_keys(cache, thread_keys),
+                "uniform" | "zipf" | "mixed" => run_keys(cache, thread_keys),
                 "scan" => run_scan(cache, ops_per_thread as u64, t_id as u64),
                 _ => panic!("unknown workload"),
             }));
@@ -81,7 +81,7 @@ where
 // ----- Criterion 入口 -----
 fn bench_throughput(c: &mut Criterion) {
     // 创建工作负载列表
-    let workloads = vec!["uniform", "zipf", "scan"];
+    let workloads = vec!["uniform", "zipf", "scan", "mixed"];
 
     let uniform_keys: Vec<u64> = {
         let dist = rand::distributions::Uniform::new(0, KEY_SPACE);
@@ -97,6 +97,39 @@ fn bench_throughput(c: &mut Criterion) {
             .collect()
     };
 
+    let mixed_keys: Vec<u64> = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let zipf = Zipf::new(KEY_SPACE, 1.0).unwrap();
+        let uniform = rand::distributions::Uniform::new(0, KEY_SPACE);
+
+        let mut keys = Vec::with_capacity(OPS_PER_BENCH as usize);
+        let mut i = 0;
+        while i < OPS_PER_BENCH {
+            let phase_len = rng.gen_range(50_000..=200_000);
+            let phase_type = rng.gen_range(0..3); // 0: zipf, 1: uniform, 2: scan
+
+            let mut scan_start = rng.gen_range(0..KEY_SPACE);
+            for _ in 0..phase_len {
+                if i >= OPS_PER_BENCH {
+                    break;
+                }
+                let k = match phase_type {
+                    0 => zipf.sample(&mut rng) as u64,
+                    1 => uniform.sample(&mut rng),
+                    _ => {
+                        let k = scan_start;
+                        scan_start = (scan_start + 1) % KEY_SPACE;
+                        k
+                    }
+                };
+                keys.push(k);
+                i += 1;
+            }
+        }
+        keys
+    };
+
     let mut group = c.benchmark_group("cache_throughput");
     group.throughput(Throughput::Elements(OPS_PER_BENCH));
     group.sample_size(10); // 每个配置采样10次
@@ -107,6 +140,7 @@ fn bench_throughput(c: &mut Criterion) {
         let keys_to_use: &[u64] = match workload {
             "uniform" => &uniform_keys,
             "zipf" => &zipf_keys,
+            "mixed" => &mixed_keys,
             _ => &[], // scan
         };
 
