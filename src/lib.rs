@@ -8,8 +8,9 @@ const SHARD_SIZE: usize = 64;
 const PAGE_SIZE: usize = 64;
 const SHIFT: usize = 6;
 const MASK: usize = 63;
+const PROMOTE_THRESHOLD: u32 = 2;
 
-// ─── Lean-style invariants (checked at runtime in debug, static in release) ───
+// ─── Lean-style invariants ────────────────────────────────────────────────────
 //
 // Inv₁ (capacity alignment):   capacity % PAGE_SIZE = 0
 // Inv₂ (shard routing):        shard_idx = hash(key) & (SHARD_SIZE-1)
@@ -18,24 +19,24 @@ const MASK: usize = 63;
 //                               page_idx  = global_idx >> SHIFT
 //                               offset    = global_idx &  MASK
 // Inv₄ (arena↔page bijection): ∀ r ∈ records. pages[r.index>>SHIFT][r.index&MASK] is valid
-//                               ∀ r. ranks[rev_map[r]] = r   (round-trip)
+//                               ∀ r. ranks[rev_map[r.index]] = r.index  (round-trip)
 // Inv₅ (epoch monotone):       epoch only increments, never wraps within duration window
-// Inv₆ (hot⊆cold):             ∀ k ∈ T1 / T2. ∃ k ∈ cache
+// Inv₆ (hot⊆cold):             ∀ k ∈ T1/T2. ∃ k ∈ cache
 //                               hot eviction must also update cache index
 // Inv₈ (count_sum):            count_sum = Σ records[i].count  (maintained incrementally)
-// ──────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 
 // # SPEC:
-// `get` will check T1 / T2 first for L1 cache hit then check `cache` if not.
-// After functions called will ring buffer with `buffer_point` store `Action` to `buffer`,
-// and `try_send` when `buffer` reach capacity.
+// `get` checks T1 → T2 → cache.
+// After get, rings get_buffer; try_send when buffer full.
 pub struct DualCacheFF<K, V> {
-    t1: Arc<ArcSwap<T1<K, V>>>, // promote from t2 when count overflow
-    t2: Arc<ArcSwap<T2<K, V>>>, //promote from view when count above avg
+    t1: Arc<ArcSwap<T1<V>>>, // direct-mapped, L1-resident
+    t2: Arc<ArcSwap<T2<V>>>, // flat vec, promoted from cache
     cache: Arc<ArcSwap<Cache<K, V>>>,
-    hasher: RandomState,
+    hasher: RandomState, // shared hasher for T1/T2 slot routing
     action_tx: Sender<Action<K, V>>,
     epoch: Arc<AtomicU32>,
+    duration: u32, // TTL秒數，get路徑需要
 }
 
 impl<K, V> DualCacheFF<K, V> {
@@ -47,333 +48,314 @@ impl<K, V> DualCacheFF<K, V> {
             // 1. align capacity: capacity = (config.capacity + PAGE_SIZE-1) & !(PAGE_SIZE-1)
             //    debug_assert!(capacity % PAGE_SIZE == 0)                    -- Inv₁
             //
-            // 2. build T1 / T2:
-            //    hot_cap = capacity / 10   (10% of total, fits L1/L2)
-            //    AHashMap::with_capacity(hot_cap)
-            //    Arc::new(ArcSwap::from_pointee(hot_map))
+            // 2. build T1/T2:
+            //    T1::new()   -- PAGE_SIZE slots fixed array
+            //    T2::new(capacity / 5)  -- flat vec, 20% of total
             //
             // 3. build cache:
-            //    Cache::new(capacity)      -- see Cache::new flow
-            //    Arc::new(ArcSwap::from_pointee(cold))
+            //    Cache::new(capacity, hasher.clone())
             //
             // 4. build channel:
-            //    crossbeam::channel::bounded(1024)   -- channel carries Action, bounded
-            //    buffer capacity = capacity / 10  -- get batch buffer size
-            //    buffer_point = 0
+            //    crossbeam::channel::bounded(1024)
             //
-            // 5. return (Self,Daemon)
-        )
-    }
-    /// This function may block thread if occur back pressure
-    pub fn insert(&self, key: K, value: V) {
-        todo!(
-            // PRE:  (none — insert is always valid, eviction handles capacity)
-            // POST: Action::Insert(key,value) queued; Daemon will apply to cache
-            //       and possibly promote to T1 / T2 if count qualifies
-            //
-            // 1. try_send(Action::Insert(key, value))
+            // 5. return (DualCacheFF, Daemon)
         )
     }
 
-    pub fn get(&self, key: &K) -> Option<V> {
+    pub fn insert(&self, key: K, value: V) {
         todo!(
-            // PRE:  (none)
-            // POST: returns Some(v) iff key exists and epoch not expired
-            //       Action::Gets(buffer) queued for Daemon count update
+            // POST: Action::Insert queued; Daemon will apply
+            // try_send: drop on backpressure (cache-aside semantics)
+        )
+    }
+
+    pub fn get(&self, key: &K) -> Option<V>
+    where
+        K: std::hash::Hash + Eq,
+        V: Clone,
+    {
+        todo!(
+            // FAST PATH — T1 (direct-mapped):
+            // 1. slot_idx = hasher.hash(key) & (PAGE_SIZE - 1)
+            // 2. if t1.load()[slot_idx] matches key → return Some(v.clone())
+            //    push HOT_SENTINEL to action_tx
             //
-            // FAST PATH — T1 / T2 (L1/L2 hit):
-            // 1. guard = T1 / T2.load()              -- wait-free ArcSwap load
-            // 2. if let Some(v) = guard.get(key):
-            //        push HOT_SENTINEL to get_buffer   -- signal hot hit
-            //        flush get_buffer if full          -- try_send(Action::Gets), then clear
-            //        return Some(v.clone())
+            // FAST PATH — T2 (flat vec, version-gated):
+            // 3. slot_idx = hasher.hash(key) & (T2_SIZE - 1)
+            // 4. if t2.load()[slot_idx] matches key → return Some(v.clone())
             //
-            // SLOW PATH — cache (L3):
-            // 3. cold_guard = cache.load()        -- wait-free ArcSwap load
-            // 4. shard_idx = cold_guard.hasher.hash(key) & (SHARD_SIZE-1)   -- Inv₂
-            // 5. global_idx = cold_guard.index[shard_idx].get(key)?
-            // 6. page_idx = global_idx >> SHIFT                              -- Inv₃
-            // 7. offset   = global_idx &  MASK                               -- Inv₃
-            // 8. node = cold_guard.pages[page_idx].nodes.get(offset)?
-            // 9. epoch check:
-            //        now = self.epoch.load(Relaxed)
-            //        if now - node.epoch > self.duration:                    -- Inv₅
-            //            try_send(Action::Remove(global_idx))
-            //            return None
-            // 10. push global_idx to get_buffer
-            // 11. return Some(node.value.clone())
+            // SLOW PATH — cache:
+            // 5. guard = cache.load()
+            // 6. shard_idx = hasher.hash(key) & (SHARD_SIZE - 1)           -- Inv₂
+            // 7. global_idx = guard.index[shard_idx].get(key)?
+            // 8. page_idx = global_idx >> SHIFT                             -- Inv₃
+            //    offset   = global_idx &  MASK
+            // 9. node = guard.pages[page_idx].nodes.get(offset)?
+            // 10. TTL: now = epoch.load(Relaxed)
+            //     if now.saturating_sub(node.epoch) > duration:             -- Inv₅
+            //         try_send(Action::Remove(global_idx))
+            //         return None
+            // 11. try_send(Action::Gets(global_idx))
+            // 12. return Some(node.value.clone())
         )
     }
 }
 
 // # SPEC:
-// `T1 / T2` is promoted from `cache` for `record.count` over `Arena` count average,
-// `action_rx` will recieve batch `Action` need to compress_action than `apply_batch` to cache
-// `epoch` update periodly which stamp `record.epoch` and `DualCacheFF.get` expire check
-// `buffer` holds `Action` for `compress_action` and `apply_batch`
-// `arena` decide evict data for new insert and promotion to `T1 / T2`
-struct Daemon<K, V> {
-    t1: Arc<ArcSwap<T1<K, V>>>,
-    t2: Arc<ArcSwap<T2<K, V>>>,
+// 單線程 writer。接收 Action batch，更新 cache/T1/T2/arena，
+// 批次完成後 ArcSwap::store 發布新版本。
+pub struct Daemon<K, V> {
+    t1: Arc<ArcSwap<T1<V>>>,
+    t2: Arc<ArcSwap<T2<V>>>,
     cache: Arc<ArcSwap<Cache<K, V>>>,
     hasher: RandomState,
     action_rx: Receiver<Action<K, V>>,
     epoch: Arc<AtomicU32>,
     config: Config,
     hit_counts: AHashMap<usize, u32>,
-    wait_list: [Action<K, V>; PAGE_SIZE], // Direct-mapped array insert twice than push cache
+    // 板凳區：insert 先進這裡，滿了或 batch 結束才寫 cache
+    // 用 Vec 而非 fixed array：K/V 不保證 Copy/Default
+    wait_list: Vec<(K, V)>,
     arena: Arena,
 }
 
-impl<K, V> Daemon<K, V> {
-    fn start(&mut self) {
+impl<K, V> Daemon<K, V>
+where
+    K: std::hash::Hash + Eq + Clone,
+    V: Clone,
+{
+    pub fn start(&mut self) {
         todo!(
             // LOOP invariant: Inv₁..Inv₈ hold at start of every iteration
-            // let mut batch = Vec::with_capacity(64);  // 移到 loop 外
+            //
+            // let mut batch = Vec::with_capacity(64);  // 移到 loop 外，重用
             // loop:
-            // batch.clear();
+            //   batch.clear();
             //   1. recv_timeout(10ms):
-            //        Ok(action)   → collect action, then try_recv remaining into batch
-            //        Err(timeout) → if hit_counts non-empty, still apply (step 4-6)
-            //                       else continue
+            //        Ok(action)   → batch.push; drain try_recv into batch
+            //        Err(Timeout) → if queues empty: continue
+            //        Err(Disconnect) → break
             //
             //   2. epoch tick:
-            //        now = SystemTime seconds since CACHE_START (u32, Inv₅)
-            //        self.epoch.store(now, Relaxed)
+            //        now = SystemTime seconds (u32)
+            //        self.epoch.store(now, Relaxed)                         -- Inv₅
             //
-            //   3. compress_action(batch)   -- populate hit_counts, collect Insert/Remove
+            //   3. compress_action(batch)
             //
-            //   4. apply_batch()            -- mutate cache, arena, T1 / T2
+            //   4. apply_batch(now)
             //
             //   5. hit_counts.clear()
-            //
-            //   6. ArcSwap::store on cache and T1 / T2 if modified
-            //      debug_assert!(Inv₄)     -- arena↔page bijection still holds
         )
     }
 
     fn compress_action(&mut self, batch: Vec<Action<K, V>>) {
         todo!(
-            // PRE:  batch is the raw Vec<Action> received from channel
-            // POST: self.hit_counts[idx] = Σ weights of Gets(idx) in batch
-            //       structural actions (Insert) preserved in order
+            // PRE:  batch is raw Vec<Action>
+            // POST: hit_counts accumulated; wait_list populated
             //
-            // 1. for action in batch:
-            //      Action::Gets(idxs)     → for idx in idxs: hit_counts.entry(idx).or_default() += 1
-            //      Action::Insert(k,v)    → push to wait_list first, if exsit then cache.load().as_ref().clone() push to cache
-            //
-            // NOTE: if clear=true all prior actions in this batch are void -- Inv₆
-            // NOTE: consecutive Insert(k,_) for same k → keep only last (CoW idempotency)
+            // for action in batch:
+            //   Action::Gets(idx) → hit_counts.entry(idx).or_default() += 1
+            //   Action::Insert(k,v) →
+            //     if wait_list already has same key: replace (keep last)   -- CoW idempotency
+            //     else: wait_list.push((k, v))
+            //   Action::Remove(idx) → remove_queue.push(idx)
         )
     }
 
-    fn apply_batch(&mut self) {
+    fn apply_batch(&mut self, now: u32) {
         todo!(
-            // PRE:  hit_counts populated, insert/remove queues ready
-            // POST: cache view updated, T1 / T2 view updated, arena consistent
-            //       Inv₄ holds, Inv₆ holds, Inv₈ holds
+            // 與前版邏輯相同，補充 wait_list → insert_queue drain
             //
-            // PHASE 1 — apply hit counts to arena:
-            // 1. for (global_idx, weight) in hit_counts:
-            //        record = &mut arena.records[global_idx]
-            //        record.count = record.count.saturating_add(weight as u8)
-            //        arena.count_sum += weight                               -- Inv₈
-            //        avg = arena.count_sum >> arena.shift_amt as u32
-            //        if record.count as u32 > avg * PROMOTE_THRESHOLD:
-            //            mark global_idx for promotion
-            //
-            // PHASE 2 — climb (batch swap):
-            // 2. collect all (global_idx, count) that need climb, sort by count desc
-            // 3. for each, swap ranks[rev_map[idx]] with ranks[rev_map[idx]-1]
-            //    update rev_map for both swapped entries                     -- Inv₄
-            //
-            // PHASE 3 — apply removes:
-            // 4. for global_idx in remove_queue:
-            //        shard = cache.index shard containing global_idx
-            //        Arc::make_mut(shard).remove(key)                       -- COW shard only
-            //        arena.remove(global_idx)                               -- Inv₄
-            //        arena.count_sum -= record.count                        -- Inv₈
-            //        if key in T1 / T2: Arc::make_mut(T1 / T2).remove(key) -- Inv₆
-            //
-            // PHASE 4 — apply inserts:
-            // 5. for (key, value) in insert_queue:
-            //        if cache.len < capacity:
-            //            global_idx = next free slot
-            //        else:
-            //            global_idx = arena.evict()    -- find victim via pendulum
-            //            evicted_key = pages[victim].key
-            //            Arc::make_mut(index[shard(evicted_key)]).remove(evicted_key)
-            //            if evicted_key in T1 / T2: remove from hot   -- Inv₆
-            //        page_idx = global_idx >> SHIFT                        -- Inv₃
-            //        offset   = global_idx &  MASK
-            //        Arc::make_mut(pages[page_idx])[offset] = Node{key,value,epoch}  -- COW page
-            //        Arc::make_mut(index[shard(key)]).insert(key, global_idx)        -- COW shard
-            //        arena.insert(global_idx, epoch)                       -- Inv₄
-            //
-            // PHASE 5 — promote to T1 / T2:
-            // 6. for global_idx in promote_set:
-            //        node = pages[page_idx][offset]
-            //        Arc::make_mut(T1 / T2).insert(node.key, node.value) -- Inv₆
-            //        if T1 / T2.len > hot_capacity:
-            //            evict lowest-count key from hot (check arena.records)
-            //
-            // PHASE 6 — publish:
-            // 7. cache ArcSwap::store(Arc::new(updated_cache))
-            // 8. T1 / T2  ArcSwap::store(Arc::new(updated_hot))
+            // PHASE 0 — drain wait_list into cache inserts
+            // PHASE 1 — hit counts + promotion marks
+            // PHASE 2 — climb
+            // PHASE 3 — removes
+            // PHASE 4 — inserts (from wait_list)
+            // PHASE 5 — promote to T2，再從 T2 promote 高頻到 T1
+            // PHASE 6 — publish via ArcSwap::store
         )
     }
 }
 
-// # SPEC:
-// `hasher` hash key route to `index`, which stores `pages` pagenated fixed address.
-// `get` will check `epoch` for expired
+// ─── Cache ────────────────────────────────────────────────────────────────────
+
 struct Cache<K, V> {
+    hasher: RandomState, // 放在 Cache 內，保持 shard 路由自洽
     index: [Arc<AHashMap<K, usize>>; SHARD_SIZE],
     pages: Vec<Arc<Page<K, V>>>,
 }
 
-impl<K, V> Cache<K, V> {
-    fn new(capacity: usize) -> Self {
+impl<K, V> Cache<K, V>
+where
+    K: std::hash::Hash + Eq + Clone,
+    V: Clone,
+{
+    fn new(capacity: usize, hasher: RandomState) -> Self {
         todo!(
-            // PRE:  capacity % PAGE_SIZE == 0                               -- Inv₁
-            // POST: index has SHARD_SIZE empty shards
-            //       pages has capacity/PAGE_SIZE empty pages
-            //
-            // 1. debug_assert!(capacity % PAGE_SIZE == 0)
-            // 2. hasher = RandomState::new()
-            // 3. index = array_init(|| Arc::new(AHashMap::with_capacity(capacity/SHARD_SIZE)))
-            // 4. pages_cap = capacity / PAGE_SIZE
-            //    pages = (0..pages_cap).map(|_| Arc::new(Page { nodes: Vec::with_capacity(PAGE_SIZE) }))
+            // debug_assert!(capacity % PAGE_SIZE == 0)
+            // index: SHARD_SIZE 個空 AHashMap
+            // pages: capacity/PAGE_SIZE 個空 Page
         )
     }
 
-    fn insert(&mut self, key: K, value: V, global_idx: usize) {
-        todo!(
-            // PRE:  global_idx < capacity                                   -- Inv₃
-            //       called only from Daemon::apply_batch                    -- single writer
-            // POST: index[shard(key)] maps key → global_idx
-            //       pages[page_idx][offset] = Node{key,value,epoch}
-            //
-            // 1. shard_idx = hasher.hash(key) & (SHARD_SIZE-1)             -- Inv₂
-            // 2. Arc::make_mut(&mut index[shard_idx]).insert(key, global_idx)  -- COW shard
-            // 3. page_idx = global_idx >> SHIFT                             -- Inv₃
-            //    offset   = global_idx &  MASK
-            // 4. let nodes = &mut Arc::make_mut(&mut pages[page_idx]).nodes
-            //    if offset == nodes.len() {
-            //        nodes.push(Node { key, value, epoch: current_epoch })
-            //    } else {
-            //        nodes[offset] = Node { key, value, epoch: current_epoch }
-            //    }
-        )
+    fn insert(&mut self, key: K, value: V, global_idx: usize, epoch: u32) {
+        todo!()
     }
 
     fn get(&self, global_idx: usize, now: u32, duration: u32) -> Option<&V> {
         todo!(
-            // PRE:  global_idx < capacity
-            // POST: None if epoch expired (Inv₅), Some(&v) otherwise
-            //
-            // 1. page_idx = global_idx >> SHIFT
-            //    offset   = global_idx &  MASK
-            // 2. node = &pages[page_idx].nodes[offset]
-            // 3. if now.saturating_sub(node.epoch) > duration: return None  -- Inv₅
-            // 4. return Some(&node.value)
+            // page_idx = global_idx >> SHIFT
+            // offset   = global_idx & MASK
+            // node = pages[page_idx].nodes[offset]
+            // if now.saturating_sub(node.epoch) > duration → None           -- Inv₅
+            // Some(&node.value)
         )
     }
 }
 
-// # SPEC:
-// `records` route `cache.pages` fixed address and `ranks` dynamic address,
-// also hold epoch and count for `evict_point` to decide evict.
-// `direction` will decide evict direction, `count_sum` will syncronize add up while lookup
+// ─── T1：direct-mapped fixed array，L1 常駐 ───────────────────────────────────
+//
+// KEY POINT：
+//   slot_idx = hash(key) & (PAGE_SIZE - 1)
+//   silent eviction 是設計取捨（命中率 vs 延遲）
+//   整個 T1 大小 = PAGE_SIZE * sizeof(Option<(K,V)>)
+//   目標塞進 L1d（32-64 KB）→ K+V 合計不應超過 ~256 bytes
+
+struct T1<V> {
+    // 不存 K，只存 V + hash fingerprint 用於防誤命中
+    // fingerprint 取 hash 高 16 bits，比對快且省空間
+    slots: Vec<Option<(u16, V)>>, // (fingerprint, value)，capacity = PAGE_SIZE
+}
+
+impl<V: Clone> T1<V> {
+    fn new() -> Self {
+        Self {
+            slots: vec![None; PAGE_SIZE],
+        }
+    }
+
+    fn get<K: std::hash::Hash>(&self, key: &K, hasher: &RandomState) -> Option<&V> {
+        let h = hasher.hash_one(key);
+        let slot = (h as usize) & (PAGE_SIZE - 1);
+        let fp = (h >> 48) as u16;
+        match &self.slots[slot] {
+            Some((stored_fp, v)) if *stored_fp == fp => Some(v),
+            _ => None,
+        }
+    }
+
+    fn insert<K: std::hash::Hash>(&mut self, key: &K, value: V, hasher: &RandomState) {
+        let h = hasher.hash_one(key);
+        let slot = (h as usize) & (PAGE_SIZE - 1);
+        let fp = (h >> 48) as u16;
+        self.slots[slot] = Some((fp, value)); // silent eviction
+    }
+}
+
+// ─── T2：flat vec，version-gated，隨機存取 ────────────────────────────────────
+//
+// KEY POINT：
+//   global_idx 直接作為 index → O(1) 無間接
+//   version 內嵌，不需回查 cache.pages                （修正前版雙重讀問題）
+//   大小 capacity/5，working set 集中時局部性好
+
+struct T2<V> {
+    data: Vec<Option<(u16, V)>>, // (version, value)
+}
+
+impl<V: Clone> T2<V> {
+    fn new(size: usize) -> Self {
+        Self {
+            data: vec![None; size],
+        }
+    }
+
+    fn get(&self, global_idx: usize, expected_version: u16) -> Option<&V> {
+        match self.data.get(global_idx)?.as_ref() {
+            Some((ver, v)) if *ver == expected_version => Some(v),
+            _ => None,
+        }
+    }
+}
+
+// ─── Arena ────────────────────────────────────────────────────────────────────
+
 struct Arena {
-    records: Vec<Record>, // physical_idx → Record (fixed address, never moves)
-    ranks: Vec<usize>,    // rank → physical_idx   (sorted by frequency, mutated by climb)
-    evict_point: usize,   // current pendulum position in ranks
-    direction: isize,     // +1 forward / -1 backward
+    records: Vec<Record>,
+    ranks: Vec<usize>,   // rank → global_idx
+    rev_map: Vec<usize>, // global_idx → rank               -- Inv₄
+    evict_point: usize,
+    direction: isize,
     count_sum: u32,
-    shift_amt: u32, // avg divide with 2 multiple approximation capacity
+    shift_amt: u32,
+    capacity: usize,
 }
 
 impl Arena {
-    fn insert(&mut self, global_idx: usize, epoch: u32) -> usize {
+    fn new(capacity: usize) -> Self {
+        let aligned = capacity.next_power_of_two();
+        Self {
+            records: Vec::with_capacity(capacity),
+            ranks: Vec::with_capacity(capacity),
+            rev_map: Vec::with_capacity(capacity),
+            evict_point: 0,
+            direction: 1,
+            count_sum: 0,
+            shift_amt: aligned.trailing_zeros(),
+            capacity,
+        }
+    }
+
+    fn avg(&self) -> u32 {
+        if self.capacity == 0 {
+            0
+        } else {
+            self.count_sum >> self.shift_amt
+        }
+    }
+
+    fn insert(&mut self, global_idx: usize, epoch: u32) {
         todo!(
-            // PRE:  global_idx is a free slot (either new or evicted)
-            // POST: records[global_idx] initialised
-            //       ranks tail updated, rev_map updated                     -- Inv₄
-            //       returns global_idx (caller already knows it, for chaining)
-            //
-            // 1. records[global_idx] = Record { index: global_idx, rank: ranks.len(),
-            //                                   epoch, count: 0 }
-            //    NOTE: rank starts at tail — new data gets a chance before eviction
-            // 2. ranks.push(global_idx)
-            // 3. rev_map.push(ranks.len()-1)                               -- Inv₄ round-trip
+            // records[global_idx] = Record { epoch, count: 0 }
+            // ranks.push(global_idx); rev_map.push(rank)                   -- Inv₄
         )
     }
 
     fn evict(&mut self, now: u32, duration: u32) -> usize {
         todo!(
-            // PRE:  ranks.len() == capacity  (called only when full)
-            // POST: returns physical_idx of victim
-            //       victim's count subtracted from count_sum                -- Inv₈
-            //       evict_point advanced by direction, direction flipped if wall hit
-            //
-            // LOOP (pendulum scan):
-            // 1. physical_idx = ranks[evict_point]
-            //    record = &mut records[physical_idx]
-            // 2. if now.saturating_sub(record.epoch) > duration:           -- expired
-            //        advance evict_point; return physical_idx
-            // 3. avg = count_sum >> shift_amt as u32
-            //    if record.count <= avg:                                    -- cold enough
-            //        count_sum -= record.count as u32                      -- Inv₈
-            //        record.count = 0
-            //        advance evict_point; return physical_idx
-            // 4. else (hot, spare):
-            //        record.count = record.count.saturating_sub(avg as u8) -- age down
-            //        count_sum    = count_sum.saturating_sub(avg)          -- Inv₈
-            //        flip direction; advance evict_point; continue loop
-            //
-            // advance evict_point:
-            //   next = evict_point as isize + direction
-            //   if next < 0          → next = 1; direction = 1
-            //   if next >= capacity  → next = capacity-2; direction = -1
-            //   evict_point = next as usize
+            // 鐘擺掃描：expired 或 count <= avg 即驅逐
+            // hot 項目 age-down 並繼續掃
         )
     }
 }
+
+// ─── Supporting types ─────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 enum Action<K, V> {
     Insert(K, V),
-    Gets(usize),
+    Gets(usize), // single global_idx，由 DualCacheFF 端 buffer 批次
+    Remove(usize),
 }
-// TODO: make sure T1 & T2 does meaningfull
-struct T1<K, V> {
-    slots: [Option<Node<K, V>>; PAGE_SIZE], // 固定大小，stack 或已知位址 hash & mask
-    point: usize,                           // ring buffer evict point
-}
-struct T2<K, V> {
-    data: [Option<Node<K, V>>; PAGE_SIZE * 10],
-    point: usize, // ring buffer evict point
-}
+
 struct Page<K, V> {
     nodes: Vec<Node<K, V>>,
 }
+
 #[derive(Clone)]
 struct Node<K, V> {
     key: K,
     value: V,
-    epoch: u32,   // 只管 TTL，epoch extend 隨便動
-    vertion: u16, // 只管 ABA，每次 evict 覆寫 +1，晉升不動
-}
-//1. TTL 判斷：now - node.epoch > duration → 過期
-//2. ABA 防護：L2[idx].epoch != L3[idx].epoch → 髒讀
-#[repr(align(64))] // TODO: test bench if nessecary
-struct Record {
-    index: usize, // → global_idx in pages (fixed)
-    rank: usize,  // current rank (mirrored in rev_map, updated by climb)
     epoch: u32,
-    count: u8, // saturating; overflow extends via epoch comparison
+    version: u16, // ABA guard，evict 覆寫時 +1
 }
-#[repr(align(64))] // TODO: test bench if nessecary
+
+// TODO: bench align(64) vs packed on Arena
+struct Record {
+    epoch: u32,
+    count: u8,
+}
+
 pub struct Config {
     pub capacity: usize,
     pub duration: u32,
