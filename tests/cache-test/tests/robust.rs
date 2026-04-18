@@ -25,7 +25,7 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
         capacity: 128,
         duration: 200,
     });
-    
+
     for action in actions {
         match action {
             Action::Insert(k, v) => cache.insert(k, v),

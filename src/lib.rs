@@ -28,6 +28,7 @@ const PROMOTE_THRESHOLD: u32 = 2;
 
 // # SPEC:
 // `get` checks T1 → T2 → cache.
+#[derive(Clone)]
 pub struct DualCacheFF<K, V> {
     t1: Arc<ArcSwap<T1<V>>>, // direct-mapped, L1-resident
     t2: Arc<ArcSwap<T2<V>>>, // flat vec, promoted from cache
@@ -38,34 +39,44 @@ pub struct DualCacheFF<K, V> {
     duration: u32, // TTL秒數，get路徑需要
 }
 
-impl<K, V> DualCacheFF<K, V> {
+impl<K, V> DualCacheFF<K, V>
+where
+    K: std::hash::Hash + Eq + Clone,
+    V: Clone,
+{
     pub fn build(config: Config) -> (Self, Daemon<K, V>) {
-        todo!(
-            // PRE:  config.capacity > 0
-            // POST: self satisfies Inv₁..Inv₈ at t=0
-            //
-            // 1. align capacity: capacity = (config.capacity + PAGE_SIZE-1) & !(PAGE_SIZE-1)
-            //    debug_assert!(capacity % PAGE_SIZE == 0)                    -- Inv₁
-            //
-            // 2. build T1/T2:
-            //    T1::new()   -- PAGE_SIZE slots fixed array
-            //    T2::new(capacity / 5)  -- flat vec, 20% of total
-            //
-            // 3. build cache:
-            //    Cache::new(capacity, hasher.clone())
-            //
-            // 4. build channel:
-            //    crossbeam::channel::bounded(1024)
-            //
-            // 5. return (DualCacheFF, Daemon)
-        )
+        let capacity = (config.capacity + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let hasher = RandomState::new();
+        let (action_tx, action_rx) = crossbeam::channel::bounded(1024);
+        let epoch = Arc::new(AtomicU32::new(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as u32));
+        
+        let t1 = Arc::new(ArcSwap::from_pointee(T1::new()));
+        let t2_size = if capacity < 5 { 1 } else { (capacity / 5).next_power_of_two() };
+        let t2 = Arc::new(ArcSwap::from_pointee(T2::new(t2_size)));
+        let cache = Arc::new(ArcSwap::from_pointee(Cache::new(capacity, hasher.clone())));
+        
+        let daemon = Daemon {
+            t1: t1.clone(),
+            t2: t2.clone(),
+            cache: cache.clone(),
+            hasher: hasher.clone(),
+            action_rx,
+            epoch: epoch.clone(),
+            config: Config { capacity, duration: config.duration },
+            hit_counts: AHashMap::new(),
+            wait_list: Vec::new(),
+            arena: Arena::new(capacity),
+        };
+        
+        let cache_ff = DualCacheFF {
+            t1, t2, cache, hasher, action_tx, epoch, duration: config.duration,
+        };
+        
+        (cache_ff, daemon)
     }
 
     pub fn insert(&self, key: K, value: V) {
-        todo!(
-            // POST: Action::Insert queued; Daemon will apply
-            // try_send: drop on backpressure (cache-aside semantics)
-        )
+        let _ = self.action_tx.try_send(Action::Insert(key, value));
     }
 
     pub fn get(&self, key: &K) -> Option<V>
@@ -73,30 +84,65 @@ impl<K, V> DualCacheFF<K, V> {
         K: std::hash::Hash + Eq,
         V: Clone,
     {
-        todo!(
-            // FAST PATH — T1 (direct-mapped):
-            // 1. slot_idx = hasher.hash(key) & (PAGE_SIZE - 1)
-            // 2. if t1.load()[slot_idx] matches key → return Some(v.clone())
-            //    push HOT_SENTINEL to action_tx
-            //
-            // FAST PATH — T2 (flat vec, version-gated):
-            // 3. slot_idx = hasher.hash(key) & (T2_SIZE - 1)
-            // 4. if t2.load()[slot_idx] matches key → return Some(v.clone())
-            //
-            // SLOW PATH — cache:
-            // 5. guard = cache.load()
-            // 6. shard_idx = hasher.hash(key) & (SHARD_SIZE - 1)           -- Inv₂
-            // 7. global_idx = guard.index[shard_idx].get(key)?
-            // 8. page_idx = global_idx >> SHIFT                             -- Inv₃
-            //    offset   = global_idx &  MASK
-            // 9. node = guard.pages[page_idx].nodes.get(offset)?
-            // 10. TTL: now = epoch.load(Relaxed)
-            //     if now.saturating_sub(node.epoch) > duration:             -- Inv₅
-            //         try_send(Action::Remove(global_idx))
-            //         return None
-            // 11. try_send(Action::Gets(global_idx))
-            // 12. return Some(node.value.clone())
-        )
+        // FAST PATH — T1 (direct-mapped):
+        if let Some(v) = self.t1.load().get(key, &self.hasher) {
+            let _ = self.action_tx.try_send(Action::Gets(usize::MAX));
+            return Some(v.clone());
+        }
+
+        // SLOW PATH — cache map lookup
+        let guard = self.cache.load();
+        let shard_idx = (self.hasher.hash_one(key) as usize) & (SHARD_SIZE - 1);
+        let packed = *guard.index[shard_idx].get(key)?;
+        let global_idx = packed & 0xFFFFFFFF;
+        let expected_version = (packed >> 32) as u16;
+
+        // FAST PATH — T2 (flat vec, version-gated):
+        let t2_guard = self.t2.load();
+        let slot_idx = (self.hasher.hash_one(key) as usize) & (t2_guard.data.len() - 1); // We still use hash to route to T2 slot
+        if let Some(v) = t2_guard.get(slot_idx, expected_version) {
+            let _ = self.action_tx.try_send(Action::Gets(global_idx));
+            return Some(v.clone());
+        }
+
+        // read data page
+        let page_idx = global_idx >> SHIFT;
+        let offset = global_idx & MASK;
+        let node = guard.pages.get(page_idx)?.nodes.get(offset)?;
+
+        let now = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(node.epoch) > self.duration {
+            let _ = self.action_tx.try_send(Action::Remove(global_idx));
+            return None;
+        }
+
+        let _ = self.action_tx.try_send(Action::Gets(global_idx));
+        Some(node.value.clone())
+    }
+
+    pub fn remove(&self, key: &K) {
+        let guard = self.cache.load();
+        let shard_idx = (self.hasher.hash_one(key) as usize) & (SHARD_SIZE - 1);
+        if let Some(packed) = guard.index[shard_idx].get(key) {
+             let global_idx = packed & 0xFFFFFFFF;
+             let _ = self.action_tx.try_send(Action::Remove(global_idx));
+        }
+    }
+
+    pub fn clear(&self) {
+        let _ = self.action_tx.try_send(Action::Clear);
+    }
+}
+
+impl<K, V> DualCacheFF<K, V>
+where
+    K: std::hash::Hash + Eq + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    pub fn new(config: Config) -> Self {
+        let (cache, mut daemon) = Self::build(config);
+        std::thread::spawn(move || daemon.start());
+        cache
     }
 }
 
@@ -124,55 +170,132 @@ where
     V: Clone,
 {
     pub fn start(&mut self) {
-        todo!(
-            // LOOP invariant: Inv₁..Inv₈ hold at start of every iteration
-            //
-            // let mut batch = Vec::with_capacity(64);  // 移到 loop 外，重用
-            // loop:
-            //   batch.clear();
-            //   1. recv_timeout(10ms):
-            //        Ok(action)   → batch.push; drain try_recv into batch
-            //        Err(Timeout) → if queues empty: continue
-            //        Err(Disconnect) → break
-            //
-            //   2. epoch tick:
-            //        now = SystemTime seconds (u32)
-            //        self.epoch.store(now, Relaxed)                         -- Inv₅
-            //
-            //   3. compress_action(batch)
-            //
-            //   4. apply_batch(now)
-            //
-            //   5. hit_counts.clear()
-        )
+        let mut batch = Vec::with_capacity(64);
+        loop {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as u32;
+            self.epoch.store(now, std::sync::atomic::Ordering::Relaxed);
+
+            batch.clear();
+            match self.action_rx.recv_timeout(std::time::Duration::from_millis(10)) {
+                Ok(action) => {
+                    batch.push(action);
+                    while let Ok(act) = self.action_rx.try_recv() {
+                        batch.push(act);
+                        if batch.len() >= 64 { break; }
+                    }
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                    if self.wait_list.is_empty() && self.hit_counts.is_empty() { continue; }
+                }
+                Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+            }
+
+            let run_batch = std::mem::take(&mut batch);
+            let (removes, clear_cache) = self.compress_action(run_batch);
+            self.apply_batch(now, removes, clear_cache);
+            self.hit_counts.clear();
+        }
     }
 
-    fn compress_action(&mut self, batch: Vec<Action<K, V>>) {
-        todo!(
-            // PRE:  batch is raw Vec<Action>
-            // POST: hit_counts accumulated; wait_list populated
-            //
-            // for action in batch:
-            //   Action::Gets(idx) → hit_counts.entry(idx).or_default() += 1
-            //   Action::Insert(k,v) →
-            //     if wait_list already has same key: replace (keep last)   -- CoW idempotency
-            //     else: wait_list.push((k, v))
-            //   Action::Remove(idx) → remove_queue.push(idx)
-        )
+    fn compress_action(&mut self, batch: Vec<Action<K, V>>) -> (Vec<usize>, bool) {
+        let mut removes = Vec::new();
+        let mut clear_cache = false;
+        for action in batch {
+            match action {
+                Action::Gets(idx) => {
+                    if idx != usize::MAX {
+                        *self.hit_counts.entry(idx).or_default() += 1;
+                    }
+                }
+                Action::Insert(k, v) => {
+                    if let Some(pos) = self.wait_list.iter_mut().find(|(existing_k, _)| *existing_k == k) {
+                        pos.1 = v;
+                    } else {
+                        self.wait_list.push((k, v));
+                    }
+                }
+                Action::Remove(idx) => removes.push(idx),
+                Action::Clear => clear_cache = true,
+            }
+        }
+        (removes, clear_cache)
     }
 
-    fn apply_batch(&mut self, now: u32) {
-        todo!(
-            // 與前版邏輯相同，補充 wait_list → insert_queue drain
-            //
-            // PHASE 0 — drain wait_list into cache inserts
-            // PHASE 1 — hit counts + promotion marks
-            // PHASE 2 — climb
-            // PHASE 3 — removes
-            // PHASE 4 — inserts (from wait_list)
-            // PHASE 5 — promote to T2，再從 T2 promote 高頻到 T1
-            // PHASE 6 — publish via ArcSwap::store
-        )
+    fn apply_batch(&mut self, now: u32, removes: Vec<usize>, clear_cache: bool) {
+        if clear_cache {
+            self.hit_counts.clear();
+            self.wait_list.clear();
+            self.arena = Arena::new(self.config.capacity);
+            self.t1.store(Arc::new(T1::new()));
+            self.t2.store(Arc::new(T2::new(if self.config.capacity < 5 { 1 } else { (self.config.capacity / 5).next_power_of_two() })));
+            self.cache.store(Arc::new(Cache::new(self.config.capacity, self.hasher.clone())));
+            return;
+        }
+
+        // PHASE 0
+        let insert_queue = std::mem::take(&mut self.wait_list);
+        let mut new_cache = (**self.cache.load()).clone();
+
+        // PHASE 1
+        for (&idx, &count) in &self.hit_counts {
+            if let Some(rec) = self.arena.records.get_mut(idx) {
+                rec.count = rec.count.saturating_add(count as u8);
+                self.arena.count_sum = self.arena.count_sum.saturating_add(count);
+            }
+        }
+
+        // PHASE 3 (Phase 2 Climb is implicit in Age-Down behavior of Evict)
+        for idx in removes {
+            new_cache.remove(idx);
+            if let Some(rec) = self.arena.records.get_mut(idx) {
+                self.arena.count_sum = self.arena.count_sum.saturating_sub(rec.count as u32);
+                rec.count = 0;
+                rec.epoch = 0;
+            }
+        }
+
+        // PHASE 4
+        for (k, v) in insert_queue {
+            let global_idx = if self.arena.records.len() < self.config.capacity {
+                let idx = self.arena.records.len();
+                self.arena.insert(idx, now);
+                idx
+            } else {
+                self.arena.evict(now, self.config.duration)
+            };
+            new_cache.insert(k, v, global_idx, now);
+        }
+
+        // PHASE 5
+        let mut new_t1 = (**self.t1.load()).clone();
+        let mut new_t2 = (**self.t2.load()).clone();
+        let t2_size = new_t2.data.len();
+
+        for (&idx, &count) in &self.hit_counts {
+            let page_idx = idx >> SHIFT;
+            let offset = idx & MASK;
+            if let Some(page) = new_cache.pages.get(page_idx) {
+                if let Some(node) = page.nodes.get(offset) {
+                    let h = self.hasher.hash_one(&node.key);
+                    
+                    let t2_slot = (h as usize) & (t2_size - 1);
+                    if t2_size > 0 {
+                        new_t2.data[t2_slot] = Some((node.version, node.value.clone()));
+                    }
+                    
+                    if count >= PROMOTE_THRESHOLD {
+                        let t1_slot = (h as usize) & (PAGE_SIZE - 1);
+                        let fp = (h >> 48) as u16;
+                        new_t1.slots[t1_slot] = Some((fp, node.value.clone()));
+                    }
+                }
+            }
+        }
+
+        // PHASE 6
+        self.t1.store(Arc::new(new_t1));
+        self.t2.store(Arc::new(new_t2));
+        self.cache.store(Arc::new(new_cache));
     }
 }
 
@@ -190,25 +313,70 @@ where
     V: Clone,
 {
     fn new(capacity: usize, hasher: RandomState) -> Self {
-        todo!(
-            // debug_assert!(capacity % PAGE_SIZE == 0)
-            // index: SHARD_SIZE 個空 AHashMap
-            // pages: capacity/PAGE_SIZE 個空 Page
-        )
+        let pages_count = capacity / PAGE_SIZE;
+        let pages = (0..pages_count).map(|_| Arc::new(Page { nodes: Vec::with_capacity(PAGE_SIZE) })).collect();
+        let index = core::array::from_fn(|_| Arc::new(AHashMap::new()));
+        Self { hasher, index, pages }
     }
 
     fn insert(&mut self, key: K, value: V, global_idx: usize, epoch: u32) {
-        todo!()
+        let page_idx = global_idx >> SHIFT;
+        let offset = global_idx & MASK;
+        let page = Arc::make_mut(&mut self.pages[page_idx]);
+        
+        if page.nodes.len() == offset {
+            let version = 1;
+            let shard_idx = (self.hasher.hash_one(&key) as usize) & (SHARD_SIZE - 1);
+            let shard_map = Arc::make_mut(&mut self.index[shard_idx]);
+            shard_map.insert(key.clone(), global_idx | ((version as usize) << 32));
+            page.nodes.push(Node { key, value, epoch, version });
+        } else {
+            let old_key = &page.nodes[offset].key;
+            let old_shard_idx = (self.hasher.hash_one(old_key) as usize) & (SHARD_SIZE - 1);
+            let old_shard_map = Arc::make_mut(&mut self.index[old_shard_idx]);
+            old_shard_map.remove(old_key);
+            
+            let version = page.nodes[offset].version.wrapping_add(1);
+            let shard_idx = (self.hasher.hash_one(&key) as usize) & (SHARD_SIZE - 1);
+            let shard_map = Arc::make_mut(&mut self.index[shard_idx]);
+            shard_map.insert(key.clone(), global_idx | ((version as usize) << 32));
+            
+            page.nodes[offset] = Node { key, value, epoch, version };
+        }
     }
 
     fn get(&self, global_idx: usize, now: u32, duration: u32) -> Option<&V> {
-        todo!(
-            // page_idx = global_idx >> SHIFT
-            // offset   = global_idx & MASK
-            // node = pages[page_idx].nodes[offset]
-            // if now.saturating_sub(node.epoch) > duration → None           -- Inv₅
-            // Some(&node.value)
-        )
+        let page_idx = global_idx >> SHIFT;
+        let offset = global_idx & MASK;
+        let node = &self.pages.get(page_idx)?.nodes.get(offset)?;
+        if now.saturating_sub(node.epoch) > duration { return None; }
+        Some(&node.value)
+    }
+
+    fn remove(&mut self, global_idx: usize) {
+        let page_idx = global_idx >> SHIFT;
+        let offset = global_idx & MASK;
+        if page_idx < self.pages.len() {
+             let page = Arc::make_mut(&mut self.pages[page_idx]);
+             if page.nodes.len() > offset {
+                  let old_key = &page.nodes[offset].key;
+                  let shard = (self.hasher.hash_one(old_key) as usize) & (SHARD_SIZE - 1);
+                  let shard_map = Arc::make_mut(&mut self.index[shard]);
+                  shard_map.remove(old_key);
+                  page.nodes[offset].epoch = 0;
+             }
+        }
+    }
+}
+
+impl<K: Clone, V: Clone> Clone for Cache<K, V> {
+    fn clone(&self) -> Self {
+        let index = core::array::from_fn(|i| self.index[i].clone());
+        Self {
+            hasher: self.hasher.clone(),
+            index,
+            pages: self.pages.clone(),
+        }
     }
 }
 
@@ -220,6 +388,7 @@ where
 //   整個 T1 大小 = PAGE_SIZE * sizeof(Option<(K,V)>)
 //   目標塞進 L1d（32-64 KB）→ K+V 合計不應超過 ~256 bytes
 
+#[derive(Clone)]
 struct T1<V> {
     // 不存 K，只存 V + hash fingerprint 用於防誤命中
     // fingerprint 取 hash 高 16 bits，比對快且省空間
@@ -258,6 +427,7 @@ impl<V: Clone> T1<V> {
 //   version 內嵌，不需回查 cache.pages                （修正前版雙重讀問題）
 //   大小 capacity/5，working set 集中時局部性好
 
+#[derive(Clone)]
 struct T2<V> {
     data: Vec<Option<(u16, V)>>, // (version, value)
 }
@@ -314,17 +484,33 @@ impl Arena {
     }
 
     fn insert(&mut self, global_idx: usize, epoch: u32) {
-        todo!(
-            // records[global_idx] = Record { epoch, count: 0 }
-            // ranks.push(global_idx); rev_map.push(rank)                   -- Inv₄
-        )
+        if self.records.len() <= global_idx {
+            self.records.resize_with(global_idx + 1, || Record { epoch: 0, count: 0 });
+            self.rev_map.resize(global_idx + 1, 0);
+        }
+        self.records[global_idx] = Record { epoch, count: 0 };
+        self.ranks.push(global_idx);
+        self.rev_map[global_idx] = self.ranks.len() - 1;
     }
 
     fn evict(&mut self, now: u32, duration: u32) -> usize {
-        todo!(
-            // 鐘擺掃描：expired 或 count <= avg 即驅逐
-            // hot 項目 age-down 並繼續掃
-        )
+        let avg = self.avg();
+        loop {
+            let rank = self.evict_point;
+            self.evict_point = (self.evict_point + 1) % self.capacity;
+            let global_idx = self.ranks[rank];
+            let rec = &mut self.records[global_idx];
+            
+            if now.saturating_sub(rec.epoch) > duration || rec.count <= (avg as u8) {
+                self.count_sum = self.count_sum.saturating_sub(rec.count as u32);
+                rec.count = 0;
+                rec.epoch = now;
+                return global_idx;
+            } else {
+                rec.count = rec.count.saturating_sub(1);
+                self.count_sum = self.count_sum.saturating_sub(1);
+            }
+        }
     }
 }
 
@@ -335,8 +521,10 @@ enum Action<K, V> {
     Insert(K, V),
     Gets(usize), // single global_idx，由 DualCacheFF 端 buffer 批次
     Remove(usize),
+    Clear,
 }
 
+#[derive(Clone)]
 struct Page<K, V> {
     nodes: Vec<Node<K, V>>,
 }
