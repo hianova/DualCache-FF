@@ -28,7 +28,6 @@ const PROMOTE_THRESHOLD: u32 = 2;
 
 // # SPEC:
 // `get` checks T1 → T2 → cache.
-// After get, rings get_buffer; try_send when buffer full.
 pub struct DualCacheFF<K, V> {
     t1: Arc<ArcSwap<T1<V>>>, // direct-mapped, L1-resident
     t2: Arc<ArcSwap<T2<V>>>, // flat vec, promoted from cache
