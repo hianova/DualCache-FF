@@ -9,10 +9,15 @@ use std::time::Duration;
 fn test_memory_stability() {
     let _profiler = dhat::Profiler::builder().testing().build();
 
-    let cache = DualCacheFF::new(Config {
-        capacity: 1024,
-        duration: 200,
-    });
+    let mut config = Config::adaptive_config::<i32, Vec<u8>>();
+    config.capacity = 1024;
+    config.duration = 200;
+    let cache = DualCacheFF::new(config);
+
+    // Initial baseline allocation
+    sleep(Duration::from_millis(50));
+    let initial_stats = dhat::HeapStats::get();
+    let initial_bytes = initial_stats.curr_bytes;
 
     for i in 0..1000 {
         cache.insert(i, vec![0u8; 128]);
@@ -27,11 +32,21 @@ fn test_memory_stability() {
 
     cache.clear();
 
+    // Wait for the Daemon to process the clear
     sleep(Duration::from_millis(50));
 
-    let stats = dhat::HeapStats::get();
+    let final_stats = dhat::HeapStats::get();
+    let final_bytes = final_stats.curr_bytes;
 
+    let delta = final_bytes.saturating_sub(initial_bytes);
+    
     // We expect the peak memory to be reasonable and current blocks to reflect active items.
-    // The test ensures the allocation profiler correctly attaches and tracks `DualCacheFF` memory.
-    assert!(stats.total_bytes > 0);
+    // Ensure memory returns to baseline + acceptable internal OS fragmentation tolerance (e.g. 2MB)
+    assert!(
+        delta < 2 * 1024 * 1024,
+        "Memory leak detected! Initial: {}, Final: {}, Delta: {}",
+        initial_bytes,
+        final_bytes,
+        delta
+    );
 }

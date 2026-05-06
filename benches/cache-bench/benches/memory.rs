@@ -14,84 +14,107 @@ fn print_memory(label: &str) -> usize {
     }
 }
 
-fn measure_dualcacheff(baseline: usize) -> f64 {
+fn measure_dualcacheff() {
     println!("\n--- DualCacheFF ---");
+    let baseline = print_memory("Baseline (empty)");
     use dualcache_ff::{Config, DualCacheFF};
 
-    let cache = DualCacheFF::new(Config {
-        capacity: CAPACITY,
-        duration: 60,
-    });
-    let _init = print_memory("After Init");
+    let peak = {
+        let mut config = Config::adaptive_config::<u64, u64>();
+        config.capacity = CAPACITY;
+        config.duration = 60;
+        let cache = DualCacheFF::new(config);
+        let _init = print_memory("After Init");
 
-    for i in 0..CAPACITY as u64 {
-        cache.insert(i, i);
-    }
-    std::thread::sleep(Duration::from_millis(500));
-    let peak = print_memory("After 1M Inserts");
+        for i in 0..CAPACITY as u64 {
+            cache.insert(i, i);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        print_memory("After 1M Inserts")
+    };
 
     let total_used = peak.saturating_sub(baseline);
     let payload = CAPACITY * 16; // 8 byte key + 8 byte value
     let overhead = total_used.saturating_sub(payload);
     let per_item = overhead as f64 / CAPACITY as f64;
 
-    println!("Overhead per item: {:.2} bytes", per_item);
-    per_item
+    println!("DualCacheFF overhead per item: {:.2} bytes", per_item);
 }
 
-fn measure_moka(baseline: usize) -> f64 {
+fn measure_moka() {
     println!("\n--- Moka ---");
+    let baseline = print_memory("Baseline (empty)");
     use moka::sync::Cache;
 
-    let cache: Cache<u64, u64> = Cache::builder().max_capacity(CAPACITY as u64).build();
-    let _init = print_memory("After Init");
+    let peak = {
+        let cache: Cache<u64, u64> = Cache::builder().max_capacity(CAPACITY as u64).build();
+        let _init = print_memory("After Init");
 
-    for i in 0..CAPACITY as u64 {
-        cache.insert(i, i);
-    }
-    std::thread::sleep(Duration::from_millis(500));
-    let peak = print_memory("After 1M Inserts");
+        for i in 0..CAPACITY as u64 {
+            cache.insert(i, i);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        print_memory("After 1M Inserts")
+    };
 
     let total_used = peak.saturating_sub(baseline);
     let payload = CAPACITY * 16;
     let overhead = total_used.saturating_sub(payload);
     let per_item = overhead as f64 / CAPACITY as f64;
 
-    println!("Overhead per item: {:.2} bytes", per_item);
-    per_item
+    println!("Moka overhead per item: {:.2} bytes", per_item);
 }
 
-fn measure_tinyufo(baseline: usize) -> f64 {
+fn measure_tinyufo() {
     println!("\n--- TinyUFO ---");
+    let baseline = print_memory("Baseline (empty)");
     use tinyufo::TinyUfo;
 
-    let cache = TinyUfo::new(CAPACITY, CAPACITY);
-    let _init = print_memory("After Init");
+    let peak = {
+        let cache = TinyUfo::new(CAPACITY, CAPACITY);
+        let _init = print_memory("After Init");
 
-    for i in 0..CAPACITY as u64 {
-        cache.put(i, i, 1);
-    }
-    std::thread::sleep(Duration::from_millis(500));
-    let peak = print_memory("After 1M Inserts");
+        for i in 0..CAPACITY as u64 {
+            cache.put(i, i, 1);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        print_memory("After 1M Inserts")
+    };
 
     let total_used = peak.saturating_sub(baseline);
     let payload = CAPACITY * 16;
     let overhead = total_used.saturating_sub(payload);
     let per_item = overhead as f64 / CAPACITY as f64;
 
-    println!("Overhead per item: {:.2} bytes", per_item);
-    per_item
+    println!("TinyUFO overhead per item: {:.2} bytes", per_item);
 }
 
 fn main() {
-    let baseline = print_memory("Baseline (empty)");
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--dual") {
+        measure_dualcacheff();
+        return;
+    } else if args.iter().any(|arg| arg == "--moka") {
+        measure_moka();
+        return;
+    } else if args.iter().any(|arg| arg == "--tiny") {
+        measure_tinyufo();
+        return;
+    }
 
-    let dual = measure_dualcacheff(baseline);
-    let moka = measure_moka(baseline);
-    let tiny = measure_tinyufo(baseline);
+    if args.iter().any(|arg| arg == "--bench") && args.len() == 2 {
+        // Run as coordinator if invoked by cargo bench
+    } else if args.len() > 1 && !args.contains(&"--bench".to_string()) {
+         return; // Unknown or irrelevant flags passed by cargo, ignore unless it's our target.
+    }
 
+    println!("Running Memory Benchmarks (Isolated Processes)...");
+    let exe = std::env::current_exe().unwrap();
+    
+    std::process::Command::new(&exe).arg("--dual").status().unwrap();
+    std::process::Command::new(&exe).arg("--moka").status().unwrap();
+    std::process::Command::new(&exe).arg("--tiny").status().unwrap();
+    
     println!("\n========== Summary ==========");
-    println!("DualCacheFF overhead: {:.2} bytes/item", dual);
-    println!("Moka overhead:        {:.2} bytes/item", moka);
-    println!("TinyUFO overhead:     {:.2} bytes/item", tiny);
+    println!("Refer to output logs above for per-item overheads.");
 }

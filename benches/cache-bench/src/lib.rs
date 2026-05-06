@@ -37,7 +37,7 @@ where
     }
 
     fn insert(&self, key: K, value: V) {
-        self.insert(key, value);
+        DualCacheFF::insert(self, key, value);
     }
 
     fn name(&self) -> &'static str {

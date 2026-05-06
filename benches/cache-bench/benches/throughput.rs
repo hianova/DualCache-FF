@@ -9,7 +9,7 @@ use tinyufo::TinyUfo;
 
 const CAPACITY: u64 = 100_000;
 const KEY_SPACE: u64 = 1_000_000; // 键总数远大于容量，模拟真实场景
-const THREADS: usize = 16;
+const THREADS: usize = 8;
 const OPS_PER_BENCH: u64 = 10_000_000;
 
 // ----- 统一测试函数 -----
@@ -65,7 +65,7 @@ where
     C: Cache<u64, u64> + 'static,
 {
     let mut misses = 0;
-    let mut key = thread_id * ops;
+    let mut key = (thread_id * (KEY_SPACE / THREADS as u64)) % KEY_SPACE;
     for _ in 0..ops {
         if let Some(v) = cache.get(&key) {
             std::hint::black_box(v);
@@ -147,9 +147,10 @@ fn bench_throughput(c: &mut Criterion) {
         // --- Moka measurement run for stats ---
         println!("\n=== Moka Workload: {} ===", workload);
         let moka_stat = Arc::new(MokaCache::builder().max_capacity(CAPACITY).build());
-        for i in 0..10_000u64 {
+        for i in 0..CAPACITY {
             moka_stat.insert(i, i);
         }
+        std::thread::sleep(Duration::from_millis(50));
         let m_start = std::time::Instant::now();
         let m_misses = bench_workload(Arc::clone(&moka_stat), workload, keys_to_use);
         let m_elapsed = m_start.elapsed();
@@ -161,9 +162,10 @@ fn bench_throughput(c: &mut Criterion) {
 
         // 獨立建立 Moka Cache，確保不與其他 workload 共享狀態，同時事先熱機
         let moka_cache = Arc::new(MokaCache::builder().max_capacity(CAPACITY).build());
-        for i in 0..10_000u64 {
+        for i in 0..CAPACITY {
             moka_cache.insert(i, i);
         }
+        std::thread::sleep(Duration::from_millis(50));
 
         // 测试 Moka
         group.bench_with_input(BenchmarkId::new("Moka", workload), &workload, |b, &wl| {
@@ -181,11 +183,11 @@ fn bench_throughput(c: &mut Criterion) {
 
         // --- DualCacheFF measurement run for stats ---
         println!("\n=== DualCacheFF Workload: {} ===", workload);
-        let ff_stat = Arc::new(dualcache_ff::DualCacheFF::new(dualcache_ff::Config {
-            capacity: CAPACITY as usize,
-            duration: 60,
-        }));
-        for i in 0..10_000u64 {
+        let mut config = dualcache_ff::Config::adaptive_config::<u64, u64>();
+        config.capacity = CAPACITY as usize;
+        config.duration = 60;
+        let ff_stat = Arc::new(dualcache_ff::DualCacheFF::new(config));
+        for i in 0..CAPACITY {
             ff_stat.insert(i, i);
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -199,13 +201,13 @@ fn bench_throughput(c: &mut Criterion) {
         println!("  - Hit Rate (真實業務命中率): {:.2}%\n", f_hitrate);
 
         // 獨立建立 DualCacheFF 實例
-        let my_cache = Arc::new(dualcache_ff::DualCacheFF::new(dualcache_ff::Config {
-            capacity: CAPACITY as usize,
-            duration: 60,
-        }));
+        let mut config = dualcache_ff::Config::adaptive_config::<u64, u64>();
+        config.capacity = CAPACITY as usize;
+        config.duration = 60;
+        let my_cache = Arc::new(dualcache_ff::DualCacheFF::new(config));
 
         // 提供充分熱機，並給予足夠時間讓 Daemon 進入 recv_timeout 的等候狀態
-        for i in 0..10_000u64 {
+        for i in 0..CAPACITY {
             my_cache.insert(i, i);
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -230,9 +232,10 @@ fn bench_throughput(c: &mut Criterion) {
         // --- TinyUFO measurement run for stats ---
         println!("\n=== TinyUFO Workload: {} ===", workload);
         let ufo_stat = Arc::new(TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
-        for i in 0..10_000u64 {
+        for i in 0..CAPACITY {
             ufo_stat.insert(i, i);
         }
+        std::thread::sleep(Duration::from_millis(50));
         let u_start = std::time::Instant::now();
         let u_misses = bench_workload(Arc::clone(&ufo_stat), workload, keys_to_use);
         let u_elapsed = u_start.elapsed();
@@ -245,9 +248,10 @@ fn bench_throughput(c: &mut Criterion) {
         // 獨立建立 TinyUFO 實例
         let ufo_cache = Arc::new(TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
 
-        for i in 0..10_000u64 {
+        for i in 0..CAPACITY {
             ufo_cache.insert(i, i);
         }
+        std::thread::sleep(Duration::from_millis(50));
 
         // 測試 TinyUFO
         group.bench_with_input(
