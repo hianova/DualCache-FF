@@ -12,6 +12,7 @@ fn test_hash_consistency_and_async_insert() {
 
     // 1. Insert a key. This sends a message to the Daemon channel.
     cache.insert(42, 100);
+    cache.insert(42, 100);
     
     // 2. IMMEDIATE GET: This will almost certainly return `None` because the Daemon
     // has not yet processed the channel batch and updated the `ArcSwap` snapshot!

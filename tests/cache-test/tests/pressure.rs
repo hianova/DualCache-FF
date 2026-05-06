@@ -15,6 +15,7 @@ fn test_capacity_pressure_and_eviction() {
     // This tests for OOM prevention and eviction robustness
     for i in 0..200_000 {
         cache.insert(i, format!("Value_{}", i));
+        cache.insert(i, format!("Value_{}", i));
     }
 
     // Wait for the Daemon to catch up and process evictions

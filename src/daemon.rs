@@ -1,7 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU16, Ordering};
 use crossbeam_channel::{Receiver, Sender};
-use crossbeam_epoch::{Owned, Shared};
 use crate::unsafe_core::{T1, T2, L3, Node};
 use std::hash::{Hash, Hasher, BuildHasher};
 
@@ -37,13 +36,15 @@ impl Arena {
 pub struct Daemon<K, V, S> {
     pub hasher: S,
     pub arena: Arena,
-    pub t1: Arc<T1<K, V>>,
-    pub t2: Arc<T2<K, V>>,
+    pub t1: Arc<T1>,
+    pub t2: Arc<T2>,
     pub l3: Arc<L3<K, V>>,
     pub cmd_rx: Receiver<Command<K, V>>,
-    pub hit_rx: Receiver<usize>,
+    pub hit_rx: Receiver<[usize; 64]>,
     pub epoch: Arc<AtomicU32>,
     pub duration: u32,
+    pub ghost_set: Arc<[AtomicU16]>,
+    pub ghost_mask: usize,
 }
 
 impl<K, V, S> Daemon<K, V, S>
@@ -54,13 +55,15 @@ where K: Hash + Eq + Send + Sync + Clone + 'static,
     pub fn new(
         hasher: S,
         capacity: usize,
-        t1: Arc<T1<K, V>>,
-        t2: Arc<T2<K, V>>,
+        t1: Arc<T1>,
+        t2: Arc<T2>,
         l3: Arc<L3<K, V>>,
         cmd_rx: Receiver<Command<K, V>>,
-        hit_rx: Receiver<usize>,
+        hit_rx: Receiver<[usize; 64]>,
         epoch: Arc<AtomicU32>,
         duration: u32,
+        ghost_set: Arc<[AtomicU16]>,
+        ghost_mask: usize,
     ) -> Self {
         Self {
             hasher,
@@ -72,6 +75,8 @@ where K: Hash + Eq + Send + Sync + Clone + 'static,
             hit_rx,
             epoch,
             duration,
+            ghost_set,
+            ghost_mask,
         }
     }
 
@@ -125,30 +130,24 @@ where K: Hash + Eq + Send + Sync + Clone + 'static,
     }
 
     fn handle_insert(&mut self, k: K, v: V) {
-        let hash = self.hash(&k);
+        let hash = self.hasher.hash_one(&k);
 
         if self.arena.free_list.is_empty() {
             self.evict_batch();
         }
 
         if let Some(global_idx) = self.arena.free_list.pop() {
-            let new_node = Owned::new(Node {
-                key: k.clone(),
-                value: v,
-                expire_at: self.epoch.load(Ordering::Relaxed) + self.duration,
-            });
-
-            // L3 indexing
             let tag = (hash >> 48) as u16;
             let entry = (tag as u64) << 48 | (global_idx as u64 & 0x0000_FFFF_FFFF_FFFF);
             let mut idx = hash as usize & self.l3.index_mask;
             
-            // Store physical node
-            let guard = crossbeam_epoch::pin();
-            let old_ptr = self.l3.nodes[global_idx].swap(new_node, Ordering::Release, &guard);
-            if !old_ptr.is_null() {
-                unsafe { guard.defer_destroy(old_ptr); }
-            }
+            // In-place node overwrite with zero allocation
+            let node = Node {
+                key: k.clone(),
+                value: v,
+                expire_at: self.epoch.load(Ordering::Relaxed) + self.duration,
+            };
+            *self.l3.nodes[global_idx].write() = Some(node);
 
             // Linear probing for L3 index
             for i in 0..16 {
@@ -184,15 +183,20 @@ where K: Hash + Eq + Send + Sync + Clone + 'static,
     }
 
     fn handle_clear(&mut self) {
-        let guard = crossbeam_epoch::pin();
         for i in 0..self.l3.index.len() {
             self.l3.index[i].store(0, Ordering::Relaxed);
         }
         for i in 0..self.l3.nodes.len() {
-            let ptr = self.l3.nodes[i].swap(Shared::null(), Ordering::Relaxed, &guard);
-            if !ptr.is_null() {
-                unsafe { guard.defer_destroy(ptr); }
-            }
+            *self.l3.nodes[i].write() = None;
+        }
+        for i in 0..self.t1.slots.len() {
+            self.t1.slots[i].store(usize::MAX, Ordering::Relaxed);
+        }
+        for i in 0..self.t2.slots.len() {
+            self.t2.slots[i].store(usize::MAX, Ordering::Relaxed);
+        }
+        for i in 0..self.ghost_set.len() {
+            self.ghost_set[i].store(0, Ordering::Relaxed);
         }
         self.arena.free_list = (0..self.arena.capacity).collect();
         self.arena.rank.fill(0);
@@ -200,37 +204,34 @@ where K: Hash + Eq + Send + Sync + Clone + 'static,
     }
 
     fn maintenance(&mut self) {
-        // Collect hits
-        let mut hits = Vec::new();
-        while let Ok(g_idx) = self.hit_rx.try_recv() {
-            hits.push(g_idx);
-        }
-        
-        let avg = if self.arena.capacity > 0 { self.arena.count_sum / self.arena.capacity as u64 } else { 0 };
-        let guard = crossbeam_epoch::pin();
+        let mut processed_hits = 0;
+        while let Ok(batch) = self.hit_rx.try_recv() {
+            for &g_idx in batch.iter() {
+                if g_idx < self.arena.capacity {
+                    let current_rank = self.arena.rank[g_idx];
+                    
+                    // Matthew Effect Formula: The higher the rank, the higher the reward multiplier
+                    let bonus_shift = (current_rank >> 5).min(3);
+                    let reward = 1 << bonus_shift;
 
-        for g_idx in hits {
-            if g_idx < self.arena.capacity {
-                let add_val = (avg * 2).max(1) as u8;
-                let old_rank = self.arena.rank[g_idx];
-                self.arena.rank[g_idx] = old_rank.saturating_add(add_val);
-                self.arena.count_sum += (self.arena.rank[g_idx] - old_rank) as u64;
+                    let old_rank = current_rank;
+                    self.arena.rank[g_idx] = current_rank.saturating_add(reward);
+                    self.arena.count_sum += (self.arena.rank[g_idx] - old_rank) as u64;
 
-                let r = self.arena.rank[g_idx];
-                let hash = self.arena.hashes[g_idx];
-                
-                // Promotion
-                if r > 50 { // T1_THRESHOLD
-                    let ptr = self.l3.nodes[g_idx].load(Ordering::Relaxed, &guard);
-                    if !ptr.is_null() {
-                        self.t1.slots[hash as usize & self.t1.mask].store(ptr, Ordering::Release);
-                    }
-                } else if r > 20 { // T2_THRESHOLD
-                    let ptr = self.l3.nodes[g_idx].load(Ordering::Relaxed, &guard);
-                    if !ptr.is_null() {
-                        self.t2.slots[hash as usize & self.t2.mask].store(ptr, Ordering::Release);
+                    let r = self.arena.rank[g_idx];
+                    let hash = self.arena.hashes[g_idx];
+                    
+                    // Promotion
+                    if r > 50 { // T1_THRESHOLD
+                        self.t1.slots[hash as usize & self.t1.mask].store(g_idx, Ordering::Release);
+                    } else if r > 20 { // T2_THRESHOLD
+                        self.t2.slots[hash as usize & self.t2.mask].store(g_idx, Ordering::Release);
                     }
                 }
+            }
+            processed_hits += 64;
+            if processed_hits >= 8192 * 64 {
+                break;
             }
         }
         
@@ -242,7 +243,6 @@ where K: Hash + Eq + Send + Sync + Clone + 'static,
     fn evict_batch(&mut self) {
         let avg = if self.arena.capacity > 0 { self.arena.count_sum / self.arena.capacity as u64 } else { 0 };
         let count = 128; // Max iterations
-        let guard = crossbeam_epoch::pin();
 
         for _ in 0..count {
             if self.arena.free_list.len() > self.arena.capacity / 10 {
@@ -270,10 +270,11 @@ where K: Hash + Eq + Send + Sync + Clone + 'static,
                     scan_idx = (scan_idx + 1) & self.l3.index_mask;
                 }
 
-                let old_ptr = self.l3.nodes[idx].swap(Shared::null(), Ordering::Release, &guard);
-                if !old_ptr.is_null() {
-                    unsafe { guard.defer_destroy(old_ptr); }
-                }
+                *self.l3.nodes[idx].write() = None;
+
+                let ghost_idx = (hash as usize) & self.ghost_mask;
+                let fp = (hash >> 48) as u16;
+                self.ghost_set[ghost_idx].store(fp, Ordering::Relaxed);
 
                 self.arena.free_list.push(idx);
             } else {

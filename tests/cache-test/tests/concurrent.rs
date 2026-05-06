@@ -107,6 +107,7 @@ fn test_ttl_mechanic() {
     let cache = DualCacheFF::new(config);
     
     cache.insert(1, 100);
+    cache.insert(1, 100); // Second insert bypasses Ghost Set filter
     
     // Wait for insertion
     cache.sync();
