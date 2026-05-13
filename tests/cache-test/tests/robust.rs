@@ -21,9 +21,7 @@ pub enum Action {
 }
 
 pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
-    let mut config = Config::adaptive_config::<u8, u16>();
-    config.capacity = 128;
-    config.duration = 200;
+    let config = Config::new_expert(128, 64, 64, 200, 4);
     let cache = DualCacheFF::new(config);
 
     let mut shadow = std::collections::HashMap::new();

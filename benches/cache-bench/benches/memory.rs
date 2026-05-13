@@ -20,9 +20,7 @@ fn measure_dualcacheff() {
     use dualcache_ff::{Config, DualCacheFF};
 
     let peak = {
-        let mut config = Config::adaptive_config::<u64, u64>();
-        config.capacity = CAPACITY;
-        config.duration = 60;
+        let config = Config::with_memory_budget((CAPACITY * 128 / 1024 / 1024) as usize, 60);
         let cache = DualCacheFF::new(config);
         let _init = print_memory("After Init");
 
@@ -38,7 +36,7 @@ fn measure_dualcacheff() {
     let overhead = total_used.saturating_sub(payload);
     let per_item = overhead as f64 / CAPACITY as f64;
 
-    println!("DualCacheFF overhead per item: {:.2} bytes", per_item);
+    println!("DualcacheFF overhead per item: {:.2} bytes", per_item);
 }
 
 fn measure_moka() {
@@ -91,6 +89,8 @@ fn measure_tinyufo() {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let is_full_bench = args.iter().any(|a| a == "--full_bench") || cfg!(feature = "full_bench");
+
     if args.iter().any(|arg| arg == "--dual") {
         measure_dualcacheff();
         return;
@@ -104,7 +104,7 @@ fn main() {
 
     if args.iter().any(|arg| arg == "--bench") && args.len() == 2 {
         // Run as coordinator if invoked by cargo bench
-    } else if args.len() > 1 && !args.contains(&"--bench".to_string()) {
+    } else if args.len() > 1 && !args.contains(&"--bench".to_string()) && !args.contains(&"--full_bench".to_string()) {
          return; // Unknown or irrelevant flags passed by cargo, ignore unless it's our target.
     }
 
@@ -112,8 +112,10 @@ fn main() {
     let exe = std::env::current_exe().unwrap();
     
     std::process::Command::new(&exe).arg("--dual").status().unwrap();
-    std::process::Command::new(&exe).arg("--moka").status().unwrap();
-    std::process::Command::new(&exe).arg("--tiny").status().unwrap();
+    if is_full_bench {
+        std::process::Command::new(&exe).arg("--moka").status().unwrap();
+        std::process::Command::new(&exe).arg("--tiny").status().unwrap();
+    }
     
     println!("\n========== Summary ==========");
     println!("Refer to output logs above for per-item overheads.");

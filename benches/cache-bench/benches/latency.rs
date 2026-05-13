@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 const CAPACITY: u64 = 100_000;
 const KEY_SPACE: u64 = 1_000_000;
-const THREADS: usize = 8;
+const THREADS: usize = 4;
 const OPS_PER_THREAD: u64 = 250_000; // 每個執行緒 25 萬次，總計 200 萬次操作
 
 fn measure_latency<C>(cache: Arc<C>, name: &str, keys: &[u64])
@@ -114,6 +114,9 @@ where
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let is_full_bench = args.iter().any(|a| a == "--full_bench") || cfg!(feature = "full_bench");
+
     println!("Generating zipf keys (Total 2,000,000 ops)...");
     let zipf = Zipf::new(KEY_SPACE, 1.0).unwrap();
     let mut rng = rand::thread_rng();
@@ -123,17 +126,24 @@ fn main() {
         .collect();
     
     // 測量 DualCacheFF
-    let mut config = dualcache_ff::Config::adaptive_config::<u64, u64>();
-    config.capacity = CAPACITY as usize;
-    config.duration = 60;
+    let config = dualcache_ff::Config::with_memory_budget((CAPACITY * 128 / 1024 / 1024) as usize, 60);
     let ff_stat = Arc::new(dualcache_ff::DualCacheFF::new(config));
+    // Warmup
+    for &key in &keys[..1000] {
+        ff_stat.insert(key, key);
+    }
+    ff_stat.sync();
     measure_latency(ff_stat, "DualCacheFF", &keys);
 
     // 測量 Moka
-    let moka_stat = Arc::new(moka::sync::Cache::builder().max_capacity(CAPACITY).build());
-    measure_latency(moka_stat, "Moka", &keys);
+    if is_full_bench {
+        let moka_stat = Arc::new(moka::sync::Cache::builder().max_capacity(CAPACITY).build());
+        measure_latency(moka_stat, "Moka", &keys);
+    }
 
     // 測量 TinyUFO
-    let ufo_stat = Arc::new(tinyufo::TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
-    measure_latency(ufo_stat, "TinyUFO", &keys);
+    if is_full_bench {
+        let ufo_stat = Arc::new(tinyufo::TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
+        measure_latency(ufo_stat, "TinyUFO", &keys);
+    }
 }

@@ -3,9 +3,13 @@ name = "cache-bench"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+full_bench = []
+
 [lib]
 name = "cache_bench"
 path = "src/lib.rs"
+bench = false
 
 [[bench]]
 name = "throughput"

@@ -9,9 +9,7 @@ use std::time::Duration;
 fn test_memory_stability() {
     let _profiler = dhat::Profiler::builder().testing().build();
 
-    let mut config = Config::adaptive_config::<i32, Vec<u8>>();
-    config.capacity = 1024;
-    config.duration = 200;
+    let config = Config::new_expert(1024, 256, 256, 200, 4);
     let cache = DualCacheFF::new(config);
 
     // Initial baseline allocation

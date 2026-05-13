@@ -3,6 +3,7 @@ use std::hash::Hash;
 pub trait Cache<K, V>: Send + Sync {
     fn get(&self, key: &K) -> Option<V>;
     fn insert(&self, key: K, value: V);
+    fn sync(&self);
     fn name(&self) -> &'static str;
 }
 
@@ -18,6 +19,10 @@ where
 
     fn insert(&self, key: K, value: V) {
         self.insert(key, value);
+    }
+
+    fn sync(&self) {
+        // Moka handles its own sync or we could call run_pending_tasks if needed
     }
 
     fn name(&self) -> &'static str {
@@ -40,6 +45,10 @@ where
         DualCacheFF::insert(self, key, value);
     }
 
+    fn sync(&self) {
+        DualCacheFF::sync(self);
+    }
+
     fn name(&self) -> &'static str {
         "DualCacheFF"
     }
@@ -59,6 +68,8 @@ where
     fn insert(&self, key: K, value: V) {
         self.put(key, value, 1);
     }
+
+    fn sync(&self) {}
 
     fn name(&self) -> &'static str {
         "TinyUFO"

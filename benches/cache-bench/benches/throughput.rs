@@ -1,5 +1,4 @@
 use cache_bench::Cache;
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use moka::sync::Cache as MokaCache;
 use rand::distributions::Distribution;
 use rand_distr::Zipf;
@@ -7,10 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tinyufo::TinyUfo;
 
-const CAPACITY: u64 = 100_000;
-const KEY_SPACE: u64 = 1_000_000; // 键总数远大于容量，模拟真实场景
-const THREADS: usize = 8;
-const OPS_PER_BENCH: u64 = 10_000_000;
+const CAPACITY: u64 = 1_000_000;
+const KEY_SPACE: u64 = 10_000_000; // 键总数远大于容量，模拟真实场景
+const THREADS: usize = 4;
+const OPS_PER_BENCH: u64 = 50_000_000;
 
 // ----- 统一测试函数 -----
 fn bench_workload<C>(cache: Arc<C>, workload: &str, keys: &[u64]) -> u64
@@ -78,8 +77,8 @@ where
     misses
 }
 
-// ----- Criterion 入口 -----
-fn bench_throughput(c: &mut Criterion) {
+// ----- 測試入口 -----
+fn run_benchmarks(is_full_bench: bool) {
     // 创建工作负载列表
     let workloads = vec!["uniform", "zipf", "scan", "mixed"];
 
@@ -130,11 +129,10 @@ fn bench_throughput(c: &mut Criterion) {
         keys
     };
 
-    let mut group = c.benchmark_group("cache_throughput");
-    group.throughput(Throughput::Elements(OPS_PER_BENCH));
-    group.sample_size(10); // 每个配置采样10次
-    group.warm_up_time(Duration::from_secs(2));
-    group.measurement_time(Duration::from_secs(5));
+    println!(
+        "Running throughput benchmarks with OPS_PER_BENCH = {}",
+        OPS_PER_BENCH
+    );
 
     for workload in workloads {
         let keys_to_use: &[u64] = match workload {
@@ -145,52 +143,34 @@ fn bench_throughput(c: &mut Criterion) {
         };
 
         // --- Moka measurement run for stats ---
-        println!("\n=== Moka Workload: {} ===", workload);
-        let moka_stat = Arc::new(MokaCache::builder().max_capacity(CAPACITY).build());
-        for i in 0..CAPACITY {
-            moka_stat.insert(i, i);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-        let m_start = std::time::Instant::now();
-        let m_misses = bench_workload(Arc::clone(&moka_stat), workload, keys_to_use);
-        let m_elapsed = m_start.elapsed();
-        let m_throughput = OPS_PER_BENCH as f64 / m_elapsed.as_secs_f64();
-        let m_hitrate = 100.0 * (1.0 - (m_misses as f64 / OPS_PER_BENCH as f64));
-        println!("  - Throughput (引擎空轉吞吐): {:.2} ops/s", m_throughput);
-        println!("  - DB Penetrates (潛在穿透次數): {}", m_misses);
-        println!("  - Hit Rate (真實業務命中率): {:.2}%\n", m_hitrate);
+        if is_full_bench {
+            println!("\n=== Moka Workload: {} ===", workload);
+            let moka_stat = Arc::new(MokaCache::builder().max_capacity(CAPACITY).build());
+            for i in 0..CAPACITY {
+                moka_stat.insert(i, i);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            let m_start = std::time::Instant::now();
+            let m_misses = bench_workload(Arc::clone(&moka_stat), workload, keys_to_use);
+            let m_elapsed = m_start.elapsed();
+            let m_throughput = OPS_PER_BENCH as f64 / m_elapsed.as_secs_f64();
+            let m_hitrate = 100.0 * (1.0 - (m_misses as f64 / OPS_PER_BENCH as f64));
+            println!("  - Throughput (引擎空轉吞吐): {:.2} ops/s", m_throughput);
+            println!("  - DB Penetrates (潛在穿透次數): {}", m_misses);
+            println!("  - Hit Rate (真實業務命中率): {:.2}%\n", m_hitrate);
 
-        // 獨立建立 Moka Cache，確保不與其他 workload 共享狀態，同時事先熱機
-        let moka_cache = Arc::new(MokaCache::builder().max_capacity(CAPACITY).build());
-        for i in 0..CAPACITY {
-            moka_cache.insert(i, i);
+            // (Removed redundant Criterion benchmark)
         }
-        std::thread::sleep(Duration::from_millis(50));
-
-        // 测试 Moka
-        group.bench_with_input(BenchmarkId::new("Moka", workload), &workload, |b, &wl| {
-            b.iter_custom(|iters| {
-                let mut total = Duration::new(0, 0);
-                for _ in 0..iters {
-                    // 計時範圍：僅限 benchmark 執行，跨 iters 重用熱機實例
-                    let start = std::time::Instant::now();
-                    let _ = bench_workload(Arc::clone(&moka_cache), wl, keys_to_use);
-                    total += start.elapsed();
-                }
-                total
-            });
-        });
 
         // --- DualCacheFF measurement run for stats ---
         println!("\n=== DualCacheFF Workload: {} ===", workload);
-        let mut config = dualcache_ff::Config::adaptive_config::<u64, u64>();
-        config.capacity = CAPACITY as usize;
-        config.duration = 60;
+        let config =
+            dualcache_ff::Config::with_memory_budget((CAPACITY * 128 / 1024 / 1024) as usize, 60);
         let ff_stat = Arc::new(dualcache_ff::DualCacheFF::new(config));
         for i in 0..CAPACITY {
             ff_stat.insert(i, i);
         }
-        std::thread::sleep(Duration::from_millis(50));
+        ff_stat.sync();
         let f_start = std::time::Instant::now();
         let f_misses = bench_workload(Arc::clone(&ff_stat), workload, keys_to_use);
         let f_elapsed = f_start.elapsed();
@@ -200,78 +180,33 @@ fn bench_throughput(c: &mut Criterion) {
         println!("  - DB Penetrates (潛在穿透次數): {}", f_misses);
         println!("  - Hit Rate (真實業務命中率): {:.2}%\n", f_hitrate);
 
-        // 獨立建立 DualCacheFF 實例
-        let mut config = dualcache_ff::Config::adaptive_config::<u64, u64>();
-        config.capacity = CAPACITY as usize;
-        config.duration = 60;
-        let my_cache = Arc::new(dualcache_ff::DualCacheFF::new(config));
-
-        // 提供充分熱機，並給予足夠時間讓 Daemon 進入 recv_timeout 的等候狀態
-        for i in 0..CAPACITY {
-            my_cache.insert(i, i);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-
-        // 測試 DualCacheFF
-        group.bench_with_input(
-            BenchmarkId::new("DualCacheFF", workload),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = Duration::new(0, 0);
-                    for _ in 0..iters {
-                        let start = std::time::Instant::now();
-                        let _ = bench_workload(Arc::clone(&my_cache), wl, keys_to_use);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
+        // (Removed redundant Criterion benchmark)
 
         // --- TinyUFO measurement run for stats ---
-        println!("\n=== TinyUFO Workload: {} ===", workload);
-        let ufo_stat = Arc::new(TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
-        for i in 0..CAPACITY {
-            ufo_stat.insert(i, i);
+        if is_full_bench {
+            println!("\n=== TinyUFO Workload: {} ===", workload);
+            let ufo_stat = Arc::new(TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
+            for i in 0..CAPACITY {
+                ufo_stat.insert(i, i);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            let u_start = std::time::Instant::now();
+            let u_misses = bench_workload(Arc::clone(&ufo_stat), workload, keys_to_use);
+            let u_elapsed = u_start.elapsed();
+            let u_throughput = OPS_PER_BENCH as f64 / u_elapsed.as_secs_f64();
+            let u_hitrate = 100.0 * (1.0 - (u_misses as f64 / OPS_PER_BENCH as f64));
+            println!("  - Throughput (引擎空轉吞吐): {:.2} ops/s", u_throughput);
+            println!("  - DB Penetrates (潛在穿透次數): {}", u_misses);
+            println!("  - Hit Rate (真實業務命中率): {:.2}%\n", u_hitrate);
+
+            // (Removed redundant Criterion benchmark)
         }
-        std::thread::sleep(Duration::from_millis(50));
-        let u_start = std::time::Instant::now();
-        let u_misses = bench_workload(Arc::clone(&ufo_stat), workload, keys_to_use);
-        let u_elapsed = u_start.elapsed();
-        let u_throughput = OPS_PER_BENCH as f64 / u_elapsed.as_secs_f64();
-        let u_hitrate = 100.0 * (1.0 - (u_misses as f64 / OPS_PER_BENCH as f64));
-        println!("  - Throughput (引擎空轉吞吐): {:.2} ops/s", u_throughput);
-        println!("  - DB Penetrates (潛在穿透次數): {}", u_misses);
-        println!("  - Hit Rate (真實業務命中率): {:.2}%\n", u_hitrate);
-
-        // 獨立建立 TinyUFO 實例
-        let ufo_cache = Arc::new(TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
-
-        for i in 0..CAPACITY {
-            ufo_cache.insert(i, i);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-
-        // 測試 TinyUFO
-        group.bench_with_input(
-            BenchmarkId::new("TinyUFO", workload),
-            &workload,
-            |b, &wl| {
-                b.iter_custom(|iters| {
-                    let mut total = Duration::new(0, 0);
-                    for _ in 0..iters {
-                        let start = std::time::Instant::now();
-                        let _ = bench_workload(Arc::clone(&ufo_cache), wl, keys_to_use);
-                        total += start.elapsed();
-                    }
-                    total
-                });
-            },
-        );
     }
-    group.finish();
 }
 
-criterion_group!(benches, bench_throughput);
-criterion_main!(benches);
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let is_full_bench = args.iter().any(|a| a == "--full_bench") || cfg!(feature = "full_bench");
+
+    run_benchmarks(is_full_bench);
+}

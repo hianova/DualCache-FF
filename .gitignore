@@ -2,3 +2,4 @@
 /benches/cache-bench/target
 /tests/cache-test/target
 TODO.md
+bench_report.md

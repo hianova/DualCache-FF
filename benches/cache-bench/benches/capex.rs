@@ -36,14 +36,14 @@ where
         for i in 0..(CAPEX_CAPACITY as u64) {
             cache.insert(i, i);
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        cache.sync();
 
         let mut misses = 0;
         let mut get_ops = 0;
         let mut rng = rand::thread_rng();
 
         let start_time = Instant::now();
-        for &key in keys {
+        for (_count, &key) in keys.iter().enumerate() {
             if rng.gen_bool(0.8) {
                 get_ops += 1;
                 if cache.get(&key).is_none() {
@@ -54,7 +54,7 @@ where
                 cache.insert(key, key);
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        cache.sync();
         let elapsed = start_time.elapsed();
         let peak = print_memory("Peak Mem");
 
@@ -79,6 +79,7 @@ where
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let is_full_bench = args.iter().any(|a| a == "--full_bench") || cfg!(feature = "full_bench");
     
     println!("Generating realistic zipf distribution...");
     let zipf = Zipf::new(KEY_SPACE, 1.2).unwrap();
@@ -89,9 +90,7 @@ fn main() {
 
     if args.iter().any(|arg| arg == "--dual") {
         measure_capex("DualCacheFF", &keys, || {
-            let mut config = Config::adaptive_config::<u64, u64>();
-            config.capacity = CAPEX_CAPACITY;
-            config.duration = 60;
+            let config = Config::new_expert(2048, 2048, 2048, 60, 1);
             Arc::new(DualCacheFF::new(config))
         });
         return;
@@ -111,7 +110,7 @@ fn main() {
         return;
     }
     
-    if args.len() > 1 && !args.contains(&"--bench".to_string()) {
+    if args.len() > 1 && !args.contains(&"--bench".to_string()) && !args.contains(&"--full_bench".to_string()) {
          return;
     }
 
@@ -123,6 +122,8 @@ fn main() {
 
     let exe = std::env::current_exe().unwrap();
     std::process::Command::new(&exe).arg("--dual").status().unwrap();
-    std::process::Command::new(&exe).arg("--moka").status().unwrap();
-    std::process::Command::new(&exe).arg("--tiny").status().unwrap();
+    if is_full_bench {
+        std::process::Command::new(&exe).arg("--moka").status().unwrap();
+        std::process::Command::new(&exe).arg("--tiny").status().unwrap();
+    }
 }

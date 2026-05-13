@@ -41,9 +41,7 @@ macro_rules! test_runner {
 }
 
 test_runner!(test_concurrent_ops, {
-    let mut config = Config::adaptive_config::<i32, i32>();
-    config.capacity = 128;
-    config.duration = 200;
+    let config = Config::new_expert(128, 64, 64, 200, 4);
     let cache = DualCacheFF::new(config);
     
     let ops = Arc::new(AtomicUsize::new(0));
@@ -101,13 +99,13 @@ test_runner!(test_concurrent_ops, {
 fn test_ttl_mechanic() {
     use std::time::Duration;
     
-    let mut config = Config::adaptive_config::<i32, i32>();
-    config.capacity = 128;
-    config.duration = 1;
+    let config = Config::new_expert(128, 64, 64, 1, 4);
     let cache = DualCacheFF::new(config);
     
-    cache.insert(1, 100);
-    cache.insert(1, 100); // Second insert bypasses Ghost Set filter
+    // Insert 64 times to trigger L1 Lossy Filter (>=10 hits) and sharded batch flush (64 items)
+    for _ in 0..64 {
+        cache.insert(1, 100);
+    }
     
     // Wait for insertion
     cache.sync();

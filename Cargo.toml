@@ -10,12 +10,6 @@ readme = "./ReadMe.md"
 keywords = ["cache"]
 
 [dependencies]
-crossbeam = "0.8"
-crossbeam-epoch = "0.9"
-crossbeam-channel = "0.5"
 ahash = "0.8"
-parking_lot = "0.12"
-rand = "0.8"
-num_cpus = "1.16"
+crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
-arc-swap = "1.9.1"
