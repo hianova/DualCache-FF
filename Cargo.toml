@@ -3,11 +3,14 @@ name = "dualcache-ff"
 version = "0.1.0"
 edition = "2024"
 authors = ["hianova"]
-description = "Read More Write Less"
-license = "PolyForm-Noncommercial-1.0.0"
+description = "A wait-free, high-performance concurrent cache optimized for extreme read-to-write ratios."
+license = "MIT"
 repository = "https://github.com/hianova/DualCache-FF"
-readme = "./ReadMe.md"
-keywords = ["cache"]
+documentation = "https://docs.rs/dualcache-ff"
+readme = "ReadMe.md"
+keywords = ["cache", "concurrent", "wait-free", "lock-free", "performance"]
+categories = ["caching", "concurrency", "data-structures"]
+exclude = [".DS_Store", "*.profraw", "target/"]
 
 [dependencies]
 ahash = "0.8"
