@@ -1,6 +1,6 @@
 [package]
 name = "dualcache-ff"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["hianova"]
 description = "A wait-free, high-performance concurrent cache optimized for extreme read-to-write ratios."
@@ -12,7 +12,18 @@ keywords = ["cache", "concurrent", "wait-free", "lock-free", "performance"]
 categories = ["caching", "concurrency", "data-structures"]
 exclude = [".DS_Store", "*.profraw", "target/"]
 
+[features]
+# Default: full std environment (servers, desktops).
+default = ["std"]
+# std — enables std::thread, std::time, and std::sync::Arc.
+# When disabled, the crate enters no_std mode (requires a global allocator).
+std = ["ahash/std"]
+# loom — enables Loom concurrency model-checking (replaces Arc/AtomicX).
+loom = ["dep:loom"]
+
 [dependencies]
-ahash = "0.8"
-crossbeam-channel = "0.5"
-crossbeam-utils = "0.8"
+# ahash: default-features disabled so the crate compiles in no_std mode.
+# The "std" feature re-enables ahash's std support when needed.
+ahash = { version = "0.8", default-features = false, features = ["compile-time-rng"] }
+# loom is an optional dependency used only when the "loom" feature is enabled.
+loom = { version = "0.7", optional = true }
