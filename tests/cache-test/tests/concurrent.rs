@@ -18,6 +18,25 @@ use std::sync::Mutex;
 
 use std::collections::HashMap;
 
+#[cfg(not(loom))]
+fn run_with_timeout<F, T>(timeout: std::time::Duration, f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _handle = std::thread::spawn(move || {
+        let res = f();
+        let _ = tx.send(res);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(res) => res,
+        Err(_) => {
+            panic!("Test timed out after {:?}", timeout);
+        }
+    }
+}
+
 #[cfg(loom)]
 macro_rules! test_runner {
     ($name:ident, $body:expr) => {
@@ -35,7 +54,9 @@ macro_rules! test_runner {
     ($name:ident, $body:expr) => {
         #[test]
         fn $name() {
-            $body
+            run_with_timeout(std::time::Duration::from_secs(10), || {
+                $body
+            });
         }
     };
 }
@@ -97,29 +118,31 @@ test_runner!(test_concurrent_ops, {
 #[cfg(not(loom))]
 #[test]
 fn test_ttl_mechanic() {
-    use std::time::Duration;
-    
-    let config = Config::new_expert(128, 64, 64, 1, 4);
-    let cache = DualCacheFF::new(config);
-    
-    // Insert 64 times to trigger L1 Lossy Filter (>=10 hits) and sharded batch flush (64 items)
-    for _ in 0..64 {
-        cache.insert(1, 100);
-    }
-    
-    // Wait for insertion
-    cache.sync();
-    assert_eq!(cache.get(&1), Some(100));
-    
-    // Poll for TTL expiration instead of a hard 2-second sleep
-    let mut expired = false;
-    for _ in 0..25 {
-        if cache.get(&1).is_none() {
-            expired = true;
-            break;
+    run_with_timeout(std::time::Duration::from_secs(10), || {
+        use std::time::Duration;
+        
+        let config = Config::new_expert(128, 64, 64, 1, 4);
+        let cache = DualCacheFF::new(config);
+        
+        // Insert 64 times to trigger L1 Lossy Filter (>=10 hits) and sharded batch flush (64 items)
+        for _ in 0..64 {
+            cache.insert(1, 100);
         }
-        thread::sleep(Duration::from_millis(100));
-    }
-    
-    assert!(expired, "TTL Mechanic failed: item did not expire within 2.5 seconds");
+        
+        // Wait for insertion
+        cache.sync();
+        assert_eq!(cache.get(&1), Some(100));
+        
+        // Poll for TTL expiration instead of a hard 2-second sleep
+        let mut expired = false;
+        for _ in 0..25 {
+            if cache.get(&1).is_none() {
+                expired = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        
+        assert!(expired, "TTL Mechanic failed: item did not expire within 2.5 seconds");
+    });
 }

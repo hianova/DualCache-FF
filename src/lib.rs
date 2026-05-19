@@ -26,14 +26,81 @@ pub mod workers;
 /// | `loom`     | `loom::sync::Arc`    |
 /// | _(neither)_| `alloc::sync::Arc`   |
 pub(crate) mod sync {
-    #[cfg(all(feature = "std", not(feature = "loom")))]
+    #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
     pub use std::sync::Arc;
 
-    #[cfg(feature = "loom")]
+    #[cfg(any(feature = "loom", loom))]
     pub use loom::sync::Arc;
 
-    #[cfg(not(any(feature = "std", feature = "loom")))]
+    #[cfg(all(not(feature = "std"), not(any(feature = "loom", loom))))]
     pub use alloc::sync::Arc;
+
+    #[cfg(not(any(feature = "loom", loom)))]
+    pub type ArcSlice<T> = Arc<[T]>;
+
+    #[cfg(any(feature = "loom", loom))]
+    pub type ArcSlice<T> = Arc<Vec<T>>;
+
+    #[cfg(not(any(feature = "loom", loom)))]
+    #[inline(always)]
+    pub fn new_arc_slice<T>(vec: Vec<T>) -> ArcSlice<T> {
+        vec.into_boxed_slice().into()
+    }
+
+    #[cfg(any(feature = "loom", loom))]
+    #[inline(always)]
+    pub fn new_arc_slice<T>(vec: Vec<T>) -> ArcSlice<T> {
+        Arc::new(vec)
+    }
+
+    pub mod atomic {
+        #[cfg(not(any(feature = "loom", loom)))]
+        pub use core::sync::atomic::{
+            AtomicBool, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, AtomicU8, Ordering,
+        };
+
+        #[cfg(any(feature = "loom", loom))]
+        pub use loom::sync::atomic::{
+            AtomicBool, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, AtomicU8, Ordering,
+        };
+    }
+
+    pub mod cell {
+        #[cfg(not(any(feature = "loom", loom)))]
+        pub struct UnsafeCell<T>(core::cell::UnsafeCell<T>);
+
+        #[cfg(not(any(feature = "loom", loom)))]
+        impl<T> UnsafeCell<T> {
+            #[inline(always)]
+            pub const fn new(data: T) -> Self {
+                Self(core::cell::UnsafeCell::new(data))
+            }
+
+            #[inline(always)]
+            pub fn get(&self) -> *mut T {
+                self.0.get()
+            }
+
+            #[inline(always)]
+            pub fn with<F, R>(&self, f: F) -> R
+            where
+                F: FnOnce(*const T) -> R,
+            {
+                f(self.0.get() as *const T)
+            }
+
+            #[inline(always)]
+            pub fn with_mut<F, R>(&self, f: F) -> R
+            where
+                F: FnOnce(*mut T) -> R,
+            {
+                f(self.0.get())
+            }
+        }
+
+        #[cfg(any(feature = "loom", loom))]
+        pub use loom::cell::UnsafeCell;
+    }
 }
 
 // ── Imports ───────────────────────────────────────────────────────────────
@@ -46,8 +113,8 @@ use crate::lossy_queue::{LossyQueue, OneshotAck};
 use crate::unsafe_core::{Cache, T1, T2, WorkerSlot};
 use ahash::RandomState;
 use core::hash::{BuildHasher, Hash};
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use sync::Arc;
+use sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use sync::{Arc, ArcSlice, new_arc_slice};
 
 // ── Config ────────────────────────────────────────────────────────────────
 
@@ -147,7 +214,13 @@ impl Config {
 /// Global QSBR epoch. Daemon increments this every maintenance cycle.
 /// Workers store their local epoch on `get()` entry and reset to 0 on exit,
 /// allowing Daemon to safely reclaim stale pointers.
-pub static GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
+#[cfg(any(feature = "loom", loom))]
+loom::lazy_static! {
+    pub static ref GLOBAL_EPOCH: loom::sync::atomic::AtomicUsize = loom::sync::atomic::AtomicUsize::new(1);
+}
+
+#[cfg(not(any(feature = "loom", loom)))]
+pub static GLOBAL_EPOCH: sync::atomic::AtomicUsize = sync::atomic::AtomicUsize::new(1);
 
 /// Per-worker QSBR state — cache-line padded to prevent false sharing
 /// between workers checking in/out simultaneously.
@@ -169,16 +242,54 @@ impl WorkerState {
 // in RTOS task-local storage). The cache's `get` / `insert` / `remove`
 // methods fall back to safe, lock-free direct-send paths in no_std mode.
 
-#[cfg(feature = "std")]
-/// Unique monotonic worker ID assigned once per thread on first use.
-static NEXT_THREAD_ID: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+use std::sync::Mutex;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+struct IdAllocator {
+    free_list: Mutex<Vec<usize>>,
+    next_id: sync::atomic::AtomicUsize,
+}
+
+#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+static ALLOCATOR: IdAllocator = IdAllocator {
+    free_list: Mutex::new(Vec::new()),
+    next_id: sync::atomic::AtomicUsize::new(0),
+};
+
+#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+struct ThreadIdGuard {
+    id: usize,
+}
+
+#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+impl Drop for ThreadIdGuard {
+    fn drop(&mut self) {
+        if let Ok(mut list) = ALLOCATOR.free_list.lock() {
+            list.push(self.id);
+        }
+    }
+}
+
+#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
 use core::cell::{Cell, RefCell};
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
 thread_local! {
-    static WORKER_ID: usize = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+    static WORKER_ID: usize = {
+        let id = if let Ok(mut list) = ALLOCATOR.free_list.lock() {
+            list.pop().unwrap_or_else(|| ALLOCATOR.next_id.fetch_add(1, Ordering::Relaxed))
+        } else {
+            ALLOCATOR.next_id.fetch_add(1, Ordering::Relaxed)
+        };
+        
+        GUARD.with(|g| {
+            *g.borrow_mut() = Some(ThreadIdGuard { id });
+        });
+        id
+    };
+
+    static GUARD: RefCell<Option<ThreadIdGuard>> = const { RefCell::new(None) };
 
     /// Hit index buffer: batches 64 Cache-hit global indices before sending
     /// to Daemon via the hit queue.
@@ -187,6 +298,33 @@ thread_local! {
     /// TLS probation filter: prevents single-hit items from reaching the
     /// Arena. A 4 KB sketch that decays periodically.
     static L1_FILTER: RefCell<([u8; 4096], usize)> = const { RefCell::new(([0; 4096], 0)) };
+
+    /// Task 6 — last daemon_tick observed at TLS flush time.
+    /// When `daemon_tick - LAST_FLUSH_TICK >= flush_tick_threshold`, the
+    /// Worker force-drains its TLS buffer even if it is not full.
+    static LAST_FLUSH_TICK: Cell<u64> = Cell::new(0);
+}
+
+#[cfg(any(feature = "loom", loom))]
+loom::lazy_static! {
+    static ref NEXT_THREAD_ID: loom::sync::atomic::AtomicUsize = loom::sync::atomic::AtomicUsize::new(0);
+}
+
+#[cfg(any(feature = "loom", loom))]
+use core::cell::{Cell, RefCell};
+
+#[cfg(any(feature = "loom", loom))]
+loom::thread_local! {
+    static WORKER_ID: usize = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+
+    /// Hit index buffer: batches 64 Cache-hit global indices before sending
+    /// to Daemon via the hit queue.
+    static HIT_BUF: RefCell<([usize; 64], usize)> = RefCell::new(([0; 64], 0));
+
+    /// TLS probation filter: prevents single-hit items from reaching the
+    /// Arena. A 4 KB sketch that decays periodically.
+    /// Heap-allocated under Loom via `vec!` to prevent virtual coroutine stack overflow.
+    static L1_FILTER: RefCell<(Box<[u8]>, usize)> = RefCell::new((vec![0u8; 4096].into_boxed_slice(), 0));
 
     /// Task 6 — last daemon_tick observed at TLS flush time.
     /// When `daemon_tick - LAST_FLUSH_TICK >= flush_tick_threshold`, the
@@ -205,14 +343,16 @@ pub struct DualCacheFF<K, V, S = RandomState> {
     pub hit_tx: Arc<LossyQueue<[usize; 64]>>,
     pub epoch: Arc<AtomicU32>,
     /// QSBR registry: one entry per thread slot.
-    pub worker_states: Arc<[WorkerState]>,
+    pub worker_states: ArcSlice<WorkerState>,
     /// Per-worker zero-lock batch buffers, indexed by WORKER_ID.
-    pub miss_buffers: Arc<[WorkerSlot<K, V>]>,
+    pub miss_buffers: ArcSlice<WorkerSlot<K, V>>,
     /// Daemon tick counter — shared with the Daemon thread.
     /// Workers read this (Relaxed) to implement time-based TLS flush.
     pub daemon_tick: Arc<AtomicU64>,
     /// Number of daemon_tick advances that correspond to ≈1 ms of real time.
     pub flush_tick_threshold: u64,
+    /// Cold-start flag: Daemon sets this to false when capacity is reached.
+    pub is_cold_start: Arc<sync::atomic::AtomicBool>,
 }
 
 impl<K, V, S: Clone> Clone for DualCacheFF<K, V, S> {
@@ -229,6 +369,7 @@ impl<K, V, S: Clone> Clone for DualCacheFF<K, V, S> {
             miss_buffers: self.miss_buffers.clone(),
             daemon_tick: self.daemon_tick.clone(),
             flush_tick_threshold: self.flush_tick_threshold,
+            is_cold_start: self.is_cold_start.clone(),
         }
     }
 }
@@ -246,6 +387,11 @@ where
     /// Use this in `std` environments (servers, desktops).
     pub fn new(config: Config) -> Self {
         let (cache, daemon) = Self::new_headless(config);
+        #[cfg(any(feature = "loom", loom))]
+        {
+            let _ = daemon;
+        }
+        #[cfg(not(any(feature = "loom", loom)))]
         std::thread::spawn(move || daemon.run());
         cache
     }
@@ -279,6 +425,7 @@ where
         let hit_q: Arc<LossyQueue<[usize; 64]>> = Arc::new(LossyQueue::new(1024));
         let epoch = Arc::new(AtomicU32::new(0));
         let daemon_tick = Arc::new(AtomicU64::new(0));
+        let is_cold_start = Arc::new(sync::atomic::AtomicBool::new(true));
 
         let mut buffers = Vec::with_capacity(config.threads);
         let mut states = Vec::with_capacity(config.threads);
@@ -286,8 +433,8 @@ where
             buffers.push(WorkerSlot::new());
             states.push(WorkerState::new());
         }
-        let miss_buffers: Arc<[_]> = buffers.into_boxed_slice().into();
-        let worker_states: Arc<[_]> = states.into_boxed_slice().into();
+        let miss_buffers = new_arc_slice(buffers);
+        let worker_states = new_arc_slice(states);
 
         let daemon = Daemon::new(
             hasher.clone(),
@@ -302,6 +449,7 @@ where
             config.poll_us,
             worker_states.clone(),
             daemon_tick.clone(),
+            is_cold_start.clone(),
         );
 
         let this = Self {
@@ -316,6 +464,7 @@ where
             miss_buffers,
             daemon_tick,
             flush_tick_threshold: config.flush_tick_threshold,
+            is_cold_start,
         };
 
         (this, daemon)
@@ -370,6 +519,8 @@ where
 
         // ── QSBR Check-in (std only — requires TLS) ───────────────────────
         #[cfg(feature = "std")]
+        let mut id_opt = None;
+        #[cfg(feature = "std")]
         {
             let global_epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
             WORKER_ID.with(|&id| {
@@ -377,30 +528,24 @@ where
                     self.worker_states[id]
                         .local_epoch
                         .store(global_epoch, Ordering::Relaxed);
+                    id_opt = Some(id);
                 }
             });
         }
 
+        #[cfg(feature = "std")]
+        let has_epoch = id_opt.is_some();
+        #[cfg(not(feature = "std"))]
+        let has_epoch = true;
+
         let mut res: Option<V> = None;
         let mut hit_g_idx: Option<u32> = None;
 
-        // ── T1 check ──────────────────────────────────────────────────────
-        let ptr_t1: *mut crate::storage::Node<K, V> = self.t1.load_slot(hash);
-        if !ptr_t1.is_null() {
-            let node = unsafe { &*ptr_t1 };
-            if node.key == *key
-                && (node.expire_at == 0 || node.expire_at >= current_epoch_cache)
-            {
-                res = Some(node.value.clone());
-                hit_g_idx = Some(node.g_idx);
-            }
-        }
-
-        // ── T2 check ──────────────────────────────────────────────────────
-        if res.is_none() {
-            let ptr_t2: *mut crate::storage::Node<K, V> = self.t2.load_slot(hash);
-            if !ptr_t2.is_null() {
-                let node = unsafe { &*ptr_t2 };
+        if has_epoch {
+            // ── T1 check ──────────────────────────────────────────────────────
+            let ptr_t1: *mut crate::storage::Node<K, V> = self.t1.load_slot(hash);
+            if !ptr_t1.is_null() {
+                let node = unsafe { &*ptr_t1 };
                 if node.key == *key
                     && (node.expire_at == 0 || node.expire_at >= current_epoch_cache)
                 {
@@ -408,31 +553,43 @@ where
                     hit_g_idx = Some(node.g_idx);
                 }
             }
-        }
 
-        // ── Cache (L3) check ──────────────────────────────────────────────
-        if res.is_none() {
-            let tag = (hash >> 48) as u16;
-            if let Some(global_idx) = self.cache.index_probe(hash, tag) {
-                if let Some(v) = self
-                    .cache
-                    .node_get_full(global_idx, key, current_epoch_cache)
-                {
-                    res = Some(v);
-                    hit_g_idx = Some(global_idx as u32);
+            // ── T2 check ──────────────────────────────────────────────────────
+            if res.is_none() {
+                let ptr_t2: *mut crate::storage::Node<K, V> = self.t2.load_slot(hash);
+                if !ptr_t2.is_null() {
+                    let node = unsafe { &*ptr_t2 };
+                    if node.key == *key
+                        && (node.expire_at == 0 || node.expire_at >= current_epoch_cache)
+                    {
+                        res = Some(node.value.clone());
+                        hit_g_idx = Some(node.g_idx);
+                    }
+                }
+            }
+
+            // ── Cache (L3) check ──────────────────────────────────────────────
+            if res.is_none() {
+                let tag = (hash >> 48) as u16;
+                if let Some(global_idx) = self.cache.index_probe(hash, tag) {
+                    if let Some(v) = self
+                        .cache
+                        .node_get_full(global_idx, key, current_epoch_cache)
+                    {
+                        res = Some(v);
+                        hit_g_idx = Some(global_idx as u32);
+                    }
                 }
             }
         }
 
         // ── QSBR Check-out (std only) ─────────────────────────────────────
         #[cfg(feature = "std")]
-        WORKER_ID.with(|&id| {
-            if id < self.worker_states.len() {
-                self.worker_states[id]
-                    .local_epoch
-                    .store(0, Ordering::Relaxed);
-            }
-        });
+        if let Some(id) = id_opt {
+            self.worker_states[id]
+                .local_epoch
+                .store(0, Ordering::Relaxed);
+        }
 
         if let Some(g_idx) = hit_g_idx {
             self.record_hit(g_idx as usize);
@@ -460,30 +617,125 @@ where
         // ── std path: L1 Probation Filter + TLS batch ─────────────────────
         #[cfg(feature = "std")]
         {
-            // L1 Probation Filter
-            let pass = L1_FILTER.with(|f: &RefCell<([u8; 4096], usize)>| {
-                let mut state = f.borrow_mut();
-                let idx = (hash as usize) & 4095_usize;
-                let val = state.0[idx];
+            let is_cold = self.is_cold_start.load(Ordering::Relaxed);
+            let mut bypass = is_cold;
 
-                state.1 += 1;
-                if state.1 >= 4096_usize {
-                    for x in state.0.iter_mut() {
-                        *x >>= 1;
+            if !bypass {
+                // Perform thread-safe fast lookup to see if key exists
+                // ── QSBR Check-in ───────────────────────
+                let global_epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
+                let mut id_opt = None;
+                WORKER_ID.with(|&id| {
+                    if id < self.worker_states.len() {
+                        self.worker_states[id]
+                            .local_epoch
+                            .store(global_epoch, Ordering::Relaxed);
+                        id_opt = Some(id);
                     }
-                    state.1 = 0;
+                });
+
+                if id_opt.is_some() {
+                    // T1 check
+                    let ptr_t1 = self.t1.load_slot(hash);
+                    if !ptr_t1.is_null() {
+                        let node = unsafe { &*ptr_t1 };
+                        if node.key == key {
+                            bypass = true;
+                        }
+                    }
+
+                    // T2 check
+                    if !bypass {
+                        let ptr_t2 = self.t2.load_slot(hash);
+                        if !ptr_t2.is_null() {
+                            let node = unsafe { &*ptr_t2 };
+                            if node.key == key {
+                                bypass = true;
+                            }
+                        }
+                    }
+
+                    // Cache (L3) check
+                    if !bypass {
+                        let tag = (hash >> 48) as u16;
+                        if let Some(global_idx) = self.cache.index_probe(hash, tag) {
+                            let ptr = self.cache.nodes[global_idx].load(Ordering::Acquire);
+                            if !ptr.is_null() {
+                                let node = unsafe { &*ptr };
+                                if node.key == key {
+                                    bypass = true;
+                                }
+                            }
+                        }
+                    }
                 }
 
-                if val < 1_u8 {
-                    state.0[idx] = 1;
-                    false
-                } else {
-                    if val < 2_u8 {
-                        state.0[idx] = 2;
-                    }
-                    true
+                // ── QSBR Check-out ─────────────────────────────────────
+                if let Some(id) = id_opt {
+                    self.worker_states[id]
+                        .local_epoch
+                        .store(0, Ordering::Relaxed);
                 }
-            });
+            }
+
+            let pass = if bypass {
+                true
+            } else {
+                // L1 Probation Filter
+                #[cfg(any(feature = "loom", loom))]
+                {
+                    L1_FILTER.with(|f| {
+                        let mut state = f.borrow_mut();
+                        let idx = (hash as usize) & 4095_usize;
+                        let val = state.0[idx];
+
+                        state.1 += 1;
+                        if state.1 >= 4096_usize {
+                            for x in state.0.iter_mut() {
+                                *x >>= 1;
+                            }
+                            state.1 = 0;
+                        }
+
+                        if val < 1_u8 {
+                            state.0[idx] = 1;
+                            false
+                        } else {
+                            if val < 2_u8 {
+                                state.0[idx] = 2;
+                            }
+                            true
+                        }
+                    })
+                }
+
+                #[cfg(not(any(feature = "loom", loom)))]
+                {
+                    L1_FILTER.with(|f: &RefCell<([u8; 4096], usize)>| {
+                        let mut state = f.borrow_mut();
+                        let idx = (hash as usize) & 4095_usize;
+                        let val = state.0[idx];
+
+                        state.1 += 1;
+                        if state.1 >= 4096_usize {
+                            for x in state.0.iter_mut() {
+                                *x >>= 1;
+                            }
+                            state.1 = 0;
+                        }
+
+                        if val < 1_u8 {
+                            state.0[idx] = 1;
+                            false
+                        } else {
+                            if val < 2_u8 {
+                                state.0[idx] = 2;
+                            }
+                            true
+                        }
+                    })
+                }
+            };
 
             if !pass {
                 return;
@@ -585,3 +837,12 @@ where
         }
     }
 }
+
+impl<K, V, S> Drop for DualCacheFF<K, V, S> {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.cmd_tx) <= 2 {
+            let _ = self.cmd_tx.try_send(Command::Shutdown);
+        }
+    }
+}
+

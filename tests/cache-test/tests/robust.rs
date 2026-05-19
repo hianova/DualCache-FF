@@ -61,20 +61,40 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
     }
 }
 
+fn run_with_timeout<F, T>(timeout: std::time::Duration, f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _handle = std::thread::spawn(move || {
+        let res = f();
+        let _ = tx.send(res);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(res) => res,
+        Err(_) => {
+            panic!("Test timed out after {:?}", timeout);
+        }
+    }
+}
+
 #[cfg(not(fuzzing))]
 #[test]
 fn test_robust() {
-    use arbitrary::Arbitrary;
-    use rand::RngCore;
-    use rand::SeedableRng;
+    run_with_timeout(std::time::Duration::from_secs(10), || {
+        use arbitrary::Arbitrary;
+        use rand::RngCore;
+        use rand::SeedableRng;
 
-    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    for _ in 0..10 {
-        let mut data = vec![0u8; 1024];
-        rng.fill_bytes(&mut data);
-        let mut u = arbitrary::Unstructured::new(&data);
-        if let Ok(actions) = <Vec<Action>>::arbitrary(&mut u) {
-            run_fuzz_ops(actions);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        for _ in 0..10 {
+            let mut data = vec![0u8; 1024];
+            rng.fill_bytes(&mut data);
+            let mut u = arbitrary::Unstructured::new(&data);
+            if let Ok(actions) = <Vec<Action>>::arbitrary(&mut u) {
+                run_fuzz_ops(actions);
+            }
         }
-    }
+    });
 }

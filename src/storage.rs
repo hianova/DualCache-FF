@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
-use core::sync::atomic::{AtomicU64, AtomicPtr, Ordering};
+use crate::sync::atomic::{AtomicU64, AtomicPtr, Ordering};
 use core::ptr;
 
 /// A single cached entry. Stored in the Arena node pool.
@@ -138,6 +138,19 @@ impl<K, V> Cache<K, V> {
         }
         for i in 0..self.nodes.len() {
             self.nodes[i].store(ptr::null_mut(), Ordering::Release);
+        }
+    }
+}
+
+impl<K, V> Drop for Cache<K, V> {
+    fn drop(&mut self) {
+        for node_ptr in self.nodes.iter() {
+            let ptr = node_ptr.swap(ptr::null_mut(), Ordering::Relaxed);
+            if !ptr.is_null() {
+                unsafe {
+                    let _ = Box::from_raw(ptr);
+                }
+            }
         }
     }
 }

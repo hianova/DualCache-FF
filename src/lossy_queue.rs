@@ -23,14 +23,14 @@
 /// # Lossy guarantee
 /// If a slot is not EMPTY (e.g., WRITING or READY — ring buffer lapped),
 /// the producer immediately returns Err(item). No blocking, ever.
-use core::cell::UnsafeCell;
+use crate::sync::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU8, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicUsize, AtomicU8, Ordering};
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-#[cfg(feature = "std")]
-use std::sync::Arc;
+use alloc::{boxed::Box, vec::Vec};
+
+use crate::sync::Arc;
 
 // ── Slot state constants ───────────────────────────────────────────────────
 
@@ -114,7 +114,7 @@ impl<T> LossyQueue<T> {
             return Err(item);
         }
 
-        unsafe { (*slot.data.get()).write(item) };
+        slot.data.with_mut(|ptr| unsafe { (*ptr).write(item) });
         slot.state.store(READY, Ordering::Release);
         Ok(())
     }
@@ -122,12 +122,29 @@ impl<T> LossyQueue<T> {
     /// Blocking send for critical commands (Sync, Clear).
     /// Spins until the item is successfully enqueued.
     pub fn send_blocking(&self, mut item: T) {
+        #[cfg(feature = "std")]
+        let mut spins = 0;
         loop {
             match self.try_send(item) {
                 Ok(_) => return,
                 Err(returned_item) => {
                     item = returned_item;
-                    core::hint::spin_loop();
+                    #[cfg(feature = "std")]
+                    {
+                        if spins < 100 {
+                            core::hint::spin_loop();
+                            spins += 1;
+                        } else {
+                            #[cfg(any(feature = "loom", loom))]
+                            loom::thread::yield_now();
+                            #[cfg(not(any(feature = "loom", loom)))]
+                            std::thread::yield_now();
+                        }
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        core::hint::spin_loop();
+                    }
                 }
             }
         }
@@ -144,7 +161,7 @@ impl<T> LossyQueue<T> {
 
         if slot.state.load(Ordering::Acquire) == READY {
             // Safe read: we are the exclusive consumer.
-            let item = unsafe { (*slot.data.get()).assume_init_read() };
+            let item = slot.data.with_mut(|ptr| unsafe { (*ptr).assume_init_read() });
 
             // Reset gate and advance head.
             slot.state.store(EMPTY, Ordering::Release);
@@ -163,7 +180,7 @@ impl<T> Drop for LossyQueue<T> {
             let idx = self.head.load(Ordering::Relaxed) & self.mask;
             let slot = &self.buffer[idx];
             if slot.state.load(Ordering::Acquire) == READY {
-                unsafe { (*slot.data.get()).assume_init_drop() };
+                slot.data.with_mut(|ptr| unsafe { (*ptr).assume_init_drop() });
                 slot.state.store(EMPTY, Ordering::Relaxed);
                 self.head.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -203,11 +220,30 @@ impl OneshotAck {
     /// Caller: spin until the signal arrives.
     ///
     /// In `std` mode this is a brief spin (Sync/Clear commands are rare).
+    /// After a short spin threshold, it yields to allow the daemon thread to run.
     /// In `no_std` / RTOS mode the RTOS scheduler preempts the spinning task.
     #[inline(always)]
     pub fn wait(&self) {
-        while !self.ready.load(Ordering::Acquire) {
-            core::hint::spin_loop();
+        #[cfg(feature = "std")]
+        {
+            let mut spins = 0;
+            while !self.ready.load(Ordering::Acquire) {
+                if spins < 100 {
+                    core::hint::spin_loop();
+                    spins += 1;
+                } else {
+                    #[cfg(any(feature = "loom", loom))]
+                    loom::thread::yield_now();
+                    #[cfg(not(any(feature = "loom", loom)))]
+                    std::thread::yield_now();
+                }
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            while !self.ready.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
         }
     }
 }

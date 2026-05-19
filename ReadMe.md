@@ -1,21 +1,23 @@
-# DualCache-FF (Fast and Furious) 0.2.0
+# DualCache-FF (Fast and Furious) 0.2.1
 
-> **A highly opinionated, absolutely wait-free concurrent cache in Rust, optimized for extreme read-to-write ratios and scan-resistance. Now with full `no_std` support and zero external dependencies.**
+> **A highly opinionated, absolutely wait-free concurrent cache in Rust, optimized for extreme read-to-write ratios and scan-resistance. Now with full `no_std` support, progressive CPU spin-then-yield optimizations, graceful lifecycle shutdown, dynamic thread ID recycling, and zero external dependencies.**
 
 `DualcacheFF` is not a general-purpose cache. It is a specialized, high-density concurrent primitive built on **CQRS (Command Query Responsibility Segregation)**, **QSBR (Quiet State Based Reclamation)**, and a novel **Avg-based Clock Eviction Algorithm**.
 
 By deliberately abandoning heavy API contracts (like strict linearizability and global LFU history) in favor of CPU spatial locality and wait-free semantics, `DualcacheFF` achieves up to **80x higher throughput** than standard W-TinyLFU implementations (like Moka) under hostile workloads.
 
-## 📊 Performance Benchmark Summary (0.2.0)
+## 📊 Performance Benchmark Summary (0.2.1)
+
+`DualCacheFF` v0.2.1 introduces **Dynamic Thread ID Recycling** and **Cold-Start L1 Filter Bypass**, restoring the cache hit rate under heavy concurrent read/write workloads from ~70% to **84.5% - 84.7%** (outperforming Moka by ~4.0% and TinyUFO by ~4.9%), while sustaining an extreme wait-free throughput of **93M - 103M ops/s** (up to 50x faster than Moka and 16x faster than TinyUFO). For the full detailed analysis, see [PERF.md](PERF.md).
 
 `DualCacheFF` 0.2.0 completely removes `crossbeam` dependencies, replacing them with custom wait-free primitives, resulting in a **40-60% throughput boost** over v0.1.0. For the full detailed analysis, see [perf_report.md](perf_report.md).
 
-### Throughput (Zipf Workload)
+### Throughput & Hit Rate (50% Read / 50% Write Zipf Workload)
 | Cache | Throughput (ops/s) | Hit Rate |
 | :--- | :--- | :--- |
-| **DualCacheFF** | **60,783,049** | 80.06% |
-| **TinyUFO** | 9,859,986 | 82.43% |
-| **Moka** | 4,064,383 | 83.54% |
+| **DualCacheFF (v0.2.1)** | **88,438,573** | **84.56%** |
+| **TinyUFO** | 7,859,547 | 79.77% |
+| **Moka** | 2,439,712 | 80.55% |
 
 ### Latency Distribution (Zipf, 2M ops)
 | Metric | DualCacheFF | Moka | TinyUFO |

@@ -27,6 +27,10 @@ harness = false
 name = "capex"
 harness = false
 
+[[bench]]
+name = "rw_ratio"
+harness = false
+
 [dependencies]
 moka = { version = "0.12", features = ["sync"] }
 rand = "0.8"

@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
-use core::sync::atomic::{AtomicPtr, Ordering};
+use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr;
 use crate::storage::Node;
 

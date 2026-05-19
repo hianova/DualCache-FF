@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use core::cell::UnsafeCell;
+use crate::sync::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 
 /// Zero-allocation batch buffer: fixed-size MaybeUninit array, reused in-place.
@@ -70,14 +70,28 @@ unsafe impl<K: Sync, V: Sync> Sync for BatchBuf<K, V> {}
 /// the insert hot-path (zero atomics, zero locks, pure memory write).
 #[cfg_attr(any(target_arch = "aarch64", target_arch = "arm"), repr(C, align(128)))]
 #[cfg_attr(not(any(target_arch = "aarch64", target_arch = "arm")), repr(C, align(64)))]
+#[cfg(not(any(feature = "loom", loom)))]
 pub struct WorkerSlot<K, V> {
     inner: UnsafeCell<BatchBuf<K, V>>,
 }
 
+#[cfg(any(feature = "loom", loom))]
+pub struct WorkerSlot<K, V> {
+    inner: UnsafeCell<Box<BatchBuf<K, V>>>,
+}
+
 impl<K, V> WorkerSlot<K, V> {
+    #[cfg(not(any(feature = "loom", loom)))]
     pub fn new() -> Self {
         Self {
             inner: UnsafeCell::new(BatchBuf::new()),
+        }
+    }
+
+    #[cfg(any(feature = "loom", loom))]
+    pub fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new(Box::new(BatchBuf::new())),
         }
     }
 
@@ -87,8 +101,20 @@ impl<K, V> WorkerSlot<K, V> {
     /// The caller must guarantee that only one thread accesses this slot at a time.
     /// In DualCache-FF this is enforced by the WORKER_ID TLS invariant.
     #[inline(always)]
+    #[cfg(not(any(feature = "loom", loom)))]
     pub unsafe fn get_mut_unchecked(&self) -> &mut BatchBuf<K, V> {
-        unsafe { &mut *self.inner.get() }
+        self.inner.with_mut(|ptr| unsafe { &mut *ptr })
+    }
+
+    /// Provides exclusive access to the underlying buffer.
+    ///
+    /// # Safety
+    /// The caller must guarantee that only one thread accesses this slot at a time.
+    /// In DualCache-FF this is enforced by the WORKER_ID TLS invariant.
+    #[inline(always)]
+    #[cfg(any(feature = "loom", loom))]
+    pub unsafe fn get_mut_unchecked(&self) -> &mut BatchBuf<K, V> {
+        self.inner.with_mut(|ptr| unsafe { &mut **ptr })
     }
 }
 

@@ -1,9 +1,8 @@
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-#[cfg(feature = "std")]
-use std::sync::Arc;
+use alloc::{boxed::Box, vec::Vec};
 
-use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
+use crate::sync::{Arc, ArcSlice, new_arc_slice};
+use crate::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use core::hash::{Hash, BuildHasher};
 
 use crate::arena::Arena;
@@ -53,11 +52,13 @@ pub struct Daemon<K, V, S> {
     pub hit_accumulator: Vec<usize>,
     pub last_decay_epoch: u32,
     pub garbage_queue: Vec<(*mut Node<K, V>, usize)>,
-    pub worker_states: Arc<[WorkerState]>,
+    pub worker_states: ArcSlice<WorkerState>,
     /// Monotonically increasing tick counter — incremented on every poll loop.
     /// Workers read this (Relaxed) to decide whether to time-flush their TLS
     /// buffers without needing a hardware clock in no_std mode.
     pub daemon_tick: Arc<AtomicU64>,
+    /// Cold-start flag shared with DualCacheFF
+    pub is_cold_start: Arc<AtomicBool>,
 }
 
 unsafe impl<K: Send, V: Send, S: Send> Send for Daemon<K, V, S> {}
@@ -80,8 +81,9 @@ where
         epoch: Arc<AtomicU32>,
         duration: u32,
         poll_us: u64,
-        worker_states: Arc<[WorkerState]>,
+        worker_states: ArcSlice<WorkerState>,
         daemon_tick: Arc<AtomicU64>,
+        is_cold_start: Arc<AtomicBool>,
     ) -> Self {
         let _ = duration; // duration is stored in the epoch tick rate; kept for API compat
         Self {
@@ -100,6 +102,7 @@ where
             garbage_queue: Vec::new(),
             worker_states,
             daemon_tick,
+            is_cold_start,
         }
     }
 
@@ -163,7 +166,9 @@ where
 
             // ── Idle sleep / spin ─────────────────────────────────────────
             if processed == 0 {
-                #[cfg(feature = "std")]
+                #[cfg(any(feature = "loom", loom))]
+                loom::thread::yield_now();
+                #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
                 std::thread::sleep(std::time::Duration::from_micros(self.poll_us));
                 #[cfg(not(feature = "std"))]
                 core::hint::spin_loop();
@@ -198,6 +203,7 @@ where
     /// 2. Steady State Mode: only accept if Ghost Set recognises the item.
     fn handle_admission_insert(&mut self, k: K, v: V, hash: u64) {
         let cold_start = self.arena.free_list_len() > self.arena.capacity / 20;
+        self.is_cold_start.store(cold_start, Ordering::Relaxed);
         if cold_start || self.admission.check_ghost(hash) {
             self.handle_insert_with_hash(k, v, hash);
         }
@@ -274,6 +280,7 @@ where
         }
         self.admission.clear();
         self.arena.clear();
+        self.is_cold_start.store(true, Ordering::Relaxed);
     }
 
     fn maintenance(&mut self) {
@@ -333,6 +340,9 @@ where
         if self.arena.free_list_len() < self.arena.capacity / 10 {
             self.evict_batch();
         }
+
+        let cold_start = self.arena.free_list_len() > self.arena.capacity / 20;
+        self.is_cold_start.store(cold_start, Ordering::Relaxed);
     }
 
     /// Avg-rank eviction: scan the Pendulum cursor, compare each slot's rank
@@ -381,6 +391,18 @@ where
     }
 }
 
+impl<K, V, S> Drop for Daemon<K, V, S> {
+    fn drop(&mut self) {
+        for &(ptr, _) in self.garbage_queue.iter() {
+            if !ptr.is_null() {
+                unsafe {
+                    let _ = Box::from_raw(ptr);
+                }
+            }
+        }
+    }
+}
+
 // ── AdmissionFilter (Ghost Set) ───────────────────────────────────────────
 
 /// Ghost Set — direct-mapped fingerprint array.
@@ -395,7 +417,7 @@ where
 /// bloated `capacity.next_power_of_two()` of a larger default.
 pub struct AdmissionFilter {
     pub ghost_mask: usize,
-    pub ghost_set: Arc<[AtomicU16]>,
+    pub ghost_set: ArcSlice<AtomicU16>,
 }
 
 impl AdmissionFilter {
@@ -413,7 +435,7 @@ impl AdmissionFilter {
 
         Self {
             ghost_mask: ghost_size - 1,
-            ghost_set: ghost_vec.into_boxed_slice().into(),
+            ghost_set: new_arc_slice(ghost_vec),
         }
     }
 
