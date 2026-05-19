@@ -1,219 +1,218 @@
 # 0.1.0
-## 缓存系统性能对比分析
+## Cache System Performance Comparative Analysis
 
-### 1. CAPEX 约束测试（内存受限环境）
+### 1. CAPEX Constraint Test (Memory-Constrained Environment)
 
-| 指标 | DualCacheFF | Moka | TinyUFO |
+| Metric | DualCacheFF | Moka | TinyUFO |
 |------|-------------|------|---------|
-| **执行时间 (ms)** | 6.59 | 64.81 | 15.96 |
-| **真实命中率** | 85.92% | 87.73% | 87.48% |
-| **净内存占用 (KB)** | 1328.00 | 1040.00 | 704.00 |
-| **每项平均成本 (Bytes)** | 679.94 | 532.48 | 360.45 |
+| **Execution Time (ms)** | 6.59 | 64.81 | 15.96 |
+| **Actual Hit Rate** | 85.92% | 87.73% | 87.48% |
+| **Net Memory Usage (KB)** | 1328.00 | 1040.00 | 704.00 |
+| **Average Cost per Item (Bytes)** | 679.94 | 532.48 | 360.45 |
 
-**分析：**
-- **TinyUFO** 内存效率最高，每项仅需 328 字节（比 Moka 低 38%，比 DualCacheFF 低 55%）
-- **Moka** 命中率略优（+2.07pp），但执行时间慢 6 倍，不适合延迟敏感场景
-- **DualCacheFF** 在速度与命中率之间取得较好平衡
+**Analysis:**
+- **TinyUFO** exhibits the highest memory efficiency, requiring only 328 bytes per item (38% lower than Moka, 55% lower than DualCacheFF).
+- **Moka** achieves a slightly higher hit rate (+2.07pp) but is 6x slower, making it unsuitable for latency-sensitive environments.
+- **DualCacheFF** provides a highly balanced tradeoff between execution speed and hit rate.
 
 ---
 
-### 2. 延迟分布（Zipf 工作负载，2M 操作）
+### 2. Latency Distribution (Zipf Workload, 2M Operations)
 
-| 指标 | DualCacheFF | Moka | TinyUFO |
+| Metric | DualCacheFF | Moka | TinyUFO |
 |------|-------------|------|---------|
-| **命中率** | 79.03% | 79.13% | 78.56% |
-| **P50 延迟** | 42 ns | 583 ns | 166 ns |
-| **P90 延迟** | 125 ns | 2042 ns | 1042 ns |
-| **P99 延迟** | 291 ns | 10250 ns | 3375 ns |
-| **P99.9 延迟** | 750 ns | 234834 ns | 14125 ns |
-| **P99.99 延迟** | 2208 ns | 1043292 ns | 128166 ns |
-| **最大延迟** | 3.91 ms | 3.90 ms | 13.72 ms |
+| **Hit Rate** | 79.03% | 79.13% | 78.56% |
+| **P50 Latency** | 42 ns | 583 ns | 166 ns |
+| **P90 Latency** | 125 ns | 2042 ns | 1042 ns |
+| **P99 Latency** | 291 ns | 10250 ns | 3375 ns |
+| **P99.9 Latency** | 750 ns | 234834 ns | 14125 ns |
+| **P99.99 Latency** | 2208 ns | 1043292 ns | 128166 ns |
+| **Max Latency** | 3.91 ms | 3.90 ms | 13.72 ms |
 
-**分析：**
-- **DualCacheFF** 延迟全面最优：P99 仅 291ns，比 TinyUFO 快 11.6 倍，比 Moka 快 35 倍
-- **Moka** 尾延迟极高（P99.9 达 234μs），存在明显的 GC 或锁竞争问题
-- **TinyUFO** 延迟居中，但最大延迟异常高（13.7ms），可能偶发长尾
+**Analysis:**
+- **DualCacheFF** completely dominates the latency spectrum: its P99 latency is only 291ns, which is 11.6x faster than TinyUFO and 35x faster than Moka.
+- **Moka** shows high tail latency (P99.9 at 234μs), showing clear signs of lock contention or GC pauses.
+- **TinyUFO** is positioned in the middle, but its maximum latency spikes to 13.7ms, presenting long tail risks.
 
 ---
 
-### 3. 内存开销（1M 插入后）
+### 3. Memory Overhead (After 1M Insertions)
 
-| 指标 | DualCacheFF | Moka | TinyUFO |
+| Metric | DualCacheFF | Moka | TinyUFO |
 |------|-------------|------|---------|
-| **初始化后 RSS** | 40.73 MB | 1.73 MB | 69.92 MB |
-| **1M 插入后 RSS** | 65.23 MB | 238.31 MB | 208.66 MB |
-| **每项开销** | 50.78 字节 | 232.27 字节 | 201.17 字节 |
+| **Post-Init RSS** | 40.73 MB | 1.73 MB | 69.92 MB |
+| **Post-1M Insert RSS** | 65.23 MB | 238.31 MB | 208.66 MB |
+| **Per-Item Cost** | 50.78 Bytes | 232.27 Bytes | 201.17 Bytes |
 
-**分析：**
-- **DualCacheFF** 内存效率极高，每项仅 50.8 字节（比 Moka 低 78%）
-- **Moka** 初始开销极小（1.73MB），但随条目增长膨胀严重
-- **TinyUFO** 初始内存较大（69.9MB），可能预分配了内部结构
+**Analysis:**
+- **DualCacheFF** is extremely memory-dense, requiring only 50.8 bytes per element (78% lower than Moka).
+- **Moka** starts with a very low footprint (1.73MB) but bloats significantly as entries accumulate.
+- **TinyUFO** allocates internal structures upfront, showing a higher post-init RSS of 69.9MB.
 
 ---
 
-### 4. 吞吐量对比（ops/s）与命中率
+### 4. Throughput (ops/s) and Hit Rate Comparative Analysis
 
-#### 4.1 Uniform 工作负载（随机均匀访问）
+#### 4.1 Uniform Workload (Random Uniform Access)
 
-| 缓存 | 吞吐量 (ops/s) | 命中率 | DB 穿透数 |
+| Cache | Throughput (ops/s) | Hit Rate | DB Roundtrips |
 |------|---------------|--------|-----------|
 | DualCacheFF | **31,169,953** | 10.18% | 44,912,207 |
 | TinyUFO | 2,719,779 | 10.00% | 44,998,899 |
 | Moka | 995,432 | 10.01% | 44,997,097 |
 
-#### 4.2 Zipf 工作负载（热点倾斜）
+#### 4.2 Zipf Workload (Hotspot Skewed)
 
-| 缓存 | 吞吐量 (ops/s) | 命中率 | DB 穿透数 |
+| Cache | Throughput (ops/s) | Hit Rate | DB Roundtrips |
 |------|---------------|--------|-----------|
 | DualCacheFF | **47,657,976** | 82.76% | 8,620,502 |
 | TinyUFO | 9,971,967 | 82.45% | 8,773,701 |
 | Moka | 4,099,235 | 83.53% | 8,234,784 |
 
-#### 4.3 Scan 工作负载（顺序扫描，低局部性）
+#### 4.3 Scan Workload (Sequential Scan, Low Locality)
 
-| 缓存 | 吞吐量 (ops/s) | 命中率 | DB 穿透数 |
+| Cache | Throughput (ops/s) | Hit Rate | DB Roundtrips |
 |------|---------------|--------|-----------|
 | DualCacheFF | **90,216,908** | 4.63% | 47,684,830 |
 | TinyUFO | 2,357,956 | 2.01% | 48,996,129 |
 | Moka | 1,024,259 | 7.43% | 46,284,461 |
 
-#### 4.4 Mixed 工作负载（混合模式）
+#### 4.4 Mixed Workload (Mixed Mode)
 
-| 缓存 | 吞吐量 (ops/s) | 命中率 | DB 穿透数 |
+| Cache | Throughput (ops/s) | Hit Rate | DB Roundtrips |
 |------|---------------|--------|-----------|
 | DualCacheFF | **72,627,408** | 20.33% | 39,834,174 |
 | TinyUFO | 3,352,733 | 31.98% | 34,010,772 |
 | Moka | 1,389,931 | 32.14% | 33,931,770 |
 
-**吞吐量分析：**
-- **DualCacheFF** 在所有工作负载下吞吐量均领先 7~88 倍，极适合高 QPS 场景
-- **Moka** 吞吐量最低，Zipf 下仅 4M ops/s，不适合性能敏感业务
-- **TinyUFO** 吞吐量中等，约为 DualCacheFF 的 10%~20%
+**Throughput Analysis:**
+- **DualCacheFF** consistently leads by 7x to 88x in terms of throughput across all workloads, making it the perfect engine for high-QPS configurations.
+- **Moka** delivers the lowest throughput, achieving only 4M ops/s under Zipf.
+- **TinyUFO** offers moderate performance, stabilizing at 10% to 20% of DualCacheFF's throughput.
 
-**命中率分析：**
-- 在 Zipf 下三者命中率接近（~82-83%），Moka 略优
-- 在 Mixed 下 TinyUFO 和 Moka 命中率（~32%）明显高于 DualCacheFF（20%）
-- Uniform/Scan 下所有命中率均低（因访问模式无热点）
+**Hit Rate Analysis:**
+- Under Zipf, all three caches show comparable hit rates (~82-83%), with Moka leading slightly.
+- Under Mixed workloads, TinyUFO and Moka achieve significantly higher hit rates (~32%) than DualCacheFF (20%).
+- Under Uniform/Scan patterns, hit rates are naturally low due to the lack of hot spots.
 
 ---
 
-## 综合结论与选型建议
+## Technical Summary & Selection Guide
 
-| 维度 | 冠军 | 数据支撑 |
+| Dimension | Winner | Data Evidence |
 |------|------|----------|
-| **极致吞吐量** | DualCacheFF | 47M~90M ops/s，领先 7~88 倍 |
-| **最低延迟（P99）** | DualCacheFF | 291ns vs TinyUFO 3375ns vs Moka 10250ns |
-| **最低内存占用（CAPEX）** | TinyUFO | 640KB 净占用，327 字节/项 |
-| **最高命中率（Zipf）** | Moka | 87.73%（CAPEX 约束下） |
-| **最佳每项内存效率** | DualCacheFF | 50.8 字节/项（1M 条目后） |
+| **Peak Throughput** | DualCacheFF | 47M~90M ops/s, 7x to 88x faster |
+| **Lowest Latency (P99)** | DualCacheFF | 291ns vs TinyUFO 3375ns vs Moka 10250ns |
+| **Lowest Net Footprint (CAPEX)** | TinyUFO | 640KB net footprint, 327 bytes/item |
+| **Highest Hit Rate (Zipf)** | Moka | 87.73% (under extreme CAPEX constraint) |
+| **Best Memory Efficiency** | DualCacheFF | 50.8 bytes/item (after 1M items) |
 
-### 场景化建议
+### Use Case Recommendations
 
-1. **高吞吐、低延迟核心业务（如广告召回、推荐排序）**  
-   → **DualCacheFF**：吞吐量领先 1~2 个数量级，P99 延迟 <300ns，是最佳选择。
+1. **High-Throughput, Low-Latency Applications (e.g., ad serving, recommendation ranking)**  
+   → **DualCacheFF**: 1 to 2 orders of magnitude higher throughput, P99 latency <300ns.
+2. **Strictly Memory-Constrained Environments (e.g., embedded devices, edge nodes)**  
+   → **TinyUFO**: Smallest footprint under CAPEX constraints, combined with decent hit rates and moderate latency.
+3. **Maximizing Hit Rates When Throughput Is Not a Constraint**  
+   → **Moka**: Slightly higher hit rates under Zipf and Mixed patterns, but has high tail latency (P99.9 at 234μs).
+4. **Scenarios to Avoid**  
+   - **Moka** is not suitable for high-concurrency, low-latency applications (throughput <10M ops/s, significant P99 jitter).
+   - **TinyUFO** presents tail-latency spike risks (up to 13.7ms), making it unsuitable for hard real-time systems.
 
-2. **内存容量严格受限（如嵌入式、边缘节点）**  
-   → **TinyUFO**：CAPEX 约束下内存占用最小，同时保持不错的命中率和中等延迟。
+> **Overall Recommendation**: Unless memory is extremely constrained, **DualCacheFF** is the highest-performing general choice. For strict memory limits, **TinyUFO** is preferred at the cost of some throughput.
 
-3. **追求最高命中率、可接受较低吞吐**  
-   → **Moka**：在 Zipf 和 Mixed 模式下命中率略高，但吞吐量最低且尾延迟高（P99.9 达 234μs）。
-
-4. **避免使用的场景**  
-   - **Moka** 不适合高并发、低延迟要求的环境（吞吐 <10M ops/s，P99 抖动大）。  
-   - **TinyUFO** 需注意最大延迟尖峰（13.7ms），不适合硬实时系统。
-
-> **总体推荐**：除非内存极度受限，否则 **DualCacheFF** 是综合性能最优选择；若需节约内存，可选用 **TinyUFO** 并接受部分吞吐损失。
+---
 
 # 0.2.0
 
-## 缓存系统性能对比分析 (0.2.0 重构版)
+## Cache System Performance Comparative Analysis (v0.2.0 Refactored)
 
-### 1. CAPEX 约束测试（内存受限环境）
+### 1. CAPEX Constraint Test (Memory-Constrained Environment)
 
-| 指标 | DualCacheFF | Moka | TinyUFO |
+| Metric | DualCacheFF | Moka | TinyUFO |
 |------|-------------|------|---------|
-| **执行时间 (ms)** | 7.69 | 49.16 | 17.04 |
-| **真实命中率** | 73.42% | 87.76% | 87.61% |
-| **净内存占用 (KB)** | 3168.00 | 1040.00 | 608.00 |
-| **每项平均成本 (Bytes)** | 1622.02 | 532.48 | 311.30 |
+| **Execution Time (ms)** | 7.69 | 49.16 | 17.04 |
+| **Actual Hit Rate** | 73.42% | 87.76% | 87.61% |
+| **Net Memory Usage (KB)** | 3168.00 | 1040.00 | 608.00 |
+| **Average Cost per Item (Bytes)** | 1622.02 | 532.48 | 311.30 |
 
-**分析：**
-- **DualCacheFF** 在 0.2.0 中由於穩定的 `LossyQueue` 和更頻繁的 TLS flush，在極小容量下的命中率有所下降（因為 metadata 更新丟棄率略增），但執行速度依然領先 Moka 6 倍。
+**Analysis:**
+- In v0.2.0, due to the stable `LossyQueue` and more frequent TLS flushes, DualCacheFF's hit rate under tiny capacity limits slightly decreased (due to a minor increase in telemetry drop rate), but its execution speed remained 6x faster than Moka.
 
 ---
 
-### 2. 延迟分布（Zipf 工作负载，2M 操作）
+### 2. Latency Distribution (Zipf Workload, 2M Operations)
 
-| 指标 | DualCacheFF | Moka | TinyUFO |
+| Metric | DualCacheFF | Moka | TinyUFO |
 |------|-------------|------|---------|
-| **命中率** | 79.33% | 78.72% | 77.64% |
-| **P50 延迟** | 42 ns | 333 ns | 83 ns |
-| **P90 延迟** | 125 ns | 1334 ns | 458 ns |
-| **P99 延迟** | 333 ns | 7084 ns | 1667 ns |
-| **P99.9 延迟** | 708 ns | 105542 ns | 4875 ns |
-| **P99.99 延迟** | 9125 ns | 818500 ns | 15459 ns |
-| **最大延迟** | 0.23 ms | 26.22 ms | 0.05 ms |
+| **Hit Rate** | 79.33% | 78.72% | 77.64% |
+| **P50 Latency** | 42 ns | 333 ns | 83 ns |
+| **P90 Latency** | 125 ns | 1334 ns | 458 ns |
+| **P99 Latency** | 333 ns | 7084 ns | 1667 ns |
+| **P99.9 Latency** | 708 ns | 105542 ns | 4875 ns |
+| **P99.99 Latency** | 9125 ns | 818500 ns | 15459 ns |
+| **Max Latency** | 0.23 ms | 26.22 ms | 0.05 ms |
 
-**分析：**
-- **DualCacheFF** 的 P99.9 延遲穩定控制在 **700ns** 級別，展現了 Wait-Free 架構在極端壓力下的優勢。
-- **Moka** 的尾部延遲在高併發下抖動明顯（P99.9 達 105μs）。
+**Analysis:**
+- **DualCacheFF**'s P99.9 latency remained stable at **700ns**, proving the massive advantage of a wait-free architecture under extreme concurrency pressure.
+- **Moka** tail latencies jittered significantly under high load (P99.9 at 105μs).
 
 ---
 
-### 3. 内存开销（1M 插入后）
+### 3. Memory Overhead (After 1M Insertions)
 
-| 指标 | DualCacheFF | Moka | TinyUFO |
+| Metric | DualCacheFF | Moka | TinyUFO |
 |------|-------------|------|---------|
-| **初始化后 RSS** | 40.69 MB | 1.70 MB | 69.92 MB |
-| **1M 插入后 RSS** | 68.89 MB | 238.28 MB | 208.66 MB |
-| **每项开销** | 54.62 字节 | 232.23 字节 | 201.17 字节 |
+| **Post-Init RSS** | 40.69 MB | 1.70 MB | 69.92 MB |
+| **Post-1M Insert RSS** | 68.89 MB | 238.28 MB | 208.66 MB |
+| **Per-Item Cost** | 54.62 Bytes | 232.23 Bytes | 201.17 Bytes |
 
-**分析：**
-- **DualCacheFF** 每項開銷僅約 54 字節，在節省內存方面保持絕對領先。
+**Analysis:**
+- **DualCacheFF** consumed only ~54 bytes per entry, retaining its absolute leadership in memory density.
 
 ---
 
-### 4. 吞吐量对比（ops/s）与命中率
+### 4. Throughput (ops/s) and Hit Rate Comparative Analysis
 
-#### 4.1 Uniform 工作负载（随机均匀访问）
+#### 4.1 Uniform Workload (Random Uniform Access)
 
-| 缓存 | 吞吐量 (ops/s) | 命中率 | DB 穿透数 |
+| Cache | Throughput (ops/s) | Hit Rate | DB Roundtrips |
 |------|---------------|--------|-----------|
 | DualCacheFF | **52,527,045** | 8.60% | 45,699,675 |
 | TinyUFO | 2,605,122 | 10.00% | 44,999,021 |
 | Moka | 1,100,890 | 10.00% | 44,998,699 |
 
-#### 4.2 Zipf 工作负载（热点倾斜）
+#### 4.2 Zipf Workload (Hotspot Skewed)
 
-| 缓存 | 吞吐量 (ops/s) | 命中率 | DB 穿透数 |
+| Cache | Throughput (ops/s) | Hit Rate | DB Roundtrips |
 |------|---------------|--------|-----------|
 | DualCacheFF | **60,783,049** | 80.06% | 9,971,034 |
 | TinyUFO | 9,859,986 | 82.43% | 8,785,132 |
 | Moka | 4,064,383 | 83.54% | 8,228,498 |
 
-#### 4.3 Scan 工作负载（顺序扫描，低局部性）
+#### 4.3 Scan Workload (Sequential Scan, Low Locality)
 
-| 缓存 | 吞吐量 (ops/s) | 命中率 | DB 穿透数 |
+| Cache | Throughput (ops/s) | Hit Rate | DB Roundtrips |
 |------|---------------|--------|-----------|
 | DualCacheFF | **97,423,118** | 5.04% | 47,480,781 |
 | TinyUFO | 2,566,231 | 2.01% | 48,996,477 |
 | Moka | 1,107,185 | 6.85% | 46,574,122 |
 
-#### 4.4 Mixed 工作负载（混合模式）
+#### 4.4 Mixed Workload (Mixed Mode)
 
-| 缓存 | 吞吐量 (ops/s) | 命中率 | DB 穿透数 |
+| Cache | Throughput (ops/s) | Hit Rate | DB Roundtrips |
 |------|---------------|--------|-----------|
 | DualCacheFF | **75,178,633** | 24.36% | 37,818,291 |
 | TinyUFO | 3,203,349 | 30.15% | 34,926,260 |
 | Moka | 1,347,210 | 29.89% | 35,053,188 |
 
-**吞吐量分析（0.1.0 vs 0.2.0）：**
-- **DualCacheFF** 吞吐量大幅提升：Uniform 從 31M 提升至 **52M (+67%)**，Zipf 從 47M 提升至 **60M (+27%)**。
-- **自研 LossyQueue** 與 **CachePadded** 成功消除了 false sharing 與 Parker 喚醒開銷，使處理速度接近物理內存頻寬極限。
+**Throughput Analysis (v0.1.0 vs v0.2.0):**
+- **DualCacheFF** achieved massive throughput gains: Uniform surged from 31M to **52M (+67%)**, while Zipf grew from 47M to **60M (+27%)**.
+- The custom **LossyQueue** and **CachePadded** successfully eliminated false sharing and Parker wake-up latency, pushing processing speeds close to physical memory bandwidth limits.
 
 ---
 
-## 0.2.0 重构总结
-1. **完全自研核心**：成功移除 `crossbeam`，實現了 `no_std` 支援，代碼更適合嵌入式/RTOS 場景。
-2. **性能巔峰**：吞吐量平均提升 40%，P99.9 延遲穩定的控制在 1μs 以下。
-3. **解決長尾可見性**：`daemon_tick` 強制刷新機制確保了高併發下的數據最終一致性，消除了裂腦效應。
+## v0.2.0 Refactoring Summary
+1. **Fully Custom Core**: Successfully removed `crossbeam` dependencies and implemented `no_std` support, making the code highly suitable for embedded/RTOS systems.
+2. **Performance Peak**: Throughput increased by 40% on average, with P99.9 latencies strictly controlled below 1μs.
+3. **Resolved Visibility Lag**: The `daemon_tick` forced flush mechanism guarantees eventual consistency under high concurrency, completely eliminating split-brain effects.

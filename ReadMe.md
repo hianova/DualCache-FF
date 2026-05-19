@@ -66,5 +66,4 @@ This project is licensed under the [**MIT License**](LICENSE).
 
 ---
 
-*project supported by gemini 3.5 flash*
-ini 3.1 pro*
+*Project co-developed and optimized with Antigravity.*
