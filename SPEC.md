@@ -1,4 +1,4 @@
-# DualCache-FF Specification (v0.2.1)
+# DualCache-FF Specification (v0.2.2)
 
 ---
 
