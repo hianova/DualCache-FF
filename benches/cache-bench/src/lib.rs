@@ -22,7 +22,7 @@ where
     }
 
     fn sync(&self) {
-        // Moka handles its own sync or we could call run_pending_tasks if needed
+        self.run_pending_tasks();
     }
 
     fn name(&self) -> &'static str {

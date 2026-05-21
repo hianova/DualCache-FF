@@ -118,6 +118,7 @@ use sync::{Arc, ArcSlice, new_arc_slice};
 
 // ── Config ────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub capacity: usize,
     pub t1_slots: usize,

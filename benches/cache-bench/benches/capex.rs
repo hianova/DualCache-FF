@@ -32,8 +32,9 @@ where
     
     let peak_mem = {
         let cache = init_cache();
+        let capacity = 2048; // aligned capacity
 
-        for i in 0..(CAPEX_CAPACITY as u64) {
+        for i in 0..(capacity as u64) {
             cache.insert(i, i);
         }
         cache.sync();
@@ -73,7 +74,7 @@ where
     println!("  - Net Footprint:   {:.2} KB", footprint_kb);
     println!(
         "  - Avg Cost/Item:   {:.2} Bytes (Footprint / Capacity)",
-        (footprint_kb * 1024.0) / CAPEX_CAPACITY as f64
+        (footprint_kb * 1024.0) / 2048.0
     );
 }
 
@@ -107,14 +108,14 @@ fn main() {
         measure_capex("Moka", &keys, || {
             Arc::new(
                 MokaCache::builder()
-                    .max_capacity(CAPEX_CAPACITY as u64)
+                    .max_capacity(2048)
                     .build(),
             )
         });
         return;
     } else if args.iter().any(|arg| arg == "--tiny") {
         measure_capex("TinyUFO", &keys, || {
-            Arc::new(TinyUfo::new(CAPEX_CAPACITY, CAPEX_CAPACITY))
+            Arc::new(TinyUfo::new(2048, 2048))
         });
         return;
     }
@@ -125,8 +126,8 @@ fn main() {
 
     println!("--- CAPEX Constraint Benchmark (Isolated Processes) ---");
     println!(
-        "Capacity: {} Items | Total Ops: {} (Single Thread)",
-        CAPEX_CAPACITY, TOTAL_OPS
+        "Capacity: 2048 Items | Total Ops: {} (Single Thread)",
+        TOTAL_OPS
     );
 
     let exe = std::env::current_exe().unwrap();

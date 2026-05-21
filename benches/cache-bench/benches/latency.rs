@@ -11,16 +11,17 @@ const KEY_SPACE: u64 = 1_000_000;
 const THREADS: usize = 4;
 const OPS_PER_THREAD: u64 = 250_000; // 每個執行緒 25 萬次，總計 200 萬次操作
 
-fn measure_latency<C>(cache: Arc<C>, name: &str, keys: &[u64])
+fn measure_latency<C>(cache: Arc<C>, name: &str, keys: &[u64], capacity: u64)
 where
     C: Cache<u64, u64> + 'static,
 {
     println!("\n=== {} ===", name);
     
     // 預熱階段
-    for i in 0..CAPACITY {
+    for i in 0..capacity {
         cache.insert(i, i);
     }
+    cache.sync();
     std::thread::sleep(Duration::from_millis(200));
 
     let mut handles = Vec::new();
@@ -134,25 +135,28 @@ fn main() {
         .map(|_| zipf.sample(&mut rng) as u64)
         .collect();
     
-    // 測量 DualCacheFF
     let config = dualcache_ff::Config::with_memory_budget((CAPACITY * 128 / 1024 / 1024) as usize, 60);
+    let actual_capacity = config.capacity;
+    println!("Aligned benchmark physical capacity: {}", actual_capacity);
+
+    // 測量 DualCacheFF
     let ff_stat = Arc::new(dualcache_ff::DualCacheFF::new(config));
     // Warmup
     for &key in &keys[..1000] {
         ff_stat.insert(key, key);
     }
     ff_stat.sync();
-    measure_latency(ff_stat, "DualCacheFF", &keys);
+    measure_latency(ff_stat, "DualCacheFF", &keys, actual_capacity as u64);
 
     // 測量 Moka
     if is_full_bench {
-        let moka_stat = Arc::new(moka::sync::Cache::builder().max_capacity(CAPACITY).build());
-        measure_latency(moka_stat, "Moka", &keys);
+        let moka_stat = Arc::new(moka::sync::Cache::builder().max_capacity(actual_capacity as u64).build());
+        measure_latency(moka_stat, "Moka", &keys, actual_capacity as u64);
     }
 
     // 測量 TinyUFO
     if is_full_bench {
-        let ufo_stat = Arc::new(tinyufo::TinyUfo::new(CAPACITY as usize, CAPACITY as usize));
-        measure_latency(ufo_stat, "TinyUFO", &keys);
+        let ufo_stat = Arc::new(tinyufo::TinyUfo::new(actual_capacity, actual_capacity));
+        measure_latency(ufo_stat, "TinyUFO", &keys, actual_capacity as u64);
     }
 }

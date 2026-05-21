@@ -69,7 +69,7 @@ where
     })
 }
 
-fn run_ratios_for_cache<C>(cache_factory: impl Fn() -> Arc<C>, name: &str, keys: &[u64])
+fn run_ratios_for_cache<C>(cache_factory: impl Fn() -> Arc<C>, name: &str, keys: &[u64], capacity: usize)
 where
     C: Cache<u64, u64> + 'static,
 {
@@ -88,8 +88,8 @@ where
     for (read_percentage, label) in ratios {
         let cache = cache_factory();
         // Warmup with capacity inserts
-        for i in 0..CAPACITY {
-            cache.insert(i, i);
+        for i in 0..capacity {
+            cache.insert(i as u64, i as u64);
         }
         cache.sync();
 
@@ -99,7 +99,7 @@ where
 }
 
 fn main() {
-    start_timeout_watchdog(Duration::from_secs(120)); // 2 minutes watchdog
+    start_timeout_watchdog(Duration::from_secs(300)); // 5 minutes watchdog
 
     let args: Vec<String> = std::env::args().collect();
     let is_full_bench = args.iter().any(|a| a == "--full_bench") || cfg!(feature = "full_bench");
@@ -111,31 +111,37 @@ fn main() {
         .map(|_| zipf.sample(&mut rng) as u64)
         .collect();
 
+    let config = Config::with_memory_budget((CAPACITY * 128 / 1024 / 1024) as usize, 60);
+    let actual_capacity = config.capacity;
+    println!("Aligned benchmark physical capacity: {}", actual_capacity);
+
     // 1. Benchmark DualCacheFF
     run_ratios_for_cache(
         || {
-            let config = Config::with_memory_budget((CAPACITY * 128 / 1024 / 1024) as usize, 60);
             Arc::new(DualCacheFF::new(config))
         },
         "DualCacheFF",
         &keys,
+        actual_capacity,
     );
 
     // 2. Benchmark Moka if full_bench
     if is_full_bench {
         run_ratios_for_cache(
-            || Arc::new(MokaCache::builder().max_capacity(CAPACITY).build()),
+            || Arc::new(MokaCache::builder().max_capacity(actual_capacity as u64).build()),
             "Moka",
             &keys,
+            actual_capacity,
         );
     }
 
     // 3. Benchmark TinyUFO if full_bench
     if is_full_bench {
         run_ratios_for_cache(
-            || Arc::new(TinyUfo::new(CAPACITY as usize, CAPACITY as usize)),
+            || Arc::new(TinyUfo::new(actual_capacity, actual_capacity)),
             "TinyUFO",
             &keys,
+            actual_capacity,
         );
     }
 }
