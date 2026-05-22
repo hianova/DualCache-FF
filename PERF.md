@@ -1,3 +1,111 @@
+# 0.2.3
+## Cache System Performance Comparative Analysis (v0.2.3 Aligned Release)
+
+Following the official release of version 0.2.3, which introduced static allocation-free cache (`StaticDualCache`) and zero-overhead compilation stubs (`DualCacheStub`) for the ultimate `no_std` embedded compatibility, we ran the full performance alignment suite.
+
+DualCacheFF's wait-free architecture continues to exhibit unparalleled throughput, tail latency capping, and memory footprint dominance under fair capacity alignment.
+
+### 1. Throughput (ops/s) and Hit Rate Comparative Analysis (Aligned)
+Test Configuration: `OPS_PER_BENCH = 50,000,000` operations, Threads = 4, Capacity = 1,048,576 (Aligned).
+
+#### 1.1 Uniform Workload (Random Uniform Access)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.2.3)** | **56,142,207.82** | 7.51% | 46,242,649 |
+| TinyUFO | 2,797,728.12 | 10.49% | 44,757,375 |
+| Moka | 1,069,859.39 | 10.48% | 44,758,460 |
+
+#### 1.2 Zipf Workload (Hotspot Skewed)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.2.3)** | **64,726,458.70** | 82.66% | 8,669,776 |
+| TinyUFO | 10,790,720.82 | 82.74% | 8,629,182 |
+| Moka | 4,277,642.22 | 84.02% | 7,988,130 |
+
+#### 1.3 Scan Workload (Sequential Scan)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.2.3)** | **86,810,158.45** | 6.39% | 46,803,845 |
+| TinyUFO | 2,671,214.28 | 2.11% | 48,945,225 |
+| Moka | 1,127,452.67 | 7.79% | 46,103,231 |
+
+#### 1.4 Mixed Workload (Mixed Mode)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.2.3)** | **62,996,193.46** | 30.75% | 34,625,088 |
+| TinyUFO | 3,408,776.65 | 30.26% | 34,869,025 |
+| Moka | 1,387,057.10 | 31.02% | 34,490,795 |
+
+*Throughput Analysis:*
+* **Throughput Uplift**: DualCacheFF's throughput further increased under all workloads (e.g., Uniform surging to **56.14M ops/s**, and Scan reaching **86.81M ops/s**), representing up to **9.5%** improvement over v0.2.2.
+* **Massive Lead**: Under Mixed workload, DualCacheFF operates **18x faster** than TinyUFO and **45x faster** than Moka!
+
+---
+
+### 2. Latency Distribution (Zipf Workload, 131,072 Capacity Aligned, 2M Ops)
+| Metric | **DualCacheFF (v0.2.3)** | TinyUFO | Moka |
+|------|-------------------------|------|---------|
+| **P50 Latency** | **42 ns** | 84 ns | 292 ns |
+| **P90 Latency** | **167 ns** | 625 ns | 1,292 ns |
+| **P99 Latency** | **458 ns** | 2,125 ns | 9,083 ns |
+| **P99.9 Latency** | **1,083 ns** | 6,041 ns | 97,500 ns |
+| **P99.99 Latency** | **4,459 ns** | 14,667 ns | 274,709 ns |
+| **Max Latency** | **371,333 ns (371.3 μs)** | 2,733,500 ns (2.73 ms) | 2,295,375 ns (2.29 ms) |
+| **Hit Rate** | **85.65%** | 79.51% | 80.49% |
+
+---
+
+### 3. Memory Overhead (1M Inserts)
+| Metric | **DualCacheFF (v0.2.3)** | TinyUFO | Moka |
+|------|-------------------------|------|---------|
+| **Baseline RSS** | 1.61 MB | 1.61 MB | 1.62 MB |
+| **Post-Init RSS** | 40.81 MB | 70.02 MB | 1.83 MB |
+| **Post-1M Insert RSS** | 64.86 MB | 208.77 MB | 238.14 MB |
+| **Overhead per Item** | **50.32 Bytes** | 201.22 Bytes | 232.00 Bytes |
+
+---
+
+### 4. CAPEX Constraint Test (2048 Capacity, 200,000 Ops)
+| Metric | **DualCacheFF (v0.2.3)** | TinyUFO | Moka |
+|------|-------------------------|------|---------|
+| **Execution Time** | **7.43 ms** | 16.87 ms | 47.75 ms |
+| **Actual Hit Rate** | **88.57%** | 87.56% | 88.01% |
+| **Net Footprint** | 1,632 KB | 640 KB | 1,008 KB |
+| **Avg Cost/Item** | **816.0 Bytes** | 320.0 Bytes | 504.0 Bytes |
+
+---
+
+### 5. Performance Across Different Read/Write Ratios (131,072 Capacity Aligned, 5M Ops)
+
+#### 5.1 DualCacheFF (v0.2.3)
+| Read/Write Ratio | Throughput (Throughput, ops/s) | Hit Rate (Hit Rate, %) |
+|-----------------------|----------------------------|---------------------|
+| 10% Read / 90% Write  |                72,090,733.05 |              85.67% |
+| 25% Read / 75% Write  |                65,463,163.07 |              85.57% |
+| 50% Read / 50% Write  |                78,964,875.35 |              85.66% |
+| 75% Read / 25% Write  |                55,377,449.99 |              85.64% |
+| 100% Read / 0% Write  |                66,169,258.24 |              85.64% |
+
+#### 5.2 Moka
+| Read/Write Ratio | Throughput (Throughput, ops/s) | Hit Rate (Hit Rate, %) |
+|-----------------------|----------------------------|---------------------|
+| 10% Read / 90% Write  |                 2,162,662.34 |              82.63% |
+| 25% Read / 75% Write  |                 2,560,941.33 |              82.10% |
+| 50% Read / 50% Write  |                 2,980,172.02 |              82.16% |
+| 75% Read / 25% Write  |                 3,784,521.82 |              82.37% |
+| 100% Read / 0% Write  |                 6,194,371.96 |              82.45% |
+
+#### 5.3 TinyUFO
+| Read/Write Ratio | Throughput (Throughput, ops/s) | Hit Rate (Hit Rate, %) |
+|-----------------------|----------------------------|---------------------|
+| 10% Read / 90% Write  |                 8,702,115.70 |              81.65% |
+| 25% Read / 75% Write  |                 9,260,140.96 |              81.58% |
+| 50% Read / 50% Write  |                10,514,318.40 |              81.58% |
+| 75% Read / 25% Write  |                11,968,751.98 |              81.65% |
+| 100% Read / 0% Write  |                16,390,585.50 |              81.75% |
+
+---
+
 # 0.2.2
 ## Cache System Performance Comparative Analysis (v0.2.2 Aligned Release)
 

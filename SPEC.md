@@ -1,4 +1,4 @@
-# DualCache-FF Specification (v0.2.2)
+# DualCache-FF Specification (v0.2.3)
 
 ---
 
@@ -135,3 +135,20 @@ pub struct Daemon<K, V, S> {
 3. **[Graceful Overflow Safety]**:
    - Lookups and insertions on T1, T2, and Cache are strictly guarded under `if id_opt.is_some() { ... }`.
    - If an unexpected thread burst exceeds the registered `config.threads` capacity, the thread gracefully degrades to a safe cache miss with lossy background updates, fully preserving memory safety and eliminating Use-After-Free (UAF) risks.
+
+---
+
+## Phase 8: Static and Stub Cache Interfaces (v0.2.3)
+
+To fully support resource-constrained IoT/bare-metal environments (e.g., ESP32-C6, TinyNode) where dynamic memory allocator (`alloc`) is disabled or highly discouraged due to fragmentation or OOM risks, two additional interfaces are introduced in `v0.2.3` under the `static_cache` module:
+
+### 1. Zero-Overhead Compile-Time Stub (`DualCacheStub<K, V>`)
+- **Aesthetic / Intent**: Complete physical compile-time erasure. All API methods (`new`, `new_headless`, `get`, `insert`, `remove`, `clear`, `sync`) are annotated with `#[inline(always)]` and evaluate to direct no-ops.
+- **Physical Footprint**: 0 bytes RAM, 0 CPU cycles in release mode. Useful to compile-out caching mechanisms cleanly when building for target nodes with extreme memory constraints.
+
+### 2. Zero-Allocation Static Cache (`StaticDualCache<K, V, const N: usize, S = RandomState>`)
+- **Aesthetic / Intent**: 100% `alloc`-free active caching with direct-mapped layout.
+- **Concurrency Guarantee**: Thread safety is achieved at the slot level. Each of the `N` cache slots (`CacheSlot<K, V>`) possesses its own atomic spinlock (`AtomicBool`) guarding an `UnsafeCell<Option<(K, V)>>`.
+- **Memory Overhead**: Statically allocated in memory (typically in BSS or data segments when declared in global `static`), eliminating dynamic fragmentation risks entirely.
+- **API Parity**: Matches the frontend pipeline of `DualCacheFF` (`get`, `insert`, `remove`, `clear`, `sync`, and `new_headless` returning `(Self, ())`).
+

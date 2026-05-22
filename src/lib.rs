@@ -15,6 +15,8 @@ pub mod lossy_queue;
 pub mod storage;
 pub mod unsafe_core;
 pub mod workers;
+pub mod static_cache;
+
 
 // ── Internal sync abstraction ─────────────────────────────────────────────
 /// Type-routing module: selects the correct `Arc` implementation based on
@@ -26,6 +28,11 @@ pub mod workers;
 /// | `loom`     | `loom::sync::Arc`    |
 /// | _(neither)_| `alloc::sync::Arc`   |
 pub(crate) mod sync {
+    #[cfg(not(feature = "std"))]
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
+    use std::vec::Vec;
+
     #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
     pub use std::sync::Arc;
 

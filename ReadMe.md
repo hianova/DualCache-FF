@@ -1,41 +1,51 @@
-# DualCache-FF (Fast and Furious) 0.2.2
+# DualCache-FF (Fast and Furious) 0.2.3
 
-> **A highly opinionated, absolutely wait-free concurrent cache in Rust, optimized for extreme read-to-write ratios and scan-resistance. Now with full `no_std` support, progressive CPU spin-then-yield optimizations, graceful lifecycle shutdown, dynamic thread ID recycling, and zero external dependencies.**
+> **A highly opinionated, absolutely wait-free concurrent cache in Rust, optimized for extreme read-to-write ratios and scan-resistance. Now with full `no_std` support (including allocation-free static caches and zero-overhead stubs), progressive CPU spin-then-yield optimizations, graceful lifecycle shutdown, dynamic thread ID recycling, and zero external dependencies.**
 
 `DualcacheFF` is not a general-purpose cache. It is a specialized, high-density concurrent primitive built on **CQRS (Command Query Responsibility Segregation)**, **QSBR (Quiet State Based Reclamation)**, and a novel **Avg-based Clock Eviction Algorithm**.
 
 By deliberately abandoning heavy API contracts (like strict linearizability and global LFU history) in favor of CPU spatial locality and wait-free semantics, `DualcacheFF` achieves up to **80x higher throughput** than standard W-TinyLFU implementations (like Moka) under hostile workloads.
 
-## 📊 Performance Benchmark Summary (0.2.2)
+## 📊 Performance Benchmark Summary (0.2.3)
 
-`DualCacheFF` v0.2.2 integrates **Dynamic Thread ID Recycling**, **Cold-Start L1 Filter Bypass**, and strict capacity budget alignments. It maintains a stable, verified cache hit rate under heavy concurrent read/write workloads at **85.6%** (outperforming Moka and TinyUFO by ~3-4%), while sustaining an extreme wait-free throughput of **82.4M - 149.8M ops/s** under varying read/write ratios (up to 50x faster than Moka and 15x faster than TinyUFO). For the full detailed analysis, see [PERF.md](PERF.md).
-
-`DualCacheFF` 0.2.0 completely removes `crossbeam` dependencies, replacing them with custom wait-free primitives, resulting in a **40-60% throughput boost** over v0.1.0. For the full detailed analysis, see [perf_report.md](perf_report.md).
+`DualCacheFF` v0.2.3 integrates **Dynamic Thread ID Recycling**, **Cold-Start L1 Filter Bypass**, and strict capacity budget alignments, along with robust static allocations for memory-constrained targets. It maintains a stable, verified cache hit rate under heavy concurrent read/write workloads at **85.65%** (outperforming Moka and TinyUFO), while sustaining an extreme wait-free throughput of **55.3M - 86.8M ops/s** (up to 45x faster than Moka and 18x faster than TinyUFO). For the full detailed analysis, see [PERF.md](PERF.md).
 
 ### Throughput & Hit Rate (50% Read / 50% Write Zipf Workload)
 | Cache | Throughput (ops/s) | Hit Rate |
 | :--- | :--- | :--- |
-| **DualCacheFF (v0.2.2)** | **82,400,491** | **85.63%** |
-| **TinyUFO** | 7,734,504 | 81.62% |
-| **Moka** | 2,443,549 | 82.15% |
+| **DualCacheFF (v0.2.3)** | **78,964,875** | **85.66%** |
+| **TinyUFO** | 10,514,318 | 81.58% |
+| **Moka** | 2,980,172 | 82.16% |
 
 ### Latency Distribution (Zipf, 2M ops)
 | Metric | DualCacheFF | Moka | TinyUFO |
 | :--- | :--- | :--- | :--- |
-| **P50** | **42 ns** | 334 ns | 84 ns |
-| **P99** | **375 ns** | 5,792 ns | 2,250 ns |
-| **P99.9** | **917 ns** | 112,708 ns | 6,416 ns |
+| **P50** | **42 ns** | 292 ns | 84 ns |
+| **P99** | **458 ns** | 9,083 ns | 2,125 ns |
+| **P99.9** | **1,083 ns** | 97,500 ns | 6,041 ns |
 
 ### Memory Efficiency (per item, 1M items)
 | Cache | Bytes per Item |
 | :--- | :--- |
-| **DualCacheFF** | **47.52 B** |
-| **TinyUFO** | 201.24 B |
-| **Moka** | 231.86 B |
+| **DualCacheFF** | **50.32 B** |
+| **TinyUFO** | 201.22 B |
+| **Moka** | 232.00 B |
 
 ---
 
 *Why the leap in 0.2.0? By replacing standard channels with a **State-Gated LossyQueue**, we eliminated the Parker/Unparker wake-up overhead and false sharing in TLS buffers. The read path remains 100% wait-free.*
+
+## 🔌 Embedded `no_std` Options (v0.2.3)
+
+In addition to the high-performance concurrent dynamic `DualCacheFF`, version 0.2.3 introduces two specialized interfaces under the `static_cache` module for memory-constrained and bare-metal environments:
+
+1. **`StaticDualCache<K, V, const N: usize>` (Zero-Allocation Static Cache)**:
+   - **100% `alloc`-free**: Avoids dynamic heap allocations and fragmentation.
+   - **Thread-Safe**: Uses slot-level isolation via atomic spinlocks.
+   - **API Parity**: Fully supports `get`, `insert`, `remove`, `clear`, and `sync`.
+2. **`DualCacheStub<K, V>` (Zero-Overhead Facade)**:
+   - **Direct No-Op**: All methods are marked `#[inline(always)]` and evaluate to no-ops.
+   - **Zero Physical Footprint**: Optimizes to exactly 0 bytes and 0 CPU cycles in Release mode, allowing caching to be compiled out cleanly.
 
 ## ⚖️ The 0.2.0 Evolution
 
