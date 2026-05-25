@@ -1,4 +1,4 @@
-# DualCache-FF Specification (v0.2.3)
+# DualCache-FF Specification (v0.3.0)
 
 ---
 
@@ -15,7 +15,18 @@ pub struct Config {
     pub flush_tick_threshold: u64, // TLS forced flush threshold (ticks)
 }
 
-pub struct DualCacheFF<K, V, S = RandomState> {
+pub trait DaemonSpawner: Send + Sync {
+    fn spawn(&self, f: Box<dyn FnOnce() + Send + 'static>);
+}
+
+pub trait TlsProvider: Send + Sync {
+    fn get_worker_id(&self) -> Option<usize>;
+    fn with_hit_buf(&self, f: &mut dyn FnMut(&mut ([usize; 64], usize)));
+    fn with_l1_filter(&self, f: &mut dyn FnMut(&mut ([u8; 4096], usize)));
+    fn with_last_flush_tick(&self, f: &mut dyn FnMut(&mut u64));
+}
+
+pub struct DualCacheFF<K, V, S = RandomState, Tls: TlsProvider = DefaultTls> {
     pub hasher: S,
     pub t1: Arc<T1<K, V>>,
     pub t2: Arc<T2<K, V>>,
@@ -26,6 +37,7 @@ pub struct DualCacheFF<K, V, S = RandomState> {
     pub worker_states: Arc<[WorkerState]>,
     pub miss_buffers: Arc<[WorkerSlot<K, V>]>,
     pub daemon_tick: Arc<AtomicU64>,             // Background counter
+    pub tls: Tls, // Zero-cost TLS provider generic parameter
 }
 ```
 
@@ -151,4 +163,17 @@ To fully support resource-constrained IoT/bare-metal environments (e.g., ESP32-C
 - **Concurrency Guarantee**: Thread safety is achieved at the slot level. Each of the `N` cache slots (`CacheSlot<K, V>`) possesses its own atomic spinlock (`AtomicBool`) guarding an `UnsafeCell<Option<(K, V)>>`.
 - **Memory Overhead**: Statically allocated in memory (typically in BSS or data segments when declared in global `static`), eliminating dynamic fragmentation risks entirely.
 - **API Parity**: Matches the frontend pipeline of `DualCacheFF` (`get`, `insert`, `remove`, `clear`, `sync`, and `new_headless` returning `(Self, ())`).
+
+---
+
+## Phase 9: Unsafe Encapsulation and Pure Portability (v0.2.4)
+
+### 1. 100% Safe Hot-Path Abstractions
+- **Architectural Shift**: In v0.2.4, the hot-path logic inside `cache.rs` and `daemon.rs` has been thoroughly cleansed of all `unsafe` blocks. Pointer dereferencing and lock-free slot manipulations have been confined behind zero-cost strict safe wrappers (e.g., `get_mut_safe` in `WorkerSlot` and `get_node` in `Cache`).
+- **Defensive Radius**: This strictly limits memory safety blast radius to `unsafe_core.rs` and `arena.rs`, drastically improving auditability.
+- **Strict Configuration Guard**: Initialization cold paths (e.g., `Config::new_expert`) no longer use `unsafe` to bypass parameter boundaries. Instead, strict `assert!` mechanisms apply compile-time eliminated boundary validation (BCE).
+
+### 2. Embedded & RTOS `AtomicU32` Fallbacks
+- **Architecture Validation**: Many resource-constrained processors (e.g., specific RISC-V or older ARM cores) natively lack 64-bit hardware atomic instructions. 
+- **Type Aliasing**: Introduced conditional target feature compilation inside `sync.rs` (`target_has_atomic = "64"`). `AtomicIndex` and `AtomicTick` are now dynamically bound to `AtomicU64` or `AtomicU32` at compile time, retaining wait-free operations on smaller target constraints while adjusting bit masks for tags automatically.
 

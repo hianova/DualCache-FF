@@ -170,9 +170,10 @@ dependencies = [
 
 [[package]]
 name = "dualcache-ff"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "ahash",
+ "loom",
 ]
 
 [[package]]

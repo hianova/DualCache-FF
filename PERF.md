@@ -1,3 +1,36 @@
+# 0.3.0
+## Cache System Performance Comparative Analysis (v0.3.0 Release)
+
+Following the refactoring to a generic, zero-cost TLS provider (`TlsProvider`), we benchmarked the cache to verify throughput restoration. The new architecture completely eliminates dynamic dispatch and branching overhead on the hot path.
+
+### 1. Throughput (ops/s) and Hit Rate Comparative Analysis
+Test Configuration: `OPS_PER_BENCH = 50,000,000` operations, Threads = 4, Capacity = 1,048,576.
+
+#### 1.1 Uniform Workload (Random Uniform Access)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.3.0)** | **62,111,399.41** | 6.98% | 46,511,237 |
+
+#### 1.2 Zipf Workload (Hotspot Skewed)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.3.0)** | **63,037,241.43** | 82.72% | 8,642,072 |
+
+#### 1.3 Scan Workload (Sequential Scan)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.3.0)** | **87,378,840.09** | 6.29% | 46,855,176 |
+
+#### 1.4 Mixed Workload (Mixed Mode)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.3.0)** | **58,703,368.80** | 28.56% | 35,722,412 |
+
+*Throughput Analysis:*
+* **Performance Restored**: Throughput is fully restored and even improved for Uniform workload to **62.11M ops/s**.
+
+---
+
 # 0.2.3
 ## Cache System Performance Comparative Analysis (v0.2.3 Aligned Release)
 

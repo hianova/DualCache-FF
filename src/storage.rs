@@ -1,7 +1,8 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::sync::atomic::{AtomicU64, AtomicPtr, Ordering};
+use crate::sync::atomic::{AtomicPtr, Ordering};
+use crate::sync::index_types::{AtomicIndex, IndexType, EMPTY, TOMBSTONE, TAG_SHIFT, INDEX_MASK};
 use core::ptr;
 
 /// A single cached entry. Stored in the Arena node pool.
@@ -22,7 +23,7 @@ pub struct Node<K, V> {
 /// Sentinel values: 0 = empty, u64::MAX = tombstone.
 pub struct Cache<K, V> {
     pub(crate) index_mask: usize,
-    pub(crate) index: Box<[AtomicU64]>,
+    pub(crate) index: Box<[AtomicIndex]>,
     pub(crate) nodes: Box<[AtomicPtr<Node<K, V>>]>,
 }
 
@@ -34,7 +35,7 @@ impl<K, V> Cache<K, V> {
         let index_size = (capacity * 2).next_power_of_two();
         let mut index = Vec::with_capacity(index_size);
         for _ in 0..index_size {
-            index.push(AtomicU64::new(0));
+            index.push(AtomicIndex::new(EMPTY));
         }
 
         let mut nodes = Vec::with_capacity(capacity);
@@ -54,11 +55,11 @@ impl<K, V> Cache<K, V> {
         let mut idx = hash as usize & self.index_mask;
         for _ in 0..16 {
             let entry = self.index[idx].load(Ordering::Acquire);
-            if entry == 0 {
+            if entry == EMPTY {
                 return None;
             }
-            if entry != u64::MAX && (entry >> 48) as u16 == tag {
-                return Some((entry & 0x0000_FFFF_FFFF_FFFF) as usize);
+            if entry != TOMBSTONE && (entry >> TAG_SHIFT) as u16 == tag {
+                return Some((entry & INDEX_MASK) as usize);
             }
             idx = (idx + 1) & self.index_mask;
         }
@@ -66,11 +67,11 @@ impl<K, V> Cache<K, V> {
     }
 
     #[inline(always)]
-    pub fn index_store(&self, hash: u64, tag: u16, entry: u64) {
+    pub fn index_store(&self, hash: u64, tag: u16, entry: IndexType) {
         let mut idx = hash as usize & self.index_mask;
         for i in 0..16 {
             let prev = self.index[idx].load(Ordering::Acquire);
-            if prev == 0 || prev == u64::MAX || (prev >> 48) == (tag as u64) {
+            if prev == EMPTY || prev == TOMBSTONE || (prev >> TAG_SHIFT) == (tag as IndexType) {
                 self.index[idx].store(entry, Ordering::Release);
                 return;
             }
@@ -86,14 +87,14 @@ impl<K, V> Cache<K, V> {
         let mut idx = hash as usize & self.index_mask;
         for _ in 0..16 {
             let entry = self.index[idx].load(Ordering::Acquire);
-            if entry == 0 {
+            if entry == EMPTY {
                 return;
             }
-            if entry != u64::MAX
-                && (entry >> 48) as u16 == tag
-                && (entry & 0x0000_FFFF_FFFF_FFFF) == (g_idx as u64)
+            if entry != TOMBSTONE
+                && (entry >> TAG_SHIFT) as u16 == tag
+                && (entry & INDEX_MASK) == (g_idx as IndexType)
             {
-                self.index[idx].store(u64::MAX, Ordering::Release);
+                self.index[idx].store(TOMBSTONE, Ordering::Release);
                 return;
             }
             idx = (idx + 1) & self.index_mask;
@@ -102,12 +103,23 @@ impl<K, V> Cache<K, V> {
 
     #[inline(always)]
     pub fn index_clear_at(&self, idx: usize) {
-        self.index[idx].store(0, Ordering::Relaxed);
+        self.index[idx].store(EMPTY, Ordering::Relaxed);
     }
 
     #[inline(always)]
     pub fn index_len(&self) -> usize {
         self.index.len()
+    }
+
+    #[inline(always)]
+    pub fn get_node<'a>(&self, idx: usize) -> Option<&'a Node<K, V>> {
+        let ptr = self.nodes[idx].load(Ordering::Acquire);
+        if ptr.is_null() {
+            None
+        } else {
+            // Safety: QSBR guarantees pointer is valid during check-in.
+            Some(unsafe { &*ptr })
+        }
     }
 
     #[inline(always)]
@@ -134,7 +146,7 @@ impl<K, V> Cache<K, V> {
 
     pub fn clear(&self) {
         for i in 0..self.index.len() {
-            self.index[i].store(0, Ordering::Relaxed);
+            self.index[i].store(EMPTY, Ordering::Relaxed);
         }
         for i in 0..self.nodes.len() {
             self.nodes[i].store(ptr::null_mut(), Ordering::Release);

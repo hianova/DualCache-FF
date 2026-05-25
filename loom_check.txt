@@ -1,0 +1,581 @@
+    Checking dualcache-ff v0.2.3 (/Users/hianova/Documents/DualCache-FF)
+warning: unexpected `cfg` condition name: `loom`
+  --> src/cache.rs:23:29
+   |
+23 | #[cfg(any(feature = "loom", loom))]
+   |                             ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: expected names are: `docsrs`, `feature`, and `test` and 31 more
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unused doc comment
+  --> src/cache.rs:20:1
+   |
+20 | / /// Global QSBR epoch. Daemon increments this every maintenance cycle.
+21 | | /// Workers store their local epoch on `get()` entry and reset to 0 on exit,
+22 | | /// allowing Daemon to safely reclaim stale pointers.
+   | |_----------------------------------------------------^
+   |   |
+   |   rustdoc does not generate documentation for macro invocations
+   |
+   = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+   = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/cache.rs:28:33
+   |
+28 | #[cfg(not(any(feature = "loom", loom)))]
+   |                                 ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:104:54
+    |
+104 | #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+    |                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:107:54
+    |
+107 | #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+    |                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:113:54
+    |
+113 | #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+    |                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:119:54
+    |
+119 | #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+    |                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:124:54
+    |
+124 | #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+    |                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:133:54
+    |
+133 | #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+    |                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:136:54
+    |
+136 | #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+    |                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:167:29
+    |
+167 | #[cfg(any(feature = "loom", loom))]
+    |                             ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:172:29
+    |
+172 | #[cfg(any(feature = "loom", loom))]
+    |                             ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:175:29
+    |
+175 | #[cfg(any(feature = "loom", loom))]
+    |                             ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:274:37
+    |
+274 |         #[cfg(any(feature = "loom", loom))]
+    |                                     ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:279:41
+    |
+279 |         #[cfg(not(any(feature = "loom", loom)))]
+    |                                         ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:304:37
+    |
+304 |         #[cfg(any(feature = "loom", loom))]
+    |                                     ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:309:41
+    |
+309 |         #[cfg(not(any(feature = "loom", loom)))]
+    |                                         ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:742:49
+    |
+742 |                     #[cfg(any(feature = "loom", loom))]
+    |                                                 ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/cache.rs:753:53
+    |
+753 |                     #[cfg(not(any(feature = "loom", loom)))]
+    |                                                     ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/daemon.rs:170:45
+    |
+170 |                 #[cfg(any(feature = "loom", loom))]
+    |                                             ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/daemon.rs:172:70
+    |
+172 |                 #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+    |                                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/lossy_queue.rs:138:57
+    |
+138 | ...                   #[cfg(any(feature = "loom", loom))]
+    |                                                   ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/lossy_queue.rs:140:61
+    |
+140 | ...                   #[cfg(not(any(feature = "loom", loom)))]
+    |                                                       ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/lossy_queue.rs:235:49
+    |
+235 |                     #[cfg(any(feature = "loom", loom))]
+    |                                                 ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/lossy_queue.rs:237:53
+    |
+237 |                     #[cfg(not(any(feature = "loom", loom)))]
+    |                                                     ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/workers.rs:73:33
+   |
+73 | #[cfg(not(any(feature = "loom", loom)))]
+   |                                 ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/workers.rs:78:29
+   |
+78 | #[cfg(any(feature = "loom", loom))]
+   |                             ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/workers.rs:84:37
+   |
+84 |     #[cfg(not(any(feature = "loom", loom)))]
+   |                                     ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/workers.rs:91:33
+   |
+91 |     #[cfg(any(feature = "loom", loom))]
+   |                                 ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/workers.rs:104:37
+    |
+104 |     #[cfg(not(any(feature = "loom", loom)))]
+    |                                     ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+   --> src/workers.rs:115:33
+    |
+115 |     #[cfg(any(feature = "loom", loom))]
+    |                                 ^^^^ help: found config with similar value: `feature = "loom"`
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+ --> src/sync.rs:6:54
+  |
+6 | #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+  |                                                      ^^^^ help: found config with similar value: `feature = "loom"`
+  |
+  = help: consider using a Cargo feature instead
+  = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+           [lints.rust]
+           unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+  = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+  = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+ --> src/sync.rs:9:29
+  |
+9 | #[cfg(any(feature = "loom", loom))]
+  |                             ^^^^ help: found config with similar value: `feature = "loom"`
+  |
+  = help: consider using a Cargo feature instead
+  = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+           [lints.rust]
+           unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+  = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+  = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:12:59
+   |
+12 | #[cfg(all(not(feature = "std"), not(any(feature = "loom", loom))))]
+   |                                                           ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:15:33
+   |
+15 | #[cfg(not(any(feature = "loom", loom)))]
+   |                                 ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:18:29
+   |
+18 | #[cfg(any(feature = "loom", loom))]
+   |                             ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:21:33
+   |
+21 | #[cfg(not(any(feature = "loom", loom)))]
+   |                                 ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:27:29
+   |
+27 | #[cfg(any(feature = "loom", loom))]
+   |                             ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:34:37
+   |
+34 |     #[cfg(not(any(feature = "loom", loom)))]
+   |                                     ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:39:33
+   |
+39 |     #[cfg(any(feature = "loom", loom))]
+   |                                 ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:46:37
+   |
+46 |     #[cfg(not(any(feature = "loom", loom)))]
+   |                                     ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:49:37
+   |
+49 |     #[cfg(not(any(feature = "loom", loom)))]
+   |                                     ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `loom`
+  --> src/sync.rs:78:33
+   |
+78 |     #[cfg(any(feature = "loom", loom))]
+   |                                 ^^^^ help: found config with similar value: `feature = "loom"`
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(loom)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+error[E0308]: mismatched types
+   --> src/cache.rs:292:46
+    |
+287 |     pub fn new_headless_with_tls<T: TlsProvider + 'static>(
+    |                                  - found this type parameter
+...
+292 |         let provider: Arc<dyn TlsProvider> = Arc::new(tls);
+    |                       --------------------   ^^^^^^^^^^^^^ expected `Arc<dyn TlsProvider>`, found `Arc<T>`
+    |                       |
+    |                       expected due to this
+    |
+    = note: expected struct `loom::sync::Arc<dyn TlsProvider>`
+               found struct `loom::sync::Arc<T>`
+    = help: type parameters must be constrained to match other types
+    = note: for more information, visit https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
+
+For more information about this error, try `rustc --explain E0308`.
+warning: `dualcache-ff` (lib) generated 43 warnings
+error: could not compile `dualcache-ff` (lib) due to 1 previous error; 43 warnings emitted

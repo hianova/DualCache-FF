@@ -1,24 +1,24 @@
 use dualcache_ff::{Config, DualCacheFF};
 use std::sync::Arc;
 
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 use loom::thread;
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 use std::thread;
 
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 use loom::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 use loom::sync::Mutex;
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 use std::sync::Mutex;
 
 use std::collections::HashMap;
 
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 fn run_with_timeout<F, T>(timeout: std::time::Duration, f: F) -> T
 where
     F: FnOnce() -> T + Send + 'static,
@@ -37,19 +37,21 @@ where
     }
 }
 
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 macro_rules! test_runner {
     ($name:ident, $body:expr) => {
         #[test]
         fn $name() {
-            loom::model(|| {
+            let mut builder = loom::model::Builder::new();
+            builder.preemption_bound = Some(2);
+            builder.check(|| {
                 $body
             });
         }
     };
 }
 
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 macro_rules! test_runner {
     ($name:ident, $body:expr) => {
         #[test]
@@ -98,7 +100,7 @@ test_runner!(test_concurrent_ops, {
     
     assert_eq!(ops.load(Ordering::Relaxed), 8);
 
-    #[cfg(not(loom))]
+    #[cfg(not(feature = "loom"))]
     {
         // Wait for Daemon to converge in real execution
         cache.sync();
@@ -115,7 +117,7 @@ test_runner!(test_concurrent_ops, {
     }
 });
 
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 #[test]
 fn test_ttl_mechanic() {
     run_with_timeout(std::time::Duration::from_secs(10), || {

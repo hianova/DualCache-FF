@@ -116,6 +116,13 @@ impl<K, V> WorkerSlot<K, V> {
     pub unsafe fn get_mut_unchecked(&self) -> &mut BatchBuf<K, V> {
         self.inner.with_mut(|ptr| unsafe { &mut **ptr })
     }
+
+    /// Safe accessor that encapsulates the `unsafe` block.
+    /// In DualCache-FF this is safe because it's only called by the assigned worker thread.
+    #[inline(always)]
+    pub fn get_mut_safe(&self) -> &mut BatchBuf<K, V> {
+        unsafe { self.get_mut_unchecked() }
+    }
 }
 
 unsafe impl<K: Send, V: Send> Send for WorkerSlot<K, V> {}

@@ -2,14 +2,15 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use crate::sync::{Arc, ArcSlice, new_arc_slice};
-use crate::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use crate::sync::index_types::AtomicTick;
 use core::hash::{Hash, BuildHasher};
 
 use crate::arena::Arena;
 use crate::storage::{Cache, Node};
 use crate::filters::{T1, T2};
 use crate::lossy_queue::{LossyQueue, OneshotAck};
-use crate::{WorkerState, GLOBAL_EPOCH};
+use crate::cache::{WorkerState, GLOBAL_EPOCH};
 
 /// Maximum rank (Revolution Shield value).
 /// A newly inserted or hit item gets rank = MAX_RANK, granting it
@@ -56,7 +57,7 @@ pub struct Daemon<K, V, S> {
     /// Monotonically increasing tick counter — incremented on every poll loop.
     /// Workers read this (Relaxed) to decide whether to time-flush their TLS
     /// buffers without needing a hardware clock in no_std mode.
-    pub daemon_tick: Arc<AtomicU64>,
+    pub daemon_tick: Arc<AtomicTick>,
     /// Cold-start flag shared with DualCacheFF
     pub is_cold_start: Arc<AtomicBool>,
 }
@@ -82,7 +83,7 @@ where
         duration: u32,
         poll_us: u64,
         worker_states: ArcSlice<WorkerState>,
-        daemon_tick: Arc<AtomicU64>,
+        daemon_tick: Arc<AtomicTick>,
         is_cold_start: Arc<AtomicBool>,
     ) -> Self {
         let _ = duration; // duration is stored in the epoch tick rate; kept for API compat
@@ -162,7 +163,16 @@ where
             self.maintenance();
 
             // ── Advance daemon_tick ───────────────────────────────────────
-            self.daemon_tick.fetch_add(1, Ordering::Relaxed);
+            #[cfg(any(feature = "loom", loom))]
+            {
+                if processed > 0 {
+                    self.daemon_tick.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            #[cfg(not(any(feature = "loom", loom)))]
+            {
+                self.daemon_tick.fetch_add(1, Ordering::Relaxed);
+            }
 
             // ── Idle sleep / spin ─────────────────────────────────────────
             if processed == 0 {
@@ -285,25 +295,27 @@ where
 
     fn maintenance(&mut self) {
         // ── Phase 0: QSBR Garbage Collection ─────────────────────────────
-        let current_global = GLOBAL_EPOCH.load(Ordering::Relaxed);
-        GLOBAL_EPOCH.store(current_global + 1, Ordering::Release);
+        if !self.garbage_queue.is_empty() {
+            let current_global = GLOBAL_EPOCH.load(Ordering::Relaxed);
+            GLOBAL_EPOCH.store(current_global + 1, Ordering::Release);
 
-        let mut min_active_epoch = current_global + 1;
-        for state in self.worker_states.iter() {
-            let local = state.local_epoch.load(Ordering::Acquire);
-            if local != 0 && local < min_active_epoch {
-                min_active_epoch = local;
+            let mut min_active_epoch = current_global + 1;
+            for state in self.worker_states.iter() {
+                let local = state.local_epoch.load(Ordering::Acquire);
+                if local != 0 && local < min_active_epoch {
+                    min_active_epoch = local;
+                }
             }
+
+            self.garbage_queue.retain(|&(ptr, epoch)| {
+                if epoch < min_active_epoch {
+                    unsafe { drop(Box::from_raw(ptr)) };
+                    false
+                } else {
+                    true
+                }
+            });
         }
-
-        self.garbage_queue.retain(|&(ptr, epoch)| {
-            if epoch < min_active_epoch {
-                unsafe { drop(Box::from_raw(ptr)) };
-                false
-            } else {
-                true
-            }
-        });
 
         // ── Phase 1: Collect hit indices into accumulator ─────────────────
         while let Some(batch) = self.hit_rx.try_recv() {
@@ -342,7 +354,9 @@ where
         }
 
         let cold_start = self.arena.free_list_len() > self.arena.capacity / 20;
-        self.is_cold_start.store(cold_start, Ordering::Relaxed);
+        if self.is_cold_start.load(Ordering::Relaxed) != cold_start {
+            self.is_cold_start.store(cold_start, Ordering::Relaxed);
+        }
     }
 
     /// Avg-rank eviction: scan the Pendulum cursor, compare each slot's rank

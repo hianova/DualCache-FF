@@ -42,6 +42,17 @@ impl<K, V> T1<K, V> {
         self.slots[idx].store(ptr, Ordering::Release);
     }
 
+    /// Safe accessor that relies on QSBR epoch protection being active.
+    #[inline(always)]
+    pub fn get_node<'a>(&self, hash: u64) -> Option<&'a Node<K, V>> {
+        let ptr = self.load_slot(hash);
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &*ptr })
+        }
+    }
+
     #[inline(always)]
     pub fn clear_if_matches(&self, hash: u64, expected_ptr: *mut Node<K, V>) {
         let idx = hash as usize & self.mask;
@@ -99,6 +110,17 @@ impl<K, V> T2<K, V> {
     pub fn store_slot(&self, hash: u64, ptr: *mut Node<K, V>) {
         let idx = hash as usize & self.mask;
         self.slots[idx].store(ptr, Ordering::Release);
+    }
+
+    /// Safe accessor that relies on QSBR epoch protection being active.
+    #[inline(always)]
+    pub fn get_node<'a>(&self, hash: u64) -> Option<&'a Node<K, V>> {
+        let ptr = self.load_slot(hash);
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { &*ptr })
+        }
     }
 
     #[inline(always)]
