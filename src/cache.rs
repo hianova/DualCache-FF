@@ -1,4 +1,3 @@
-#![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{vec, vec::Vec, boxed::Box};
@@ -17,9 +16,9 @@ use crate::config::Config;
 
 // ── QSBR global epoch ─────────────────────────────────────────────────────
 
-/// Global QSBR epoch. Daemon increments this every maintenance cycle.
-/// Workers store their local epoch on `get()` entry and reset to 0 on exit,
-/// allowing Daemon to safely reclaim stale pointers.
+// Global QSBR epoch. Daemon increments this every maintenance cycle.
+// Workers store their local epoch on `get()` entry and reset to 0 on exit,
+// allowing Daemon to safely reclaim stale pointers.
 #[cfg(any(feature = "loom", loom))]
 loom::lazy_static! {
     pub static ref GLOBAL_EPOCH: loom::sync::atomic::AtomicUsize = loom::sync::atomic::AtomicUsize::new(1);
