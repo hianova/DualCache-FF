@@ -1,3 +1,5 @@
+#![cfg(not(feature = "loom"))]
+
 use dualcache_ff::{Config, DualCacheFF};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

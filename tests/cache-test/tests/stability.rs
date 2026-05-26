@@ -1,3 +1,5 @@
+#![cfg(not(feature = "loom"))]
+
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 

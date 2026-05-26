@@ -1,3 +1,5 @@
+#![cfg(not(feature = "loom"))]
+
 use dualcache_ff::Config;
 use dualcache_ff::static_cache::{StaticDualCache, DualCacheStub};
 use std::sync::Arc;

@@ -1,3 +1,4 @@
+#![cfg(not(feature = "loom"))]
 #![cfg_attr(fuzzing, no_main)]
 
 #[cfg(fuzzing)]

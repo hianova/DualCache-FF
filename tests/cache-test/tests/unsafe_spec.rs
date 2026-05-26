@@ -1,3 +1,5 @@
+#![cfg(not(feature = "loom"))]
+
 use dualcache_ff::{Config, DualCacheFF};
 use dualcache_ff::unsafe_core::{Node, WorkerSlot};
 use std::thread;
@@ -99,7 +101,7 @@ fn test_qsbr_epoch_retention_and_uaf_safety() {
         let reader_handle = thread::spawn(move || {
             let id = 1;
             // Get current global epoch and check-in manually
-            let global_epoch = dualcache_ff::GLOBAL_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+            let global_epoch = dualcache_ff::cache::GLOBAL_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
             cache_clone.worker_states[id].local_epoch.store(global_epoch, std::sync::atomic::Ordering::Release);
 
             // Read the item

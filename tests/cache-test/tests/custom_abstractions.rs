@@ -1,9 +1,22 @@
+#![cfg(not(feature = "loom"))]
+
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 use dualcache_ff::{Config, DaemonSpawner, DualCacheFF, TlsProvider};
+
+#[cfg(feature = "loom")]
+use loom::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "loom")]
+use loom::sync::Arc;
+#[cfg(feature = "loom")]
+use loom::thread;
+
+#[cfg(not(feature = "loom"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(feature = "loom"))]
+use std::sync::Arc;
+#[cfg(not(feature = "loom"))]
+use std::thread;
 
 // ── Mock Spawner implementation ──────────────────────────────────────────
 struct MockSpawner {
@@ -25,6 +38,7 @@ thread_local! {
     static MOCK_LAST_FLUSH_TICK: RefCell<u64> = const { RefCell::new(0) };
 }
 
+#[derive(Clone)]
 struct MockTlsProvider;
 
 impl TlsProvider for MockTlsProvider {
@@ -53,8 +67,31 @@ fn set_mock_worker_id(id: usize) {
 
 // ── Integration Tests ─────────────────────────────────────────────────────
 
-#[test]
-fn test_custom_spawner() {
+#[cfg(feature = "loom")]
+macro_rules! test_runner {
+    ($name:ident, $body:expr) => {
+        #[test]
+        fn $name() {
+            let mut builder = loom::model::Builder::new();
+            builder.preemption_bound = Some(2);
+            builder.check(|| {
+                $body
+            });
+        }
+    };
+}
+
+#[cfg(not(feature = "loom"))]
+macro_rules! test_runner {
+    ($name:ident, $body:expr) => {
+        #[test]
+        fn $name() {
+            $body
+        }
+    };
+}
+
+test_runner!(test_custom_spawner, {
     let spawned_flag = Arc::new(AtomicBool::new(false));
     let spawner = MockSpawner {
         spawned: spawned_flag.clone(),
@@ -72,10 +109,9 @@ fn test_custom_spawner() {
 
     // Verify lookup works
     assert_eq!(cache.get(&"key1".to_string()), Some("val1".to_string()));
-}
+});
 
-#[test]
-fn test_custom_tls_provider() {
+test_runner!(test_custom_tls_provider, {
     let config = Config::new_expert(256, 128, 128, 10, 4);
     let (cache, daemon) = DualCacheFF::new_headless_with_tls(config, MockTlsProvider);
 
@@ -115,4 +151,4 @@ fn test_custom_tls_provider() {
     // Explicitly drop cache to shutdown daemon
     drop(cache);
     let _ = daemon_handle.join();
-}
+});

@@ -1,3 +1,5 @@
+#![cfg(not(feature = "loom"))]
+
 use dualcache_ff::{Config, DualCacheFF};
 use std::time::Duration;
 
