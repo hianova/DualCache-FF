@@ -1,4 +1,4 @@
-# DualCache-FF (Fast and Furious) 0.3.0
+# DualCache-FF (Fast and Furious) 0.3.1
 
 > **A highly opinionated, absolutely wait-free concurrent cache in Rust, optimized for extreme read-to-write ratios and scan-resistance. Now with full `no_std` support (including allocation-free static caches and zero-overhead stubs), progressive CPU spin-then-yield optimizations, graceful lifecycle shutdown, dynamic thread ID recycling, and zero external dependencies.**
 
@@ -6,14 +6,14 @@
 
 By deliberately abandoning heavy API contracts (like strict linearizability and global LFU history) in favor of CPU spatial locality and wait-free semantics, `DualcacheFF` achieves up to **80x higher throughput** than standard W-TinyLFU implementations (like Moka) under hostile workloads.
 
-## 📊 Performance Benchmark Summary (0.3.0)
+## 📊 Performance Benchmark Summary (0.3.1)
 
-`DualCacheFF` v0.3.0 introduces a **Zero-Cost Generic TLS Provider (`TlsProvider`)** that completely eliminates dynamic dispatch and branching overhead on the hot path, achieving unprecedented throughput restoration. It integrates **Dynamic Thread ID Recycling**, **Cold-Start L1 Filter Bypass**, and strict capacity budget alignments. It maintains a stable, verified cache hit rate under heavy concurrent read/write workloads at **85.65%**, while sustaining an extreme wait-free throughput of **62.1M - 87.3M ops/s**. For the full detailed analysis, see [PERF.md](PERF.md).
+`DualCacheFF` v0.3.1 introduces a **Zero-Cost Generic TLS Provider (`TlsProvider`)** that completely eliminates dynamic dispatch and branching overhead on the hot path, achieving unprecedented throughput restoration. It integrates **Dynamic Thread ID Recycling**, **Cold-Start L1 Filter Bypass**, and strict capacity budget alignments. It maintains a stable, verified cache hit rate under heavy concurrent read/write workloads at **85.65%**, while sustaining an extreme wait-free throughput of **62.1M - 87.3M ops/s**. For the full detailed analysis, see [PERF.md](PERF.md).
 
 ### Throughput & Hit Rate (50% Read / 50% Write Zipf Workload)
 | Cache | Throughput (ops/s) | Hit Rate |
 | :--- | :--- | :--- |
-| **DualCacheFF (v0.3.0)** | **78,964,875** | **85.66%** |
+| **DualCacheFF (v0.3.1)** | **78,964,875** | **85.66%** |
 | **TinyUFO** | 10,514,318 | 81.58% |
 | **Moka** | 2,980,172 | 82.16% |
 
@@ -35,9 +35,9 @@ By deliberately abandoning heavy API contracts (like strict linearizability and 
 
 *Why the leap in 0.2.0? By replacing standard channels with a **State-Gated LossyQueue**, we eliminated the Parker/Unparker wake-up overhead and false sharing in TLS buffers. The read path remains 100% wait-free.*
 
-## 🔌 Embedded `no_std` Options & Custom TLS (v0.3.0)
+## 🔌 Embedded `no_std` Options & Custom TLS (v0.3.1)
 
-Version 0.3.0 implements a **Zero-Cost Generic TLS Abstraction**, enabling custom task-local storage injection in `no_std` environments without the overhead of `dyn Trait`.
+Version 0.3.1 implements a **Zero-Cost Generic TLS Abstraction**, enabling custom task-local storage injection in `no_std` environments without the overhead of `dyn Trait`.
 
 In addition to the high-performance concurrent dynamic `DualCacheFF`, it features specialized interfaces under the `static_cache` module for memory-constrained and bare-metal environments:
 
