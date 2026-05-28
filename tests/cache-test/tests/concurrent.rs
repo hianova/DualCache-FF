@@ -148,3 +148,39 @@ fn test_ttl_mechanic() {
         assert!(expired, "TTL Mechanic failed: item did not expire within 2.5 seconds");
     });
 }
+
+test_runner!(test_concurrent_insert_t1, {
+    let config = Config::new_expert(128, 64, 64, 200, 4);
+    let cache = DualCacheFF::new(config);
+    
+    let ops = Arc::new(AtomicUsize::new(0));
+    let mut handles = vec![];
+    
+    for i in 0..2 {
+        let c = cache.clone();
+        let ops_clone = ops.clone();
+        let handle = thread::spawn(move || {
+            let offset = i * 100;
+            c.insert_t1(offset, offset);
+            c.insert_t1(offset + 1, offset + 1);
+            let _ = c.get(&offset);
+            ops_clone.fetch_add(2, Ordering::Relaxed);
+        });
+        handles.push(handle);
+    }
+    
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    
+    assert_eq!(ops.load(Ordering::Relaxed), 4);
+
+    #[cfg(not(feature = "loom"))]
+    {
+        cache.sync();
+        assert_eq!(cache.get(&0), Some(0));
+        assert_eq!(cache.get(&1), Some(1));
+        assert_eq!(cache.get(&100), Some(100));
+        assert_eq!(cache.get(&101), Some(101));
+    }
+});

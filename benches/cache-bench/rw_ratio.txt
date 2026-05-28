@@ -1,0 +1,11 @@
+Generating zipf keys (Total 5000000 ops)...
+Aligned benchmark physical capacity: 131072
+
+=== DualCacheFF Read/Write Ratios ===
+| Read/Write Ratio | Throughput (ops/s) | Hit Rate (%) |
+|------------------|--------------------|--------------|
+| 10% Read / 90% Write |        83713065.57 |       85.63% |
+| 25% Read / 75% Write |        89961631.36 |       85.59% |
+| 50% Read / 50% Write |        77217442.88 |       85.66% |
+| 75% Read / 25% Write |        80086707.64 |       85.65% |
+| 100% Read / 0% Write |       120653459.13 |       85.63% |

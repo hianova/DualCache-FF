@@ -31,6 +31,10 @@ harness = false
 name = "rw_ratio"
 harness = false
 
+[[bench]]
+name = "t1_test"
+harness = false
+
 [dependencies]
 moka = { version = "0.12", features = ["sync"] }
 rand = "0.8"

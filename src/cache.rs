@@ -718,6 +718,14 @@ where
         }
     }
 
+    /// Insert a key-value pair directly as a high-priority "genius" item.
+    /// This bypasses the L1 probation filter, doesn't use the thread-local batch buffer,
+    /// and assigns the item the maximum survival rank (e.g. 255) and promotes it to T1 immediately.
+    pub fn insert_t1(&self, key: K, value: V) {
+        let hash = self.hash(&key);
+        let _ = self.cmd_tx.try_send(Command::InsertT1(key, value, hash));
+    }
+
     /// Remove a key from the cache.
     pub fn remove(&self, key: &K) {
         let hash = self.hash(key);

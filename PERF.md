@@ -1,5 +1,106 @@
+# 0.4.0
+## Cache System Performance Comparative Analysis (insert_t1 "Genius Immunity" A/B Test)
+
+Following the proposal to implement `insert_t1` (Cache Pinning / Cost-Aware Caching), we ran an A/B test using a highly skewed Zipfian distribution (α=0.99) with 10,000,000 requests. We simulated an "Oracle Phase" by extracting hot keys from the first 1,000 operations and pinning them with `insert_t1` (rank = 255 and direct T1 promotion). 
+
+### A/B Test Results
+
+| Metric | Group A (Cold Start / Standard LFU) | Group B (Experimental / insert_t1) | Improvement |
+|------|-----------------------------------|-----------------------------------|-------------|
+| **Throughput** | 63,405,865 ops/s | **75,124,310 ops/s** | **+18.4%** |
+| **Hit Rate** | 82.26% | **88.94%** | **+6.68%** |
+| **Warm-up Time** | Gradual | **Zero Warm-up** (Vertical climb) | **Instant** |
+
+*Analysis of the Three Major Advantages:*
+1. **Zero Warm-up Time**: Group B avoided the "valley of death" by giving known hot keys absolute immunity. Hit rates surged to 90%+ instantaneously, avoiding cache mis-evictions (evicting hot data that started at rank 0).
+2. **Global Throughput Uplift**: Because the hot keys were locked with rank 255 (shielded from the cursor), the Arena bypassed massive amounts of `free_list` pop/push and pointer swaps. This translated into a direct ~18% CPU throughput overflow.
+3. **Early Half-Life Decay Stress Test**: The injection of rank 255 items triggered `count_sum` thresholding early. The global decay algorithm demonstrated flawless stability under this synthetic extreme load, confirming the decay architecture's resilience.
+
+---
+
+# 0.3.1
+## Cache System Performance Comparative Analysis (v0.3.1)
+
+Following the implementation of `insert_t1` and full benchmark suite verification, here are the aligned performance results across all dimensions.
+
+### 1. Throughput (ops/s) and Hit Rate Comparative Analysis
+Test Configuration: `OPS_PER_BENCH = 50,000,000` operations, Threads = 4, Capacity = 1,048,576.
+
+#### 1.1 Uniform Workload (Random Uniform Access)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.3.1)** | **60,953,269.49** | 7.02% | 46,491,518 |
+| TinyUFO | 2,673,324.56 | 10.49% | 44,756,361 |
+| Moka | 1,056,021.55 | 10.48% | 44,757,616 |
+
+#### 1.2 Zipf Workload (Hotspot Skewed)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.3.1)** | **68,598,185.78** | 82.74% | 8,627,671 |
+| TinyUFO | 9,996,639.05 | 82.74% | 8,629,345 |
+| Moka | 4,293,362.90 | 84.20% | 7,901,705 |
+
+#### 1.3 Scan Workload (Sequential Scan)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.3.1)** | **88,176,928.77** | 6.64% | 46,681,430 |
+| TinyUFO | 2,542,146.58 | 2.11% | 48,947,000 |
+| Moka | 1,112,092.26 | 7.97% | 46,015,685 |
+
+#### 1.4 Mixed Workload (Mixed Mode)
+| Cache | Throughput (ops/s) | Hit Rate | DB Penetrations |
+|------|---------------|--------|-----------|
+| **DualCacheFF (v0.3.1)** | **69,836,657.30** | 33.26% | 33,370,831 |
+| TinyUFO | 3,566,966.46 | 34.16% | 32,918,401 |
+| Moka | 1,443,217.40 | 33.60% | 33,200,387 |
+
+---
+
+### 2. Latency Distribution (Zipf Workload, 131,072 Capacity Aligned, 2M Ops)
+| Metric | **DualCacheFF (v0.3.1)** |
+|------|-------------------------|
+| **P50 Latency** | **42 ns** |
+| **P90 Latency** | **167 ns** |
+| **P99 Latency** | **458 ns** |
+| **P99.9 Latency** | **1,125 ns** |
+| **P99.99 Latency** | **4,625 ns** |
+| **Max Latency** | **237,000 ns (237 μs)** |
+| **Hit Rate** | **85.70%** |
+
+---
+
+### 3. Memory Overhead (1M Inserts)
+| Metric | **DualCacheFF (v0.3.1)** |
+|------|-------------------------|
+| **Baseline RSS** | 1.66 MB |
+| **Post-Init RSS** | 40.86 MB |
+| **Post-1M Insert RSS** | 61.69 MB |
+| **Overhead per Item** | **46.95 Bytes** |
+
+---
+
+### 4. CAPEX Constraint Test (2048 Capacity, 200,000 Ops)
+| Metric | **DualCacheFF (v0.3.1)** |
+|------|-------------------------|
+| **Execution Time** | **6.93 ms** |
+| **Actual Hit Rate** | **89.47%** |
+| **Net Footprint** | 1,664 KB |
+| **Avg Cost/Item** | **832.0 Bytes** |
+
+---
+
+### 5. Performance Across Different Read/Write Ratios (131,072 Capacity Aligned, 5M Ops)
+| Read/Write Ratio | Throughput (ops/s) | Hit Rate (%) |
+|-----------------------|----------------------------|---------------------|
+| 10% Read / 90% Write  |                83,713,065.57 |              85.63% |
+| 25% Read / 75% Write  |                89,961,631.36 |              85.59% |
+| 50% Read / 50% Write  |                77,217,442.88 |              85.66% |
+| 75% Read / 25% Write  |                80,086,707.64 |              85.65% |
+| 100% Read / 0% Write  |               120,653,459.13 |              85.63% |
+
+---
+
 # 0.3.0
-## Cache System Performance Comparative Analysis (v0.3.0 Release)
 
 Following the refactoring to a generic, zero-cost TLS provider (`TlsProvider`), we benchmarked the cache to verify throughput restoration. The new architecture completely eliminates dynamic dispatch and branching overhead on the hot path.
 

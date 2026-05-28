@@ -22,6 +22,8 @@ const MAX_RANK: u8 = 3;
 pub enum Command<K, V> {
     /// Single insert from Worker (goes through probation gate).
     Insert(K, V, u64),
+    /// Insert directly as a top priority item bypassing probation, giving it max survival rank.
+    InsertT1(K, V, u64),
     /// Batch of (K, V, hash) from sharded worker buffers.
     BatchInsert(Vec<(K, V, u64)>),
     /// Remove by key+hash.
@@ -190,6 +192,7 @@ where
     fn process_cmd(&mut self, cmd: Command<K, V>) {
         match cmd {
             Command::Insert(k, v, hash) => self.handle_admission_insert(k, v, hash),
+            Command::InsertT1(k, v, hash) => self.handle_insert_t1(k, v, hash),
             Command::BatchInsert(batch) => {
                 for (k, v, hash) in batch {
                     self.handle_admission_insert(k, v, hash);
@@ -256,6 +259,45 @@ where
         self.arena.set_hash(global_idx, hash);
         // Revolution Shield: new items start with MAX_RANK protection
         self.arena.set_rank(global_idx, MAX_RANK);
+    }
+
+    fn handle_insert_t1(&mut self, k: K, v: V, hash: u64) {
+        let tag = (hash >> 48) as u16;
+
+        let global_idx = if let Some(existing_idx) = self.cache.index_probe(hash, tag) {
+            existing_idx
+        } else {
+            if self.arena.free_list_empty() {
+                self.evict_batch();
+            }
+            if let Some(new_idx) = self.arena.pop_free_slot() {
+                new_idx
+            } else {
+                return;
+            }
+        };
+
+        let entry = (tag as u64) << 48 | (global_idx as u64 & 0x0000_FFFF_FFFF_FFFF);
+
+        let node_ptr = Box::into_raw(Box::new(Node {
+            key: k,
+            value: v,
+            expire_at: self.epoch.load(Ordering::Relaxed) + self.get_duration(),
+            g_idx: global_idx as u32,
+        }));
+
+        let old_ptr = self.cache.nodes[global_idx].swap(node_ptr, Ordering::Release);
+        if !old_ptr.is_null() {
+            let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
+            self.garbage_queue.push((old_ptr, epoch));
+        }
+
+        self.cache.index_store(hash, tag, entry);
+        self.arena.set_hash(global_idx, hash);
+        self.arena.set_rank(global_idx, 255); // high initial rank (God mode)
+
+        // Promotion: hot items migrate to T1 immediately
+        self.t1.store_slot(hash, node_ptr);
     }
 
     fn get_duration(&self) -> u32 {
