@@ -27,6 +27,10 @@ pub trait TlsProvider: Send + Sync {
     /// The provider must execute the given closure with a mutable reference to the
     /// current thread's last flush tick value.
     fn with_last_flush_tick(&self, f: &mut dyn FnMut(&mut TickType));
+
+    /// Access the thread-local Intelligent Warmup state (0-255).
+    /// Used for dynamic T1 direct-routing during cold starts.
+    fn with_warmup_state(&self, f: &mut dyn FnMut(&mut u8));
 }
 
 #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]

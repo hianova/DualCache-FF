@@ -11,7 +11,7 @@ use core::mem::MaybeUninit;
 #[cfg_attr(any(target_arch = "aarch64", target_arch = "arm"), repr(C, align(128)))]
 #[cfg_attr(not(any(target_arch = "aarch64", target_arch = "arm")), repr(C, align(64)))]
 pub struct BatchBuf<K, V> {
-    items: [MaybeUninit<(K, V, u64)>; 32],
+    items: [MaybeUninit<(K, V, u64, bool)>; 32],
     len: usize,
 }
 
@@ -25,7 +25,7 @@ impl<K, V> BatchBuf<K, V> {
 
     /// Returns `true` when the buffer is full (32 items) and should be flushed.
     #[inline(always)]
-    pub fn push(&mut self, item: (K, V, u64)) -> bool {
+    pub fn push(&mut self, item: (K, V, u64, bool)) -> bool {
         self.items[self.len] = MaybeUninit::new(item);
         self.len += 1;
         self.len == 32
@@ -40,7 +40,7 @@ impl<K, V> BatchBuf<K, V> {
     }
 
     /// Drains all items into a `Vec`, resetting the buffer.
-    pub fn drain_to_vec(&mut self) -> Vec<(K, V, u64)> {
+    pub fn drain_to_vec(&mut self) -> Vec<(K, V, u64, bool)> {
         let mut batch = Vec::with_capacity(self.len);
         for i in 0..self.len {
             batch.push(unsafe { self.items[i].assume_init_read() });

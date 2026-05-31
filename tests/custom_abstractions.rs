@@ -36,6 +36,7 @@ thread_local! {
     static MOCK_HIT_BUF: RefCell<([usize; 64], usize)> = const { RefCell::new(([0; 64], 0)) };
     static MOCK_L1_FILTER: RefCell<([u8; 4096], usize)> = const { RefCell::new(([0; 4096], 0)) };
     static MOCK_LAST_FLUSH_TICK: RefCell<u64> = const { RefCell::new(0) };
+    static MOCK_WARMUP_STATE: RefCell<u8> = const { RefCell::new(255) };
 }
 
 #[derive(Clone)]
@@ -56,6 +57,10 @@ impl TlsProvider for MockTlsProvider {
 
     fn with_last_flush_tick(&self, f: &mut dyn FnMut(&mut u64)) {
         MOCK_LAST_FLUSH_TICK.with(|tick| f(&mut *tick.borrow_mut()));
+    }
+
+    fn with_warmup_state(&self, f: &mut dyn FnMut(&mut u8)) {
+        MOCK_WARMUP_STATE.with(|state| f(&mut *state.borrow_mut()));
     }
 }
 

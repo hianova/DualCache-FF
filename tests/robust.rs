@@ -52,7 +52,7 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
     cache.sync();
 
     // Consistency Check
-    let mut found = 0;
+    let mut _found = 0;
     for (k, expected_v) in shadow {
         if let Some(actual_v) = cache.get(&k) {
             assert_eq!(
@@ -60,7 +60,7 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
                 "Data Corruption detected during Fuzzing! Key {} expected {}, got {}",
                 k, expected_v, actual_v
             );
-            found += 1;
+            _found += 1;
         }
     }
     // Since fuzz inputs are random, it's possible no keys were actually inserted,

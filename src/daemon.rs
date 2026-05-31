@@ -21,11 +21,11 @@ const MAX_RANK: u8 = 3;
 
 pub enum Command<K, V> {
     /// Single insert from Worker (goes through probation gate).
-    Insert(K, V, u64),
+    Insert(K, V, u64, bool),
+    /// Batch of (K, V, hash) from sharded worker buffers.
+    BatchInsert(Vec<(K, V, u64, bool)>),
     /// Insert directly as a top priority item bypassing probation, giving it max survival rank.
     InsertT1(K, V, u64),
-    /// Batch of (K, V, hash) from sharded worker buffers.
-    BatchInsert(Vec<(K, V, u64)>),
     /// Remove by key+hash.
     Remove(K, u64),
     /// Blocking clear — caller spins on `OneshotAck::wait()`.
@@ -191,23 +191,35 @@ where
     }
 
     #[inline(always)]
-    fn process_cmd(&mut self, cmd: Command<K, V>) {
+    fn process_cmd(&mut self, cmd: Command<K, V>) -> bool {
         match cmd {
-            Command::Insert(k, v, hash) => self.handle_admission_insert(k, v, hash),
-            Command::InsertT1(k, v, hash) => self.handle_insert_t1(k, v, hash),
-            Command::BatchInsert(batch) => {
-                for (k, v, hash) in batch {
-                    self.handle_admission_insert(k, v, hash);
-                }
+            Command::Insert(k, v, hash, is_t1) => {
+                self.handle_admission_insert(k, v, hash, is_t1);
+                true
             }
-            Command::Remove(k, hash) => self.handle_remove(k, hash),
+            Command::BatchInsert(batch) => {
+                for (k, v, hash, is_t1) in batch {
+                    self.handle_admission_insert(k, v, hash, is_t1);
+                }
+                true
+            }
+            Command::InsertT1(k, v, hash) => {
+                self.handle_insert_t1(k, v, hash);
+                true
+            }
+            Command::Remove(k, hash) => {
+                self.handle_remove(k, hash);
+                true
+            }
             Command::Clear(ack) => {
                 self.handle_clear();
                 ack.signal();
+                true
             }
             Command::Sync(ack) => {
                 self.maintenance();
                 ack.signal();
+                true
             }
             Command::Shutdown => unreachable!("handled in run()"),
         }
@@ -216,7 +228,11 @@ where
     /// Binary Valve Admission:
     /// 1. Cold Start Mode (free slots > 5%): accept all.
     /// 2. Steady State Mode: only accept if Ghost Set recognises the item.
-    fn handle_admission_insert(&mut self, k: K, v: V, hash: u64) {
+    fn handle_admission_insert(&mut self, k: K, v: V, hash: u64, is_t1: bool) {
+        if is_t1 {
+            self.handle_insert_t1(k, v, hash);
+            return;
+        }
         let cold_start = self.arena.free_list_len() > self.arena.capacity / 20;
         self.is_cold_start.store(cold_start, Ordering::Relaxed);
         if cold_start || self.admission.check_ghost(hash) {

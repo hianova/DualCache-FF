@@ -24,6 +24,9 @@ loom::thread_local! {
     /// When `daemon_tick - LAST_FLUSH_TICK >= flush_tick_threshold`, the
     /// Worker force-drains its TLS buffer even if it is not full.
     static LAST_FLUSH_TICK: Cell<TickType> = Cell::new(0);
+
+    /// Intelligent warmup state. 0 = full fast pass. >= 100 = normal mode.
+    static WARMUP_STATE: Cell<u8> = Cell::new(0);
 }
 
 #[derive(Clone)]
@@ -58,6 +61,15 @@ impl TlsProvider for DefaultTls {
     #[inline(always)]
     fn with_last_flush_tick(&self, f: &mut dyn FnMut(&mut TickType)) {
         LAST_FLUSH_TICK.with(|cell| {
+            let mut val = cell.get();
+            f(&mut val);
+            cell.set(val);
+        });
+    }
+
+    #[inline(always)]
+    fn with_warmup_state(&self, f: &mut dyn FnMut(&mut u8)) {
+        WARMUP_STATE.with(|cell| {
             let mut val = cell.get();
             f(&mut val);
             cell.set(val);

@@ -298,6 +298,7 @@ where
                 {
                     res = Some(node.value.clone());
                     hit_g_idx = Some(node.g_idx);
+                    self.tls.with_warmup_state(&mut |s| *s = s.saturating_add(10));
                 }
             }
 
@@ -309,6 +310,7 @@ where
                     {
                         res = Some(node.value.clone());
                         hit_g_idx = Some(node.g_idx);
+                        self.tls.with_warmup_state(&mut |s| *s = s.saturating_sub(5));
                     }
                 }
             }
@@ -323,6 +325,7 @@ where
                     {
                         res = Some(v);
                         hit_g_idx = Some(global_idx as u32);
+                        self.tls.with_warmup_state(&mut |s| *s = s.saturating_sub(10));
                     }
                 }
             }
@@ -445,6 +448,10 @@ where
             return;
         }
 
+        let mut warmup_state = 255;
+        self.tls.with_warmup_state(&mut |s| warmup_state = *s);
+        let is_t1 = warmup_state < 100;
+
         // Task 6: Time-based flush detection
         let current_tick = self.daemon_tick.load(Ordering::Relaxed);
         let mut should_time_flush = false;
@@ -458,13 +465,13 @@ where
             let (k, v) = option_kv.take().unwrap();
             if id >= self.miss_buffers.len() {
                 // Worker overflow: gracefully degrade to direct send
-                let _ = self.cmd_tx.try_send(Command::Insert(k, v, hash));
+                let _ = self.cmd_tx.try_send(Command::Insert(k, v, hash, is_t1));
                 return;
             }
 
             // Safety: id is unique per thread → exclusive slot access
             let buf: &mut crate::unsafe_core::BatchBuf<K, V> = self.miss_buffers[id].get_mut_safe();
-            let capacity_flush = buf.push((k, v, hash));
+            let capacity_flush = buf.push((k, v, hash, is_t1));
 
             if capacity_flush || (should_time_flush && !buf.is_empty()) {
                 let batch = buf.drain_to_vec();
@@ -477,7 +484,7 @@ where
 
         if pushed_to_buf.is_none() {
             if let Some((k, v)) = option_kv {
-                let _ = self.cmd_tx.try_send(Command::Insert(k, v, hash));
+                let _ = self.cmd_tx.try_send(Command::Insert(k, v, hash, is_t1));
             }
         }
     }

@@ -18,4 +18,11 @@ impl TlsProvider for DefaultTls {
 
     #[inline(always)]
     fn with_last_flush_tick(&self, _f: &mut dyn FnMut(&mut TickType)) {}
+
+    #[inline(always)]
+    fn with_warmup_state(&self, f: &mut dyn FnMut(&mut u8)) {
+        // In no_std mode, bypass intelligent warmup by always passing 255
+        let mut state = 255;
+        f(&mut state);
+    }
 }

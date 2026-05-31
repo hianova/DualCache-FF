@@ -3,10 +3,8 @@
 use dualcache_ff::{Config, DualCacheFF};
 use dualcache_ff::unsafe_core::{BatchBuf};
 use std::sync::atomic::Ordering;
-use dualcache_ff::lossy_queue::{LossyQueue, OneshotAck};
+use dualcache_ff::lossy_queue::LossyQueue;
 use dualcache_ff::tls::TlsProvider;
-use dualcache_ff::daemon::Command;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -18,18 +16,19 @@ fn test_batch_buf_overflow() {
     let mut buf = BatchBuf::<u64, u64>::new();
     let mut flush_count = 0;
     
-    // Push 32 items
-    for i in 0..32 {
-        if buf.push((i, i, i)) {
+    // Push 40 items
+    for i in 0..40 {
+        if buf.push((i, i, i, false)) {
+            buf.drain_to_vec();
             flush_count += 1;
         }
     }
     
     assert_eq!(flush_count, 1, "Should flush on exactly the 32nd item");
-    assert_eq!(buf.len(), 32);
+    assert_eq!(buf.len(), 8);
     
     let items = buf.drain_to_vec();
-    assert_eq!(items.len(), 32);
+    assert_eq!(items.len(), 8);
     assert_eq!(buf.len(), 0);
     assert!(buf.is_empty());
 }
@@ -137,6 +136,10 @@ impl TlsProvider for DummyTls {
     fn with_hit_buf(&self, _f: &mut dyn FnMut(&mut ([usize; 64], usize))) {}
     fn with_l1_filter(&self, _f: &mut dyn FnMut(&mut ([u8; 4096], usize))) {}
     fn with_last_flush_tick(&self, _f: &mut dyn FnMut(&mut u64)) {}
+    fn with_warmup_state(&self, f: &mut dyn FnMut(&mut u8)) {
+        let mut state = 255;
+        f(&mut state);
+    }
 }
 
 #[test]
