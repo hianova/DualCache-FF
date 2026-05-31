@@ -64,3 +64,7 @@ harness = false
 [[bench]]
 name = "rw_ratio"
 harness = false
+
+[[bench]]
+name = "snapshot"
+harness = false
