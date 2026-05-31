@@ -12,8 +12,8 @@ const THREADS: usize = 4;
 const TOTAL_OPS: usize = 50_000_000;
 
 // Definitions for the 3 stages
-const STAGE_INITIAL: usize = 0;
-const STAGE_GROWTH: usize = 15_000_000;
+const STAGE_INITIAL: usize = 1_000_000;
+const STAGE_GROWTH: usize = 9_000_000;
 
 const SAMPLE_SIZES: &[usize] = &[1_000, 10_000, 50_000];
 

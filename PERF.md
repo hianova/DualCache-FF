@@ -1,20 +1,68 @@
 # 0.4.0
-## Cache System Performance Comparative Analysis (insert_t1 "Genius Immunity" A/B Test)
+## Intelligent Warmup & Adaptive Routing (v0.4.0)
 
-Following the proposal to implement `insert_t1` (Cache Pinning / Cost-Aware Caching), we ran an A/B test using a highly skewed Zipfian distribution (α=0.99) with 10,000,000 requests. We simulated an "Oracle Phase" by extracting hot keys from the first 1,000 operations and pinning them with `insert_t1` (rank = 255 and direct T1 promotion). 
+With the introduction of the TLS-based Intelligent Warmup in v0.4.0, the DualCacheFF engine now features a "Blackjack" card-counting mechanism per thread to gauge cache hit heat dynamically. This enables the cache to adaptively trigger "Fast Pass" for hot items during cold starts, bypassing standard probation without risking lock contention or queue overflows.
 
-### A/B Test Results
+### 1. Snapshot Fast Pass vs Intelligent Normal Warmup (Zipf 1.1)
 
-| Metric | Group A (Cold Start / Standard LFU) | Group B (Experimental / insert_t1) | Improvement |
-|------|-----------------------------------|-----------------------------------|-------------|
-| **Throughput** | 63,405,865 ops/s | **75,124,310 ops/s** | **+18.4%** |
-| **Hit Rate** | 82.26% | **88.94%** | **+6.68%** |
-| **Warm-up Time** | Gradual | **Zero Warm-up** (Vertical climb) | **Instant** |
+Test Configuration: `TOTAL_OPS = 50,000,000`, 4 threads, Capacity = 1,048,576. 
 
-*Analysis of the Three Major Advantages:*
-1. **Zero Warm-up Time**: Group B avoided the "valley of death" by giving known hot keys absolute immunity. Hit rates surged to 90%+ instantaneously, avoiding cache mis-evictions (evicting hot data that started at rank 0).
-2. **Global Throughput Uplift**: Because the hot keys were locked with rank 255 (shielded from the cursor), the Arena bypassed massive amounts of `free_list` pop/push and pointer swaps. This translated into a direct ~18% CPU throughput overflow.
-3. **Early Half-Life Decay Stress Test**: The injection of rank 255 items triggered `count_sum` thresholding early. The global decay algorithm demonstrated flawless stability under this synthetic extreme load, confirming the decay architecture's resilience.
+The `Normal Insert Baseline` now automatically benefits from the internal Intelligent Warmup, yielding exceptional cold start performance even without manual external sampling. 
+
+#### 1.1 10,000 Operations Sampled
+Found ~4038 unique hot keys.
+
+[Scenario A] Normal Insert Baseline (Self-Adaptive, No External Warmup)
+  - Initial Stage (0 - 1M ops): Hit Rate: **61.08%** | Throughput: **84.25M ops/s**
+  - Growth Stage (1M - 10M ops): Hit Rate: **81.32%** | Throughput: **100.5M ops/s**
+  - Plateau Stage (10M+ ops): Hit Rate: **83.20%** | Throughput: **111.4M ops/s**
+
+[Scenario B] Snapshot Fast Pass (Injecting 4038 Hot Keys)
+  (Fast Pass Warmup took 638µs)
+  - Initial Stage (0 - 1M ops): Hit Rate: **72.70%** (+11.62%) | Throughput: **90.13M ops/s**
+  - Growth Stage (1M - 10M ops): Hit Rate: **84.59%** (+3.28%) | Throughput: **94.34M ops/s**
+  - Plateau Stage (10M+ ops): Hit Rate: **85.53%** (+2.32%) | Throughput: **91.84M ops/s**
+
+**Analysis:**
+The Intelligent Warmup natively elevates the system's baseline hit rate. For scenarios requiring extreme initial hit-rate stability (e.g. recovering from a massive node crash), explicitly injecting ~10,000 sampled items provides an instant +11.6% boost to cold-start hit rate. 
+
+### 2. General Workload Throughput & Hit Rate (v0.4.0)
+
+Test Configuration: `OPS_PER_BENCH = 50,000,000`, 4 threads, Capacity = 1,048,576.
+
+| Workload | Throughput (ops/s) | Hit Rate | 
+|----------|--------------------|----------|
+| **Uniform** | 55,645,391 ops/s | 6.39% |
+| **Zipf (1.0)** | 41,557,632 ops/s | 29.28% | 
+| **Scan** | 78,237,757 ops/s | 6.36% |
+| **Mixed** | 58,162,038 ops/s | 32.61% |
+
+### 3. Read/Write Ratio Sensitivity (Zipf 1.1)
+
+| Read/Write Ratio | Throughput (ops/s) | Hit Rate |
+|------------------|--------------------|----------|
+| 10% Read / 90% Write | 72,316,557 ops/s | 85.54% |
+| 25% Read / 75% Write | 72,833,211 ops/s | 85.52% |
+| 50% Read / 50% Write | 69,746,234 ops/s | 84.58% |
+| 75% Read / 25% Write | 63,407,050 ops/s | 82.30% |
+| 100% Read / 0% Write | 59,862,943 ops/s | 53.61% |
+
+### 4. Latency Distribution (Zipf Workload)
+
+| Metric | DualCacheFF (v0.4.0) |
+|--------|----------------------|
+| **P50 Latency** | 42 ns |
+| **P90 Latency** | 167 ns |
+| **P99 Latency** | 416 ns |
+| **P99.9 Latency** | 750 ns |
+| **P99.99 Latency** | 5,541 ns |
+| **Max Latency** | 497,375 ns |
+
+### 5. CAPEX Constraint Test (2048 Capacity)
+
+- **Execution Time**: 7.31 ms
+- **Actual Hit Rate**: 82.19%
+- **Net Footprint**: 2,432 KB
 
 ---
 
