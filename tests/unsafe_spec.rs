@@ -11,7 +11,7 @@ where
     T: Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = thread::spawn(move || {
+    let _handle = thread::spawn(move || {
         let res = f();
         let _ = tx.send(res);
     });
@@ -29,9 +29,7 @@ fn test_batch_buf_alignment_invariants() {
         // Verify that the WorkerSlot and BatchBuf layouts satisfy aligned cache line boundaries
         // to guarantee no false sharing under extreme CPU contention.
         let slot = WorkerSlot::<String, Vec<u8>>::new();
-        let ptr = unsafe { slot.get_mut_unchecked() };
-        
-        let addr = ptr as *const _ as usize;
+        let addr = &slot as *const _ as usize;
         #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
         let expected_align = 128;
         #[cfg(not(any(target_arch = "aarch64", target_arch = "arm")))]
@@ -100,16 +98,16 @@ fn test_qsbr_epoch_retention_and_uaf_safety() {
         let cache_clone = cache.clone();
         let reader_handle = thread::spawn(move || {
             let id = 1;
-            // Get current global epoch and check-in manually
-            let global_epoch = dualcache_ff::cache::GLOBAL_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-            cache_clone.worker_states[id].local_epoch.store(global_epoch, std::sync::atomic::Ordering::Release);
 
-            // Read the item
+            // Read the item first so `get()`'s internal QSBR lifecycle completes
             let val = cache_clone.get(&42);
             assert_eq!(val, Some("secure_data".to_string()));
 
-            // Keep the local thread checked in during the sleep to simulate a long active transaction
+            // Now get current global epoch and check-in manually for a long active transaction simulation
+            let global_epoch = dualcache_ff::cache::GLOBAL_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
             cache_clone.worker_states[id].local_epoch.store(global_epoch, std::sync::atomic::Ordering::Release);
+
+            // Keep the local thread checked in during the sleep
             thread::sleep(Duration::from_millis(150));
 
             // Checkout manually

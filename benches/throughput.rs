@@ -1,4 +1,5 @@
-use cache_bench::Cache;
+mod common;
+use common::Cache;
 use moka::sync::Cache as MokaCache;
 use rand::distributions::Distribution;
 use rand_distr::Zipf;
@@ -154,7 +155,7 @@ fn run_benchmarks(is_full_bench: bool) {
             for i in 0..actual_capacity {
                 moka_stat.insert(i as u64, i as u64);
             }
-            moka_stat.run_pending_tasks();
+            moka_stat.sync();
             std::thread::sleep(Duration::from_millis(50));
             let m_start = std::time::Instant::now();
             let m_misses = bench_workload(Arc::clone(&moka_stat), workload, keys_to_use);
@@ -173,6 +174,7 @@ fn run_benchmarks(is_full_bench: bool) {
             ff_stat.insert(i as u64, i as u64);
         }
         ff_stat.sync();
+        std::thread::sleep(Duration::from_millis(50));
         let f_start = std::time::Instant::now();
         let f_misses = bench_workload(Arc::clone(&ff_stat), workload, keys_to_use);
         let f_elapsed = f_start.elapsed();
@@ -189,6 +191,7 @@ fn run_benchmarks(is_full_bench: bool) {
             for i in 0..actual_capacity {
                 ufo_stat.insert(i as u64, i as u64);
             }
+            ufo_stat.sync();
             std::thread::sleep(Duration::from_millis(50));
             let u_start = std::time::Instant::now();
             let u_misses = bench_workload(Arc::clone(&ufo_stat), workload, keys_to_use);

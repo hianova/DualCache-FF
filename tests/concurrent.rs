@@ -18,24 +18,8 @@ use std::sync::Mutex;
 
 use std::collections::HashMap;
 
-#[cfg(not(feature = "loom"))]
-fn run_with_timeout<F, T>(timeout: std::time::Duration, f: F) -> T
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _handle = std::thread::spawn(move || {
-        let res = f();
-        let _ = tx.send(res);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(res) => res,
-        Err(_) => {
-            panic!("Test timed out after {:?}", timeout);
-        }
-    }
-}
+mod common;
+use common::run_with_timeout;
 
 #[cfg(feature = "loom")]
 macro_rules! test_runner {
@@ -104,16 +88,16 @@ test_runner!(test_concurrent_ops, {
     {
         // Wait for Daemon to converge in real execution
         cache.sync();
-        let expected_map = shadow.lock().unwrap();
-        for (k, expected_v) in expected_map.iter() {
+        let shadow_map = shadow.lock().unwrap();
+        let mut found = 0;
+        for k in shadow_map.keys() {
             if let Some(actual_v) = cache.get(k) {
-                assert_eq!(
-                    actual_v, *expected_v,
-                    "Concurrent Corruption! Key {} expected {}, got {}",
-                    k, expected_v, actual_v
-                );
+                let expected_v = shadow_map.get(k).unwrap();
+                assert_eq!(*expected_v, actual_v);
+                found += 1;
             }
         }
+        assert!(found > 0, "Vacuous assertion: zero keys found");
     }
 });
 
@@ -161,8 +145,9 @@ test_runner!(test_concurrent_insert_t1, {
         let ops_clone = ops.clone();
         let handle = thread::spawn(move || {
             let offset = i * 100;
-            c.insert_t1(offset, offset);
-            c.insert_t1(offset + 1, offset + 1);
+            let session = c.begin_cold_start_session();
+            session.warmup(offset, offset);
+            session.warmup(offset + 1, offset + 1);
             let _ = c.get(&offset);
             ops_clone.fetch_add(2, Ordering::Relaxed);
         });

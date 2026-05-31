@@ -62,6 +62,8 @@ pub struct Daemon<K, V, S> {
     pub daemon_tick: Arc<AtomicTick>,
     /// Cold-start flag shared with DualCacheFF
     pub is_cold_start: Arc<AtomicBool>,
+    /// Configured TTL duration
+    pub duration: u32,
 }
 
 unsafe impl<K: Send, V: Send, S: Send> Send for Daemon<K, V, S> {}
@@ -88,7 +90,6 @@ where
         daemon_tick: Arc<AtomicTick>,
         is_cold_start: Arc<AtomicBool>,
     ) -> Self {
-        let _ = duration; // duration is stored in the epoch tick rate; kept for API compat
         Self {
             hasher,
             arena: Arena::new(capacity),
@@ -106,6 +107,7 @@ where
             worker_states,
             daemon_tick,
             is_cold_start,
+            duration,
         }
     }
 
@@ -301,9 +303,7 @@ where
     }
 
     fn get_duration(&self) -> u32 {
-        // Default: 10 epoch ticks ≈ 1 second (epoch ticks every 100 ms)
-        // This preserves the original API's `duration` field semantics.
-        10
+        self.duration
     }
 
     fn handle_remove(&mut self, _k: K, hash: u64) {
@@ -362,7 +362,7 @@ where
         // ── Phase 1: Collect hit indices into accumulator ─────────────────
         while let Some(batch) = self.hit_rx.try_recv() {
             for &g_idx in batch.iter() {
-                if g_idx < self.arena.capacity {
+                if g_idx < self.arena.capacity && g_idx != usize::MAX {
                     self.hit_accumulator.push(g_idx);
                 }
             }

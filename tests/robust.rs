@@ -31,7 +31,8 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
         match action {
             Action::Insert(k, v) => {
                 shadow.insert(k, v);
-                cache.insert(k, v);
+                let session = cache.begin_cold_start_session();
+                session.warmup(k, v);
             }
             Action::Get(k) => {
                 let _ = cache.get(&k);
@@ -48,9 +49,10 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
     }
 
     // Wait for Daemon to process the batched async commands
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    cache.sync();
 
     // Consistency Check
+    let mut found = 0;
     for (k, expected_v) in shadow {
         if let Some(actual_v) = cache.get(&k) {
             assert_eq!(
@@ -58,27 +60,17 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
                 "Data Corruption detected during Fuzzing! Key {} expected {}, got {}",
                 k, expected_v, actual_v
             );
+            found += 1;
         }
     }
+    // Since fuzz inputs are random, it's possible no keys were actually inserted,
+    // but we can at least ensure if any inserts happened, they are found.
+    // We won't strictly enforce found > 0 here to avoid failing on pure-read fuzz seeds,
+    // but bypassing the L1 filter ensures inserts actually make it in.
 }
 
-fn run_with_timeout<F, T>(timeout: std::time::Duration, f: F) -> T
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _handle = std::thread::spawn(move || {
-        let res = f();
-        let _ = tx.send(res);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(res) => res,
-        Err(_) => {
-            panic!("Test timed out after {:?}", timeout);
-        }
-    }
-}
+mod common;
+use common::run_with_timeout;
 
 #[cfg(not(fuzzing))]
 #[test]

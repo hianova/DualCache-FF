@@ -3,23 +3,8 @@
 use dualcache_ff::{Config, DualCacheFF};
 use std::time::Duration;
 
-fn run_with_timeout<F, T>(timeout: std::time::Duration, f: F) -> T
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _handle = std::thread::spawn(move || {
-        let res = f();
-        let _ = tx.send(res);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(res) => res,
-        Err(_) => {
-            panic!("Test timed out after {:?}", timeout);
-        }
-    }
-}
+mod common;
+use common::run_with_timeout;
 
 #[test]
 fn test_hash_consistency_and_async_insert() {

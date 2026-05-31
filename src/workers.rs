@@ -18,7 +18,7 @@ pub struct BatchBuf<K, V> {
 impl<K, V> BatchBuf<K, V> {
     pub fn new() -> Self {
         Self {
-            items: unsafe { MaybeUninit::uninit().assume_init() },
+            items: [const { MaybeUninit::uninit() }; 32],
             len: 0,
         }
     }

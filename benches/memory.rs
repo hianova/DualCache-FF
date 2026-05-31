@@ -27,6 +27,7 @@ fn measure_dualcacheff() {
         for i in 0..CAPACITY as u64 {
             cache.insert(i, i);
         }
+        cache.sync();
         std::thread::sleep(Duration::from_millis(500));
         print_memory("After 1M Inserts")
     };
@@ -51,6 +52,7 @@ fn measure_moka() {
         for i in 0..CAPACITY as u64 {
             cache.insert(i, i);
         }
+        cache.run_pending_tasks();
         std::thread::sleep(Duration::from_millis(500));
         print_memory("After 1M Inserts")
     };

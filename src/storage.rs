@@ -69,14 +69,11 @@ impl<K, V> Cache<K, V> {
     #[inline(always)]
     pub fn index_store(&self, hash: u64, tag: u16, entry: IndexType) {
         let mut idx = hash as usize & self.index_mask;
-        for i in 0..16 {
+        for _ in 0..16 {
             let prev = self.index[idx].load(Ordering::Acquire);
             if prev == EMPTY || prev == TOMBSTONE || (prev >> TAG_SHIFT) == (tag as IndexType) {
                 self.index[idx].store(entry, Ordering::Release);
                 return;
-            }
-            if i == 15 {
-                self.index[hash as usize & self.index_mask].store(entry, Ordering::Release);
             }
             idx = (idx + 1) & self.index_mask;
         }

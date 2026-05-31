@@ -1,4 +1,5 @@
-use cache_bench::Cache;
+mod common;
+use common::Cache;
 use rand::distributions::Distribution;
 use rand::Rng;
 use rand_distr::Zipf;
@@ -38,7 +39,8 @@ where
         };
 
         handles.push(std::thread::spawn(move || {
-            let mut latencies = Vec::with_capacity(thread_keys.len());
+            let mut read_latencies = Vec::with_capacity(thread_keys.len());
+            let mut write_latencies = Vec::with_capacity(thread_keys.len() / 5);
             let mut rng = rand::thread_rng();
             let mut thread_gets = 0u64;
             let mut thread_hits = 0u64;
@@ -49,11 +51,12 @@ where
                 
                 if is_get {
                     thread_gets += 1;
-                    compiler_fence(Ordering::SeqCst);
                     let start = Instant::now();
-                    let v = cache.get(&key);
-                    latencies.push(start.elapsed().as_nanos() as u64);
                     compiler_fence(Ordering::SeqCst);
+                    let v = cache.get(&key);
+                    compiler_fence(Ordering::SeqCst);
+                    let elapsed = start.elapsed();
+                    read_latencies.push(elapsed.as_nanos() as u64);
                     
                     std::hint::black_box(v.as_ref());
                     if v.is_some() {
@@ -62,56 +65,59 @@ where
                         cache.insert(key, key);
                     }
                 } else {
-                    compiler_fence(Ordering::SeqCst);
                     let start = Instant::now();
-                    cache.insert(key, key);
-                    latencies.push(start.elapsed().as_nanos() as u64);
                     compiler_fence(Ordering::SeqCst);
+                    cache.insert(key, key);
+                    compiler_fence(Ordering::SeqCst);
+                    let elapsed = start.elapsed();
+                    write_latencies.push(elapsed.as_nanos() as u64);
                 }
             }
-            (latencies, thread_gets, thread_hits)
+            (read_latencies, write_latencies, thread_gets, thread_hits)
         }));
     }
 
-    let mut all_latencies = Vec::with_capacity((THREADS as u64 * OPS_PER_THREAD) as usize);
+    let mut all_read_latencies = Vec::with_capacity((THREADS as u64 * OPS_PER_THREAD) as usize);
+    let mut all_write_latencies = Vec::with_capacity((THREADS as u64 * OPS_PER_THREAD / 5) as usize);
     let mut total_gets = 0;
     let mut total_hits = 0;
 
     for h in handles {
-        let (latencies, gets, hits) = h.join().unwrap();
-        all_latencies.extend(latencies);
+        let (read_lats, write_lats, gets, hits) = h.join().unwrap();
+        all_read_latencies.extend(read_lats);
+        all_write_latencies.extend(write_lats);
         total_gets += gets;
         total_hits += hits;
     }
 
-    all_latencies.sort_unstable();
-
-    if all_latencies.is_empty() {
-        println!("No operations recorded.");
-        return;
-    }
-
-    let count = all_latencies.len() as f64;
-    let p50 = all_latencies[(count * 0.50) as usize];
-    let p90 = all_latencies[(count * 0.90) as usize];
-    let p99 = all_latencies[(count * 0.99) as usize];
-    let p99_9 = all_latencies[(count * 0.999) as usize];
-    let p99_99 = all_latencies[(count * 0.9999) as usize];
-    let max = *all_latencies.last().unwrap();
+    all_read_latencies.sort_unstable();
+    all_write_latencies.sort_unstable();
 
     let hit_rate = if total_gets > 0 {
         (total_hits as f64 / total_gets as f64) * 100.0
     } else {
         0.0
     };
-
     println!("  Real Hit Rate: {:.2}%", hit_rate);
-    println!("  P50:      {:>8} ns", p50);
-    println!("  P90:      {:>8} ns", p90);
-    println!("  P99:      {:>8} ns", p99);
-    println!("  P99.9:    {:>8} ns", p99_9);
-    println!("  P99.99:   {:>8} ns", p99_99);
-    println!("  Max:      {:>8} ns", max);
+
+    fn print_stats(label: &str, latencies: &[u64]) {
+        if latencies.is_empty() {
+            println!("  [{}]: No operations recorded.", label);
+            return;
+        }
+        let count = latencies.len() as f64;
+        let p50 = latencies[(count * 0.50) as usize];
+        let p90 = latencies[(count * 0.90) as usize];
+        let p99 = latencies[(count * 0.99) as usize];
+        let p99_9 = latencies[(count * 0.999) as usize];
+        let p99_99 = latencies[(count * 0.9999) as usize];
+        let max = *latencies.last().unwrap();
+        println!("  [{}] P50: {:>8} ns | P90: {:>8} ns | P99: {:>8} ns | P99.9: {:>8} ns | P99.99: {:>8} ns | Max: {:>8} ns", 
+                 label, p50, p90, p99, p99_9, p99_99, max);
+    }
+
+    print_stats("READ ", &all_read_latencies);
+    print_stats("WRITE", &all_write_latencies);
 }
 
 fn start_timeout_watchdog(timeout: std::time::Duration) {

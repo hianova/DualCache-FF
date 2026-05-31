@@ -1,4 +1,5 @@
-use cache_bench::Cache;
+mod common;
+use common::Cache;
 use dualcache_ff::{Config, DualCacheFF};
 use moka::sync::Cache as MokaCache;
 use tinyufo::TinyUfo;
@@ -78,6 +79,7 @@ where
     println!("|------------------|--------------------|--------------|");
 
     let ratios = vec![
+        (0, "0% Read / 100% Write"),
         (10, "10% Read / 90% Write"),
         (25, "25% Read / 75% Write"),
         (50, "50% Read / 50% Write"),
@@ -92,6 +94,7 @@ where
             cache.insert(i as u64, i as u64);
         }
         cache.sync();
+        std::thread::sleep(Duration::from_millis(50));
 
         let (throughput, hit_rate) = bench_ratio(cache, read_percentage, keys);
         println!("| {:<18} | {:>18.2} | {:>11.2}% |", label, throughput, hit_rate);
@@ -99,7 +102,7 @@ where
 }
 
 fn main() {
-    start_timeout_watchdog(Duration::from_secs(300)); // 5 minutes watchdog
+    start_timeout_watchdog(Duration::from_secs(120)); // 2 minutes watchdog
 
     let args: Vec<String> = std::env::args().collect();
     let is_full_bench = args.iter().any(|a| a == "--full_bench") || cfg!(feature = "full_bench");

@@ -1,8 +1,7 @@
 extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{vec, vec::Vec, boxed::Box};
-#[cfg(feature = "std")]
-use std::vec;
+
 use crate::cache_padded::CachePadded;
 use crate::daemon::{Command, Daemon};
 use crate::lossy_queue::{LossyQueue, OneshotAck};
@@ -41,227 +40,8 @@ impl WorkerState {
     }
 }
 
-// ── Trait-based custom executors and thread-local providers ───────────────
-
-/// Trait for custom thread/task executors to spawn the background Daemon.
-///
-/// Decouples `std::thread::spawn` from `DualCacheFF::new`, enabling execution on Tokio,
-/// FreeRTOS tasks, Loom virtual threads, or other user-defined runtimes.
-pub trait DaemonSpawner: Send + Sync {
-    /// Spawn a closure as a concurrent background execution unit.
-    fn spawn(&self, f: alloc::boxed::Box<dyn FnOnce() + Send + 'static>);
-}
-
-/// A default spawner using `std::thread::spawn` for `std` environments.
-#[cfg(feature = "std")]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultSpawner;
-
-#[cfg(feature = "std")]
-impl DaemonSpawner for DefaultSpawner {
-    #[inline]
-    fn spawn(&self, f: alloc::boxed::Box<dyn FnOnce() + Send + 'static>) {
-        #[cfg(any(feature = "loom", loom))]
-        loom::thread::spawn(move || f());
-        #[cfg(not(any(feature = "loom", loom)))]
-        std::thread::spawn(move || f());
-    }
-}
-
-/// Trait for plug-and-play Thread-Local Storage (TLS) in `no_std` or custom RTOS environments.
-///
-/// Enables thread-local batching of hits and L1 probation filtering on platforms
-/// where standard `thread_local!` is not available.
-pub trait TlsProvider: Send + Sync {
-    /// Get the current worker thread ID (0..config.threads).
-    ///
-    /// Returns `None` if the thread is not registered or cannot be resolved.
-    fn get_worker_id(&self) -> Option<usize>;
-
-    /// Access the thread-local Hit Buffer array.
-    ///
-    /// The provider must execute the given closure with a mutable reference to the
-    /// current thread's batch buffer: `([usize; 64], usize)`.
-    fn with_hit_buf(&self, f: &mut dyn FnMut(&mut ([usize; 64], usize)));
-
-    /// Access the thread-local L1 Probation Filter.
-    ///
-    /// The provider must execute the given closure with a mutable reference to the
-    /// current thread's L1 probation filter state: `([u8; 4096], usize)`.
-    fn with_l1_filter(&self, f: &mut dyn FnMut(&mut ([u8; 4096], usize)));
-
-    /// Access the thread-local Last Flush Tick.
-    ///
-    /// The provider must execute the given closure with a mutable reference to the
-    /// current thread's last flush tick value.
-    fn with_last_flush_tick(&self, f: &mut dyn FnMut(&mut TickType));
-}
-
-// ── Thread-local state (std only) ────────────────────────────────────────
-// In no_std / RTOS mode, TLS is not available. Worker state must be
-// managed by the application (e.g. passed as function arguments or stored
-// in RTOS task-local storage). The cache's `get` / `insert` / `remove`
-// methods fall back to safe, lock-free direct-send paths in no_std mode.
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-use std::sync::Mutex;
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-struct IdAllocator {
-    free_list: Mutex<Vec<usize>>,
-    next_id: AtomicUsize,
-}
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-static ALLOCATOR: IdAllocator = IdAllocator {
-    free_list: Mutex::new(Vec::new()),
-    next_id: AtomicUsize::new(0),
-};
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-struct ThreadIdGuard {
-    id: usize,
-}
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-impl Drop for ThreadIdGuard {
-    fn drop(&mut self) {
-        if let Ok(mut list) = ALLOCATOR.free_list.lock() {
-            list.push(self.id);
-        }
-    }
-}
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-use core::cell::{Cell, RefCell};
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-thread_local! {
-    static WORKER_ID: usize = {
-        let id = if let Ok(mut list) = ALLOCATOR.free_list.lock() {
-            list.pop().unwrap_or_else(|| ALLOCATOR.next_id.fetch_add(1, Ordering::Relaxed))
-        } else {
-            ALLOCATOR.next_id.fetch_add(1, Ordering::Relaxed)
-        };
-        
-        GUARD.with(|g| {
-            *g.borrow_mut() = Some(ThreadIdGuard { id });
-        });
-        id
-    };
-
-    static GUARD: RefCell<Option<ThreadIdGuard>> = const { RefCell::new(None) };
-
-    /// Hit index buffer: batches 64 Cache-hit global indices before sending
-    /// to Daemon via the hit queue.
-    static HIT_BUF: RefCell<([usize; 64], usize)> = const { RefCell::new(([0; 64], 0)) };
-
-    /// TLS probation filter: prevents single-hit items from reaching the
-    /// Arena. A 4 KB sketch that decays periodically.
-    static L1_FILTER: RefCell<([u8; 4096], usize)> = const { RefCell::new(([0; 4096], 0)) };
-
-    /// Task 6 — last daemon_tick observed at TLS flush time.
-    /// When `daemon_tick - LAST_FLUSH_TICK >= flush_tick_threshold`, the
-    /// Worker force-drains its TLS buffer even if it is not full.
-    static LAST_FLUSH_TICK: Cell<TickType> = const { Cell::new(0) };
-}
-
-#[cfg(any(feature = "loom", loom))]
-loom::lazy_static! {
-    static ref NEXT_THREAD_ID: loom::sync::atomic::AtomicUsize = loom::sync::atomic::AtomicUsize::new(0);
-}
-
-#[cfg(any(feature = "loom", loom))]
-use core::cell::{Cell, RefCell};
-
-#[cfg(any(feature = "loom", loom))]
-loom::thread_local! {
-    static WORKER_ID: usize = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
-
-    /// Hit index buffer: batches 64 Cache-hit global indices before sending
-    /// to Daemon via the hit queue.
-    static HIT_BUF: RefCell<([usize; 64], usize)> = RefCell::new(([0; 64], 0));
-
-    /// TLS probation filter: prevents single-hit items from reaching the
-    /// Arena. A 4 KB sketch that decays periodically.
-    /// Heap-allocated under Loom via `vec!` to prevent virtual coroutine stack overflow.
-    static L1_FILTER: RefCell<(Box<[u8]>, usize)> = RefCell::new((vec![0u8; 4096].into_boxed_slice(), 0));
-
-    /// Task 6 — last daemon_tick observed at TLS flush time.
-    /// When `daemon_tick - LAST_FLUSH_TICK >= flush_tick_threshold`, the
-    /// Worker force-drains its TLS buffer even if it is not full.
-    static LAST_FLUSH_TICK: Cell<TickType> = Cell::new(0);
-}
-
-// ── Default TLS Provider ──────────────────────────────────────────────────
-pub struct DefaultTls;
-
-impl Clone for DefaultTls {
-    fn clone(&self) -> Self {
-        Self
-    }
-}
-
-#[cfg(any(feature = "std", feature = "loom", loom))]
-impl TlsProvider for DefaultTls {
-    #[inline(always)]
-    fn get_worker_id(&self) -> Option<usize> {
-        Some(WORKER_ID.with(|id| *id))
-    }
-
-    #[inline(always)]
-    fn with_hit_buf(&self, f: &mut dyn FnMut(&mut ([usize; 64], usize))) {
-        HIT_BUF.with(|buf| {
-            f(&mut *buf.borrow_mut());
-        });
-    }
-
-    #[inline(always)]
-    fn with_l1_filter(&self, f: &mut dyn FnMut(&mut ([u8; 4096], usize))) {
-        L1_FILTER.with(|filter| {
-            #[cfg(any(feature = "loom", loom))]
-            {
-                let mut state = filter.borrow_mut();
-                let mut arr = [0u8; 4096];
-                arr.copy_from_slice(&state.0);
-                let mut temp = (arr, state.1);
-                f(&mut temp);
-                state.0.copy_from_slice(&temp.0);
-                state.1 = temp.1;
-            }
-            #[cfg(not(any(feature = "loom", loom)))]
-            {
-                f(&mut *filter.borrow_mut());
-            }
-        });
-    }
-
-    #[inline(always)]
-    fn with_last_flush_tick(&self, f: &mut dyn FnMut(&mut TickType)) {
-        LAST_FLUSH_TICK.with(|cell| {
-            let mut val = cell.get();
-            f(&mut val);
-            cell.set(val);
-        });
-    }
-}
-
-#[cfg(not(any(feature = "std", feature = "loom", loom)))]
-impl TlsProvider for DefaultTls {
-    #[inline(always)]
-    fn get_worker_id(&self) -> Option<usize> {
-        None
-    }
-
-    #[inline(always)]
-    fn with_hit_buf(&self, _f: &mut dyn FnMut(&mut ([usize; 64], usize))) {}
-
-    #[inline(always)]
-    fn with_l1_filter(&self, _f: &mut dyn FnMut(&mut ([u8; 4096], usize))) {}
-
-    #[inline(always)]
-    fn with_last_flush_tick(&self, _f: &mut dyn FnMut(&mut TickType)) {}
-}
+use crate::spawner::{DaemonSpawner, DefaultSpawner};
+use crate::tls::{TlsProvider, DefaultTls};
 
 // ── DualCacheFF ───────────────────────────────────────────────────────────
 
@@ -310,7 +90,7 @@ impl<K, V, S: Clone, Tls: TlsProvider + Clone> Clone for DualCacheFF<K, V, S, Tl
 
 // ── Constructor (std mode — auto-spawns Daemon thread) ────────────────────
 
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", feature = "loom", loom))]
 impl<K, V> DualCacheFF<K, V, RandomState, DefaultTls>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
@@ -325,7 +105,7 @@ where
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", feature = "loom", loom))]
 impl<K, V, Tls> DualCacheFF<K, V, RandomState, Tls>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
@@ -349,15 +129,7 @@ where
     /// Create a new `DualCacheFF` and automatically spawn the background Daemon using a custom spawner.
     pub fn new_with_spawner<Sp: DaemonSpawner + 'static>(config: Config, spawner: Sp) -> Self {
         let (cache, daemon) = Self::new_headless(config);
-        #[cfg(any(feature = "loom", loom))]
-        {
-            let _ = daemon;
-            let _ = spawner;
-        }
-        #[cfg(not(any(feature = "loom", loom)))]
-        {
-            spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
-        }
+        spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
         cache
     }
 
@@ -447,15 +219,7 @@ where
     pub fn new_with_tls_and_spawner<Sp: DaemonSpawner + 'static>(config: Config, tls: Tls, spawner: Sp) -> Self
     {
         let (cache, daemon) = Self::new_headless_with_tls(config, tls);
-        #[cfg(any(feature = "loom", loom))]
-        {
-            let _ = daemon;
-            let _ = spawner;
-        }
-        #[cfg(not(any(feature = "loom", loom)))]
-        {
-            spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
-        }
+        spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
         cache
     }
 
@@ -718,12 +482,9 @@ where
         }
     }
 
-    /// Insert a key-value pair directly as a high-priority "genius" item.
-    /// This bypasses the L1 probation filter, doesn't use the thread-local batch buffer,
-    /// and assigns the item the maximum survival rank (e.g. 255) and promotes it to T1 immediately.
-    pub fn insert_t1(&self, key: K, value: V) {
-        let hash = self.hash(&key);
-        let _ = self.cmd_tx.try_send(Command::InsertT1(key, value, hash));
+    /// Start a Cold Start Session to inject items directly to T1.
+    pub fn begin_cold_start_session(&self) -> ColdStartSession<'_, K, V, S, Tls> {
+        ColdStartSession { cache: self }
     }
 
     /// Remove a key from the cache.
@@ -816,12 +577,13 @@ where
             state.1 += 1;
             if state.1 == 64_usize {
                 let _ = self.hit_tx.try_send(state.0);
+                state.0 = [usize::MAX; 64];
                 state.1 = 0;
             }
         });
 
         if opt.is_none() {
-            let mut batch = [0usize; 64];
+            let mut batch = [usize::MAX; 64];
             batch[0] = global_idx;
             let _ = self.hit_tx.try_send(batch);
         }
@@ -836,3 +598,25 @@ impl<K, V, S, Tls: TlsProvider> Drop for DualCacheFF<K, V, S, Tls> {
     }
 }
 
+
+/// A session object for injecting items directly into T1 during cold starts.
+/// By requiring a session object, we prevent accidental use of `insert_t1`
+/// in normal hot paths which would bypass TLS batching and overload the daemon.
+pub struct ColdStartSession<'a, K, V, S, Tls: TlsProvider> {
+    cache: &'a DualCacheFF<K, V, S, Tls>,
+}
+
+impl<'a, K, V, S, Tls: TlsProvider> ColdStartSession<'a, K, V, S, Tls>
+where
+    K: Hash + Eq + Send + Sync + Clone + 'static,
+    V: Send + Sync + Clone + 'static,
+    S: BuildHasher + Clone + Send + 'static,
+{
+    /// Insert a key-value pair directly as a high-priority "genius" item.
+    /// This bypasses the L1 probation filter, doesn't use the thread-local batch buffer,
+    /// and assigns the item the maximum survival rank (e.g. 255) and promotes it to T1 immediately.
+    pub fn warmup(&self, key: K, value: V) {
+        let hash = self.cache.hash(&key);
+        let _ = self.cache.cmd_tx.try_send(Command::InsertT1(key, value, hash));
+    }
+}

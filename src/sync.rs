@@ -47,6 +47,7 @@ pub mod cell {
     pub struct UnsafeCell<T>(core::cell::UnsafeCell<T>);
 
     #[cfg(not(any(feature = "loom", loom)))]
+    #[allow(dead_code)]
     impl<T> UnsafeCell<T> {
         #[inline(always)]
         pub const fn new(data: T) -> Self {

@@ -6,23 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-fn run_with_timeout<F, T>(timeout: std::time::Duration, f: F) -> T
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _handle = std::thread::spawn(move || {
-        let res = f();
-        let _ = tx.send(res);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(res) => res,
-        Err(_) => {
-            panic!("Test timed out after {:?}", timeout);
-        }
-    }
-}
+mod common;
+use common::run_with_timeout;
 
 #[test]
 fn test_capacity_pressure_and_eviction() {
@@ -100,6 +85,7 @@ fn test_strong_consistency_pressure() {
 
         // Check strict consistency
         let final_shadow = shadow.lock().unwrap();
+        let mut found = 0;
         for (k, expected_v) in final_shadow.iter() {
             if let Some(actual_v) = cache.get(k) {
                 assert_eq!(
@@ -107,8 +93,10 @@ fn test_strong_consistency_pressure() {
                     "Strong consistency failure! Key {} expected {}, got {}",
                     k, expected_v, actual_v
                 );
+                found += 1;
             }
         }
+        assert!(found > 0, "Vacuous assertion: no items found after pressure");
     });
 }
 

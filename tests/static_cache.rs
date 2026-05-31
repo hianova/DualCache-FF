@@ -8,23 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::collections::HashMap;
 
-fn run_with_timeout<F, T>(timeout: std::time::Duration, f: F) -> T
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _handle = std::thread::spawn(move || {
-        let res = f();
-        let _ = tx.send(res);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(res) => res,
-        Err(_) => {
-            panic!("Test timed out after {:?}", timeout);
-        }
-    }
-}
+mod common;
+use common::run_with_timeout;
 
 macro_rules! test_runner {
     ($name:ident, $body:expr) => {
@@ -102,6 +87,16 @@ test_runner!(test_static_cache_concurrent, {
     }
     
     assert_eq!(ops.load(Ordering::Relaxed), 16);
+
+    let shadow_map = shadow.lock().unwrap();
+    let mut found = 0;
+    for (k, expected_v) in shadow_map.iter() {
+        if let Some(actual_v) = cache.get(k) {
+            assert_eq!(*expected_v, actual_v);
+            found += 1;
+        }
+    }
+    assert!(found > 0, "Vacuous assertion: no items found in static cache after concurrent inserts");
 });
 
 test_runner!(test_dual_cache_stub, {

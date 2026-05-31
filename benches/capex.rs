@@ -1,4 +1,5 @@
-use cache_bench::Cache;
+mod common;
+use common::Cache;
 use dualcache_ff::{Config, DualCacheFF};
 use memory_stats::memory_stats;
 use moka::sync::Cache as MokaCache;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tinyufo::TinyUfo;
 
-const CAPEX_CAPACITY: usize = 2000;
+
 const KEY_SPACE: u64 = 50_000;
 const TOTAL_OPS: usize = 200_000;
 

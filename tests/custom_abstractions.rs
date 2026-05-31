@@ -1,7 +1,7 @@
 #![cfg(not(feature = "loom"))]
 
 use std::cell::RefCell;
-use std::time::Duration;
+
 use dualcache_ff::{Config, DaemonSpawner, DualCacheFF, TlsProvider};
 
 #[cfg(feature = "loom")]

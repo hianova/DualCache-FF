@@ -1,5 +1,6 @@
 use std::hash::Hash;
 
+#[allow(dead_code)]
 pub trait Cache<K, V>: Send + Sync {
     fn get(&self, key: &K) -> Option<V>;
     fn insert(&self, key: K, value: V);
