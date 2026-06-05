@@ -1,3 +1,66 @@
+# 0.4.1
+## Performance and Hit-rate Analysis (v0.4.1)
+
+Below are the performance and benchmark results for v0.4.1.
+
+### 1. Snapshot Fast Pass vs Intelligent Normal Warmup (Zipf 1.1)
+
+Test Configuration: `TOTAL_OPS = 50,000,000`, 4 threads, Capacity = 1,048,576. 
+
+#### 1.1 10,000 Operations Sampled
+Found ~4143 unique hot keys.
+
+[Scenario A] Normal Insert Baseline (Self-Adaptive, No External Warmup)
+  - Initial Stage (0 - 1M ops): Hit Rate: **65.49%** | Throughput: **56.84M ops/s**
+  - Growth Stage (1M - 10M ops): Hit Rate: **86.55%** | Throughput: **78.36M ops/s**
+  - Plateau Stage (10M+ ops): Hit Rate: **87.63%** | Throughput: **92.51M ops/s**
+
+[Scenario B] Snapshot Fast Pass (Injecting 4143 Hot Keys)
+  (Fast Pass Warmup took 1.56ms)
+  - Initial Stage (0 - 1M ops): Hit Rate: **75.34%** (+9.85%) | Throughput: **71.43M ops/s**
+  - Growth Stage (1M - 10M ops): Hit Rate: **88.17%** (+1.61%) | Throughput: **70.76M ops/s**
+  - Plateau Stage (10M+ ops): Hit Rate: **91.00%** (+3.37%) | Throughput: **74.88M ops/s**
+
+### 2. General Workload Throughput & Hit Rate (v0.4.1)
+
+Test Configuration: `OPS_PER_BENCH = 50,000,000`, 4 threads, Capacity = 1,048,576.
+
+| Workload | Throughput (ops/s) | Hit Rate | 
+|----------|--------------------|----------|
+| **Uniform** | 54,737,134 ops/s | 7.08% |
+| **Zipf (1.0)** | 63,079,337 ops/s | 78.45% | 
+| **Scan** | 83,185,142 ops/s | 6.07% |
+| **Mixed** | 68,546,227 ops/s | 33.32% |
+
+### 3. Read/Write Ratio Sensitivity (Zipf 1.1)
+
+| Read/Write Ratio | Throughput (ops/s) | Hit Rate |
+|------------------|--------------------|----------|
+| 10% Read / 90% Write | 71,106,054 ops/s | 85.61% |
+| 25% Read / 75% Write | 70,002,887 ops/s | 85.51% |
+| 50% Read / 50% Write | 73,141,296 ops/s | 83.99% |
+| 75% Read / 25% Write | 65,516,273 ops/s | 83.58% |
+| 100% Read / 0% Write | 60,196,632 ops/s | 62.91% |
+
+### 4. Latency Distribution (Zipf Workload)
+
+| Metric | DualCacheFF (v0.4.1) [READ] | DualCacheFF (v0.4.1) [WRITE] |
+|--------|------------------------------|-------------------------------|
+| **P50 Latency** | 42 ns | 83 ns |
+| **P90 Latency** | 167 ns | 208 ns |
+| **P99 Latency** | 333 ns | 708 ns |
+| **P99.9 Latency** | 542 ns | 1333 ns |
+| **P99.99 Latency** | 3291 ns | 3458 ns |
+| **Max Latency** | 24,958 ns | 12,666 ns |
+
+### 5. CAPEX Constraint Test (2048 Capacity)
+
+- **Execution Time**: 8.36 ms
+- **Actual Hit Rate**: 83.44%
+- **Net Footprint**: 2,432 KB
+
+---
+
 # 0.4.0
 ## Intelligent Warmup & Adaptive Routing (v0.4.0)
 

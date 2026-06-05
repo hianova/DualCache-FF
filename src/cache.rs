@@ -310,7 +310,7 @@ where
                     {
                         res = Some(node.value.clone());
                         hit_g_idx = Some(node.g_idx);
-                        self.tls.with_warmup_state(&mut |s| *s = s.saturating_sub(5));
+                        // self.tls.with_warmup_state(&mut |s| *s = s.saturating_sub(5));
                     }
                 }
             }

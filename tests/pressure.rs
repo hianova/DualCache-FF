@@ -43,7 +43,7 @@ fn test_capacity_pressure_and_eviction() {
 #[test]
 fn test_strong_consistency_pressure() {
     run_with_timeout(Duration::from_secs(45), || {
-        let config = Config::new_expert(8192, 1024, 1024, 60, 10);
+        let config = Config::new_expert(8192, 1024, 1024, 60, 64);
         let cache = Arc::new(DualCacheFF::new(config));
 
         let shadow = Arc::new(Mutex::new(HashMap::new()));
