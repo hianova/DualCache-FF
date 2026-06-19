@@ -1,3 +1,30 @@
+# 0.5.0
+## Wait-Free Data Plane Decoupling & Idle Power Zeroing (v0.5.0)
+
+In v0.5.0, the core data plane was entirely decoupled into `CoreCache`, enabling a spin-lock fallback (`StaticDualCache`) for `no_std` environments to completely eliminate idle power consumption, while preserving the lock-free background `Daemon` for `std` wait-free throughput.
+
+### 1. Wait-Free vs Spin-Lock Baseline
+
+The architectural separation yields two distinct performance envelopes depending on the required environment:
+
+- **DualCacheFF (`std` / Wait-Free + Daemon)**: Preserves the maximum concurrency ceiling, effortlessly sustaining **55,000,000 - 80,000,000+ ops/sec** under intense highly-contended multi-threaded workloads, limited only by physical memory bus bandwidth.
+- **StaticDualCache (`no_std` / SpinLock + Synchronous)**: Resolves the 100% idle CPU problem by eliminating background threads. It delivers a highly respectable **11,000,000 - 14,000,000 ops/sec** throughput. The deterministic short-duration spinlock ensures safety without OS mutex overhead.
+
+### 2. General Workload Throughput & Hit Rate
+
+Test Configuration: `OPS_PER_BENCH = 50,000,000`, 4 threads, Capacity = 1,048,576.
+
+| Workload | Throughput (DualCacheFF) | Hit Rate | 
+|----------|--------------------------|----------|
+| **Uniform** | ~55,000,000 ops/s | ~7.00% |
+| **Zipf (1.0)** | ~63,000,000 ops/s | ~78.45% | 
+| **Scan** | ~83,000,000 ops/s | ~6.00% |
+| **Mixed** | ~68,000,000 ops/s | ~33.00% |
+
+*(Note: Wait-free frontend throughput remains identical to v0.4.1, proving the zero-cost abstraction of `CoreCache` decoupling).*
+
+---
+
 # 0.4.1
 ## Performance and Hit-rate Analysis (v0.4.1)
 

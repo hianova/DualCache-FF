@@ -13,4 +13,5 @@ mod it {
     mod static_cache;
     mod test_hash;
     mod unsafe_spec;
+    mod miri_core;
 }
