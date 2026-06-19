@@ -18,8 +18,8 @@ pub struct Node<K, V> {
 /// L3 lock-free hash index + node pointer array.
 ///
 /// `index` is a flat open-addressed array of packed `u64` entries:
-///   bits[63:48] = 16-bit tag (hash >> 48)
-///   bits[47:0]  = Arena slot index
+///   `bits[63:48]` = 16-bit tag (hash >> 48)
+///   `bits[47:0]`  = Arena slot index
 /// Sentinel values: 0 = empty, u64::MAX = tombstone.
 pub struct Cache<K, V> {
     pub(crate) index_mask: usize,
