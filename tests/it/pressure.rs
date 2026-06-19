@@ -6,13 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-mod common;
-use common::run_with_timeout;
+use crate::common::run_with_timeout;
 
 #[test]
 fn test_capacity_pressure_and_eviction() {
     run_with_timeout(Duration::from_secs(30), || {
-        let config = Config::new_expert(1024, 256, 256, 60, 4);
+        let config = Config::new_expert(1024, 256, 256, 60, 128);
         let cache = DualCacheFF::new(config);
 
         // Insert each item 12 times to satisfy the L1 Lossy Filter threshold (>= 10 hits).
@@ -43,7 +42,7 @@ fn test_capacity_pressure_and_eviction() {
 #[test]
 fn test_strong_consistency_pressure() {
     run_with_timeout(Duration::from_secs(45), || {
-        let config = Config::new_expert(8192, 1024, 1024, 60, 64);
+        let config = Config::new_expert(8192, 1024, 1024, 60, 128);
         let cache = Arc::new(DualCacheFF::new(config));
 
         let shadow = Arc::new(Mutex::new(HashMap::new()));
@@ -103,7 +102,7 @@ fn test_strong_consistency_pressure() {
 #[test]
 fn test_async_boundary_conditions() {
     run_with_timeout(Duration::from_secs(10), || {
-        let config = Config::new_expert(128, 64, 64, 60, 4);
+        let config = Config::new_expert(128, 64, 64, 60, 128);
         let cache = DualCacheFF::new(config);
 
         // Rapid burst: Insert x12 -> Delete -> Insert x12 different value -> Delete

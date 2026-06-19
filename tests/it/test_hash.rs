@@ -3,13 +3,12 @@
 use dualcache_ff::{Config, DualCacheFF};
 use std::time::Duration;
 
-mod common;
-use common::run_with_timeout;
+use crate::common::run_with_timeout;
 
 #[test]
 fn test_hash_consistency_and_async_insert() {
     run_with_timeout(Duration::from_secs(5), || {
-        let config = Config::new_expert(1024, 256, 256, 60, 4);
+        let config = Config::new_expert(1024, 256, 256, 60, 128);
         
         // Explicitly create the cache. The hasher is created once and cloned internally.
         let cache = DualCacheFF::new(config);

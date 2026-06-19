@@ -7,8 +7,7 @@ use dualcache_ff::{Config, DualCacheFF};
 use std::thread::sleep;
 use std::time::Duration;
 
-mod common;
-use common::run_with_timeout;
+use crate::common::run_with_timeout;
 
 #[test]
 fn test_memory_stability() {
@@ -18,7 +17,7 @@ fn test_memory_stability() {
         // ── Dummy Pre-initialization Phase ──────────────────────────────────────
         // Warm up any lazy std/thread-local allocations so they don't skew our leak detection.
         {
-            let config = Config::new_expert(256, 64, 64, 200, 2);
+            let config = Config::new_expert(256, 64, 64, 200, 128);
             let cache = DualCacheFF::new(config);
             cache.insert(999, vec![0u8; 10]);
             let _ = cache.get(&999);
@@ -31,7 +30,7 @@ fn test_memory_stability() {
         let initial_bytes = initial_stats.curr_bytes;
 
         {
-            let config = Config::new_expert(1024, 256, 256, 200, 4);
+            let config = Config::new_expert(1024, 256, 256, 200, 128);
             let cache = DualCacheFF::new(config);
 
             for i in 0..1000 {
@@ -67,7 +66,7 @@ fn test_memory_stability() {
         let initial_bytes_headless = initial_stats_headless.curr_bytes;
 
         {
-            let config = Config::new_expert(1024, 256, 256, 200, 4);
+            let config = Config::new_expert(1024, 256, 256, 200, 128);
             let (cache, daemon) = DualCacheFF::new_headless(config);
 
             for i in 0..1000 {

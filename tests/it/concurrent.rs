@@ -18,8 +18,7 @@ use std::sync::Mutex;
 
 use std::collections::HashMap;
 
-mod common;
-use common::run_with_timeout;
+use crate::common::run_with_timeout;
 
 #[cfg(feature = "loom")]
 macro_rules! test_runner {
@@ -48,7 +47,7 @@ macro_rules! test_runner {
 }
 
 test_runner!(test_concurrent_ops, {
-    let config = Config::new_expert(128, 64, 64, 200, 4);
+    let config = Config::new_expert(128, 64, 64, 200, 128);
     let cache = DualCacheFF::new(config);
     
     let ops = Arc::new(AtomicUsize::new(0));
@@ -107,7 +106,7 @@ fn test_ttl_mechanic() {
     run_with_timeout(std::time::Duration::from_secs(10), || {
         use std::time::Duration;
         
-        let config = Config::new_expert(128, 64, 64, 1, 4);
+        let config = Config::new_expert(128, 64, 64, 1, 128);
         let cache = DualCacheFF::new(config);
         
         // Insert 64 times to trigger L1 Lossy Filter (>=10 hits) and sharded batch flush (64 items)
@@ -134,7 +133,7 @@ fn test_ttl_mechanic() {
 }
 
 test_runner!(test_concurrent_insert_t1, {
-    let config = Config::new_expert(128, 64, 64, 200, 4);
+    let config = Config::new_expert(128, 64, 64, 200, 128);
     let cache = DualCacheFF::new(config);
     
     let ops = Arc::new(AtomicUsize::new(0));

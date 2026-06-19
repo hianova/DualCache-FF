@@ -20,7 +20,7 @@ fn measure_dualcacheff() {
     use dualcache_ff::{Config, DualCacheFF};
 
     let peak = {
-        let config = Config::with_memory_budget((CAPACITY * 128 / 1024 / 1024) as usize, 60);
+        let config = Config::with_memory_budget(((CAPACITY * 128 / 1024 / 1024)), 60);
         let cache = DualCacheFF::new(config);
         let _init = print_memory("After Init");
 

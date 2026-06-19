@@ -5,23 +5,7 @@ use dualcache_ff::unsafe_core::{Node, WorkerSlot};
 use std::thread;
 use std::time::Duration;
 
-fn run_with_timeout<F, T>(timeout: Duration, f: F) -> T
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _handle = thread::spawn(move || {
-        let res = f();
-        let _ = tx.send(res);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(res) => res,
-        Err(_) => {
-            panic!("Test timed out after {:?}", timeout);
-        }
-    }
-}
+use crate::common::run_with_timeout;
 
 #[test]
 fn test_batch_buf_alignment_invariants() {
@@ -76,7 +60,7 @@ fn test_qsbr_epoch_retention_and_uaf_safety() {
     run_with_timeout(Duration::from_secs(5), || {
         // Verify that the QSBR epoch reservation mechanism prevents Use-After-Free (UAF).
         // An active thread registered with a local epoch should block RCU deallocations.
-        let config = Config::new_expert(128, 64, 64, 200, 2);
+        let config = Config::new_expert(128, 64, 64, 200, 128);
         let (cache, daemon) = DualCacheFF::new_headless(config);
 
         // Spawn the background daemon thread first so it can process commands

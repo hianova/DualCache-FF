@@ -159,6 +159,6 @@ fn main() {
         println!("  Initial Stage: {:>+6.2}%", hr_init_f - hr_init_n);
         println!("  Growth Stage : {:>+6.2}%", hr_grow_f - hr_grow_n);
         println!("  Plateau Stage: {:>+6.2}%", hr_plat_f - hr_plat_n);
-        println!("");
+        println!();
     }
 }

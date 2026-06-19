@@ -2,7 +2,7 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{vec, vec::Vec, boxed::Box};
 
-use crate::cache_padded::CachePadded;
+use crate::components::CachePadded;
 use crate::daemon::{Command, Daemon};
 use crate::lossy_queue::{LossyQueue, OneshotAck};
 use crate::unsafe_core::{Cache, T1, T2, WorkerSlot};
@@ -32,6 +32,12 @@ pub struct WorkerState {
     pub local_epoch: CachePadded<AtomicUsize>,
 }
 
+impl Default for WorkerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WorkerState {
     pub fn new() -> Self {
         Self {
@@ -40,12 +46,12 @@ impl WorkerState {
     }
 }
 
-use crate::spawner::{DaemonSpawner, DefaultSpawner};
-use crate::tls::{TlsProvider, DefaultTls};
+
+use crate::components::{DefaultTls, DefaultSpawner};
 
 // ── DualCacheFF ───────────────────────────────────────────────────────────
 
-pub struct DualCacheFF<K, V, S = RandomState, Tls: TlsProvider = DefaultTls> {
+pub struct DualCacheFF<K, V, S = RandomState> {
     pub hasher: S,
     pub t1: Arc<T1<K, V>>,
     pub t2: Arc<T2<K, V>>,
@@ -65,10 +71,10 @@ pub struct DualCacheFF<K, V, S = RandomState, Tls: TlsProvider = DefaultTls> {
     /// Cold-start flag: Daemon sets this to false when capacity is reached.
     pub is_cold_start: Arc<AtomicBool>,
     /// The thread-local storage provider, injected at compile-time for zero overhead.
-    pub tls: Tls,
+    pub tls: DefaultTls,
 }
 
-impl<K, V, S: Clone, Tls: TlsProvider + Clone> Clone for DualCacheFF<K, V, S, Tls> {
+impl<K, V, S: Clone> Clone for DualCacheFF<K, V, S> {
     fn clone(&self) -> Self {
         Self {
             hasher: self.hasher.clone(),
@@ -91,7 +97,7 @@ impl<K, V, S: Clone, Tls: TlsProvider + Clone> Clone for DualCacheFF<K, V, S, Tl
 // ── Constructor (std mode — auto-spawns Daemon thread) ────────────────────
 
 #[cfg(any(feature = "std", feature = "loom", loom))]
-impl<K, V> DualCacheFF<K, V, RandomState, DefaultTls>
+impl<K, V> DualCacheFF<K, V, RandomState>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,
@@ -106,28 +112,28 @@ where
 }
 
 #[cfg(any(feature = "std", feature = "loom", loom))]
-impl<K, V, Tls> DualCacheFF<K, V, RandomState, Tls>
+impl<K, V> DualCacheFF<K, V, RandomState>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,
-    Tls: TlsProvider + 'static,
 {
     /// Create a new `DualCacheFF` and automatically spawn the background Daemon using a custom thread-local storage provider.
     #[inline]
-    pub fn new_with_tls(config: Config, tls: Tls) -> Self {
+    pub fn new_with_tls(config: Config, tls: DefaultTls) -> Self {
         Self::new_with_tls_and_spawner(config, tls, DefaultSpawner)
     }
 }
 
 // ── Constructor (universal — returns Daemon for manual scheduling) ─────────
 
-impl<K, V> DualCacheFF<K, V, RandomState, DefaultTls>
+impl<K, V> DualCacheFF<K, V, RandomState>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,
 {
     /// Create a new `DualCacheFF` and automatically spawn the background Daemon using a custom spawner.
-    pub fn new_with_spawner<Sp: DaemonSpawner + 'static>(config: Config, spawner: Sp) -> Self {
+    #[cfg(any(feature = "std", feature = "loom", loom))]
+    pub fn new_with_spawner(config: Config, spawner: DefaultSpawner) -> Self {
         let (cache, daemon) = Self::new_headless(config);
         spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
         cache
@@ -150,17 +156,13 @@ where
     }
 }
 
-impl<K, V, Tls> DualCacheFF<K, V, RandomState, Tls>
+impl<K, V> DualCacheFF<K, V, RandomState>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,
-    Tls: TlsProvider + 'static,
 {
     /// Create a `DualCacheFF` and its `Daemon` with a custom thread-local storage provider.
-    pub fn new_headless_with_tls(
-        config: Config,
-        tls: Tls,
-    ) -> (Self, Daemon<K, V, RandomState>) {
+    pub fn new_headless_with_tls(config: Config, tls: DefaultTls) -> (Self, Daemon<K, V, RandomState>) {
         let hasher = RandomState::new();
         let t1 = Arc::new(T1::new(config.t1_slots));
         let t2 = Arc::new(T2::new(config.t2_slots));
@@ -216,7 +218,8 @@ where
     }
 
     /// Create a `DualCacheFF` and spawn its `Daemon` using both a custom TLS provider and custom spawner.
-    pub fn new_with_tls_and_spawner<Sp: DaemonSpawner + 'static>(config: Config, tls: Tls, spawner: Sp) -> Self
+    #[cfg(any(feature = "std", feature = "loom", loom))]
+    pub fn new_with_tls_and_spawner(config: Config, tls: DefaultTls, spawner: DefaultSpawner) -> Self
     {
         let (cache, daemon) = Self::new_headless_with_tls(config, tls);
         spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
@@ -227,7 +230,7 @@ where
 
 // ── Public API (std + no_std) ─────────────────────────────────────────────
 
-impl<K, V, S, Tls: TlsProvider> DualCacheFF<K, V, S, Tls>
+impl<K, V, S> DualCacheFF<K, V, S>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,
@@ -248,7 +251,7 @@ where
         // ── flush all worker slots ───────────────────────────────────
         for slot in self.miss_buffers.iter() {
             let buf: &mut crate::unsafe_core::BatchBuf<K, V> = slot.get_mut_safe();
-            if buf.len() > 0 {
+            if !buf.is_empty() {
                 let batch = buf.drain_to_vec();
                 let _ = self.cmd_tx.try_send(Command::BatchInsert(batch));
             }
@@ -292,42 +295,38 @@ where
 
         if has_epoch {
             // ── T1 check ──────────────────────────────────────────────────────
-            if let Some(node) = self.t1.get_node(hash) {
-                if node.key == *key
+            if let Some(node) = self.t1.get_node(hash)
+                && node.key == *key
                     && (node.expire_at == 0 || node.expire_at >= current_epoch_cache)
                 {
                     res = Some(node.value.clone());
                     hit_g_idx = Some(node.g_idx);
-                    self.tls.with_warmup_state(&mut |s| *s = s.saturating_add(10));
+                    self.tls.with_warmup_state(|s| *s = s.saturating_add(10));
                 }
-            }
 
             // ── T2 check ──────────────────────────────────────────────────────
-            if res.is_none() {
-                if let Some(node) = self.t2.get_node(hash) {
-                    if node.key == *key
+            if res.is_none()
+                && let Some(node) = self.t2.get_node(hash)
+                    && node.key == *key
                         && (node.expire_at == 0 || node.expire_at >= current_epoch_cache)
                     {
                         res = Some(node.value.clone());
                         hit_g_idx = Some(node.g_idx);
                         // self.tls.with_warmup_state(&mut |s| *s = s.saturating_sub(5));
                     }
-                }
-            }
 
             // ── Cache (L3) check ──────────────────────────────────────────────
             if res.is_none() {
                 let tag = (hash >> 48) as u16;
-                if let Some(global_idx) = self.cache.index_probe(hash, tag) {
-                    if let Some(v) = self
+                if let Some(global_idx) = self.cache.index_probe(hash, tag)
+                    && let Some(v) = self
                         .cache
                         .node_get_full(global_idx, key, current_epoch_cache)
                     {
                         res = Some(v);
                         hit_g_idx = Some(global_idx as u32);
-                        self.tls.with_warmup_state(&mut |s| *s = s.saturating_sub(10));
+                        self.tls.with_warmup_state(|s| *s = s.saturating_sub(10));
                     }
-                }
             }
         }
 
@@ -380,30 +379,24 @@ where
 
             if id_opt.is_some() {
                 // T1 check
-                if let Some(node) = self.t1.get_node(hash) {
-                    if node.key == key {
-                        bypass = true;
-                    }
+                if self.t1.get_node(hash).is_some_and(|node| node.key == key) {
+                    bypass = true;
                 }
 
                 // T2 check
-                if !bypass {
-                    if let Some(node) = self.t2.get_node(hash) {
-                        if node.key == key {
-                            bypass = true;
-                        }
+                if !bypass
+                    && self.t2.get_node(hash).is_some_and(|node| node.key == key) {
+                        bypass = true;
                     }
-                }
 
                 // Cache (L3) check
                 if !bypass {
                     let tag = (hash >> 48) as u16;
-                    if let Some(global_idx) = self.cache.index_probe(hash, tag) {
-                        if let Some(node) = self.cache.get_node(global_idx) {
-                            if node.key == key {
-                                bypass = true;
-                            }
-                        }
+                    if self.cache.index_probe(hash, tag)
+                        .and_then(|global_idx| self.cache.get_node(global_idx))
+                        .is_some_and(|node| node.key == key) 
+                    {
+                        bypass = true;
                     }
                 }
             }
@@ -449,7 +442,7 @@ where
         }
 
         let mut warmup_state = 255;
-        self.tls.with_warmup_state(&mut |s| warmup_state = *s);
+        self.tls.with_warmup_state(|s| warmup_state = *s);
         let is_t1 = warmup_state < 100;
 
         // Task 6: Time-based flush detection
@@ -482,15 +475,14 @@ where
             }
         });
 
-        if pushed_to_buf.is_none() {
-            if let Some((k, v)) = option_kv {
+        if pushed_to_buf.is_none()
+            && let Some((k, v)) = option_kv {
                 let _ = self.cmd_tx.try_send(Command::Insert(k, v, hash, is_t1));
             }
-        }
     }
 
     /// Start a Cold Start Session to inject items directly to T1.
-    pub fn begin_cold_start_session(&self) -> ColdStartSession<'_, K, V, S, Tls> {
+    pub fn begin_cold_start_session(&self) -> ColdStartSession<'_, K, V, S> {
         ColdStartSession { cache: self }
     }
 
@@ -502,7 +494,7 @@ where
         self.with_worker_id(|id| {
             if id < self.miss_buffers.len() {
                 let buf: &mut crate::unsafe_core::BatchBuf<K, V> = self.miss_buffers[id].get_mut_safe();
-                if buf.len() > 0 {
+                if !buf.is_empty() {
                     let batch = buf.drain_to_vec();
                     let _ = self.cmd_tx.try_send(Command::BatchInsert(batch));
                     let tick = self.daemon_tick.load(Ordering::Relaxed);
@@ -532,39 +524,27 @@ where
     }
 
     #[inline(always)]
-    fn with_hit_buf<F, R>(&self, mut f: F) -> Option<R>
+    fn with_hit_buf<F, R>(&self, f: F) -> Option<R>
     where
-        F: FnMut(&mut ([usize; 64], usize)) -> R,
+        F: FnOnce(&mut ([usize; 64], usize)) -> R,
     {
-        let mut res = None;
-        self.tls.with_hit_buf(&mut |buf| {
-            res = Some(f(buf));
-        });
-        res
+        self.tls.with_hit_buf(f)
     }
 
     #[inline(always)]
-    fn with_l1_filter<F, R>(&self, mut f: F) -> Option<R>
+    fn with_l1_filter<F, R>(&self, f: F) -> Option<R>
     where
-        F: FnMut(&mut ([u8; 4096], usize)) -> R,
+        F: FnOnce(&mut ([u8; 4096], usize)) -> R,
     {
-        let mut res = None;
-        self.tls.with_l1_filter(&mut |filter| {
-            res = Some(f(filter));
-        });
-        res
+        self.tls.with_l1_filter(f)
     }
 
     #[inline(always)]
-    fn with_last_flush_tick<F, R>(&self, mut f: F) -> Option<R>
+    fn with_last_flush_tick<F, R>(&self, f: F) -> Option<R>
     where
-        F: FnMut(&mut TickType) -> R,
+        F: FnOnce(&mut TickType) -> R,
     {
-        let mut res = None;
-        self.tls.with_last_flush_tick(&mut |tick| {
-            res = Some(f(tick));
-        });
-        res
+        self.tls.with_last_flush_tick(f)
     }
 
     #[inline(always)]
@@ -597,7 +577,7 @@ where
     }
 }
 
-impl<K, V, S, Tls: TlsProvider> Drop for DualCacheFF<K, V, S, Tls> {
+impl<K, V, S> Drop for DualCacheFF<K, V, S> {
     fn drop(&mut self) {
         if Arc::strong_count(&self.cmd_tx) <= 2 {
             let _ = self.cmd_tx.try_send(Command::Shutdown);
@@ -609,11 +589,11 @@ impl<K, V, S, Tls: TlsProvider> Drop for DualCacheFF<K, V, S, Tls> {
 /// A session object for injecting items directly into T1 during cold starts.
 /// By requiring a session object, we prevent accidental use of `insert_t1`
 /// in normal hot paths which would bypass TLS batching and overload the daemon.
-pub struct ColdStartSession<'a, K, V, S, Tls: TlsProvider> {
-    cache: &'a DualCacheFF<K, V, S, Tls>,
+pub struct ColdStartSession<'a, K, V, S> {
+    cache: &'a DualCacheFF<K, V, S>,
 }
 
-impl<'a, K, V, S, Tls: TlsProvider> ColdStartSession<'a, K, V, S, Tls>
+impl<'a, K, V, S> ColdStartSession<'a, K, V, S>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,

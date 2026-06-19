@@ -8,8 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::collections::HashMap;
 
-mod common;
-use common::run_with_timeout;
+use crate::common::run_with_timeout;
 
 macro_rules! test_runner {
     ($name:ident, $body:expr) => {
@@ -23,8 +22,8 @@ macro_rules! test_runner {
 }
 
 test_runner!(test_static_cache_basic, {
-    let config = Config::new_expert(128, 64, 64, 200, 4);
-    let cache: StaticDualCache<i32, String, 16> = StaticDualCache::new(config);
+    let config = Config::new_expert(128, 64, 64, 200, 128);
+    let cache: StaticDualCache<i32, String> = StaticDualCache::new(config);
 
     // Basic insertion and retrieval
     cache.insert(1, "one".to_string());
@@ -49,8 +48,8 @@ test_runner!(test_static_cache_basic, {
 });
 
 test_runner!(test_static_cache_concurrent, {
-    let config = Config::new_expert(128, 64, 64, 200, 4);
-    let cache = Arc::new(StaticDualCache::<i32, i32, 32>::new(config));
+    let config = Config::new_expert(128, 64, 64, 200, 128);
+    let cache = Arc::new(StaticDualCache::<i32, i32>::new(config));
     
     let ops = Arc::new(AtomicUsize::new(0));
     let shadow = Arc::new(Mutex::new(HashMap::new()));
@@ -71,7 +70,7 @@ test_runner!(test_static_cache_concurrent, {
             
             // Read
             let val = c.get(&offset);
-            assert!(val == Some(offset) || val == None); // Since another thread won't overwrite our offset key
+            assert!(val == Some(offset) || val.is_none()); // Since another thread won't overwrite our offset key
             
             // Remove
             c.remove(&(offset + 1));
@@ -100,7 +99,7 @@ test_runner!(test_static_cache_concurrent, {
 });
 
 test_runner!(test_dual_cache_stub, {
-    let config = Config::new_expert(128, 64, 64, 200, 4);
+    let config = Config::new_expert(128, 64, 64, 200, 128);
     let stub: DualCacheStub<i32, String> = DualCacheStub::new(config);
 
     stub.insert(1, "one".to_string());

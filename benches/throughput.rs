@@ -169,7 +169,7 @@ fn run_benchmarks(is_full_bench: bool) {
 
         // --- DualCacheFF measurement run for stats ---
         println!("\n=== DualCacheFF Workload: {} ===", workload);
-        let ff_stat = Arc::new(dualcache_ff::DualCacheFF::new(config));
+        let ff_stat = Arc::new(dualcache_ff::DualCacheFF::new(config.clone()));
         for i in 0..actual_capacity {
             ff_stat.insert(i as u64, i as u64);
         }
@@ -184,10 +184,27 @@ fn run_benchmarks(is_full_bench: bool) {
         println!("  - DB Penetrates (潛在穿透次數): {}", f_misses);
         println!("  - Hit Rate (真實業務命中率): {:.2}%\n", f_hitrate);
 
+        // --- StaticDualCache measurement run for stats ---
+        println!("\n=== StaticDualCache Workload: {} ===", workload);
+        let static_stat = Arc::new(dualcache_ff::StaticDualCache::new(config.clone()));
+        for i in 0..actual_capacity {
+            static_stat.insert(i as u64, i as u64);
+        }
+        static_stat.maintenance();
+        std::thread::sleep(Duration::from_millis(50));
+        let s_start = std::time::Instant::now();
+        let s_misses = bench_workload(Arc::clone(&static_stat), workload, keys_to_use);
+        let s_elapsed = s_start.elapsed();
+        let s_throughput = OPS_PER_BENCH as f64 / s_elapsed.as_secs_f64();
+        let s_hitrate = 100.0 * (1.0 - (s_misses as f64 / OPS_PER_BENCH as f64));
+        println!("  - Throughput (引擎空轉吞吐): {:.2} ops/s", s_throughput);
+        println!("  - DB Penetrates (潛在穿透次數): {}", s_misses);
+        println!("  - Hit Rate (真實業務命中率): {:.2}%\n", s_hitrate);
+
         // --- TinyUFO measurement run for stats ---
         if is_full_bench {
             println!("\n=== TinyUFO Workload: {} ===", workload);
-            let ufo_stat = Arc::new(TinyUfo::new(actual_capacity as usize, actual_capacity as usize));
+            let ufo_stat = Arc::new(TinyUfo::new(actual_capacity, actual_capacity));
             for i in 0..actual_capacity {
                 ufo_stat.insert(i as u64, i as u64);
             }

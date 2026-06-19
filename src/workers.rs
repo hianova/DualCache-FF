@@ -15,6 +15,12 @@ pub struct BatchBuf<K, V> {
     len: usize,
 }
 
+impl<K, V> Default for BatchBuf<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K, V> BatchBuf<K, V> {
     pub fn new() -> Self {
         Self {
@@ -80,6 +86,12 @@ pub struct WorkerSlot<K, V> {
     inner: UnsafeCell<Box<BatchBuf<K, V>>>,
 }
 
+impl<K, V> Default for WorkerSlot<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K, V> WorkerSlot<K, V> {
     #[cfg(not(any(feature = "loom", loom)))]
     pub fn new() -> Self {
@@ -102,6 +114,7 @@ impl<K, V> WorkerSlot<K, V> {
     /// In DualCache-FF this is enforced by the WORKER_ID TLS invariant.
     #[inline(always)]
     #[cfg(not(any(feature = "loom", loom)))]
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut_unchecked(&self) -> &mut BatchBuf<K, V> {
         self.inner.with_mut(|ptr| unsafe { &mut *ptr })
     }
@@ -113,6 +126,7 @@ impl<K, V> WorkerSlot<K, V> {
     /// In DualCache-FF this is enforced by the WORKER_ID TLS invariant.
     #[inline(always)]
     #[cfg(any(feature = "loom", loom))]
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut_unchecked(&self) -> &mut BatchBuf<K, V> {
         self.inner.with_mut(|ptr| unsafe { &mut **ptr })
     }
@@ -120,6 +134,7 @@ impl<K, V> WorkerSlot<K, V> {
     /// Safe accessor that encapsulates the `unsafe` block.
     /// In DualCache-FF this is safe because it's only called by the assigned worker thread.
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub fn get_mut_safe(&self) -> &mut BatchBuf<K, V> {
         unsafe { self.get_mut_unchecked() }
     }

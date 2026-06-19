@@ -2,14 +2,11 @@
 
 use dualcache_ff::{Config, DualCacheFF};
 use dualcache_ff::unsafe_core::{BatchBuf};
-use std::sync::atomic::Ordering;
 use dualcache_ff::lossy_queue::LossyQueue;
-use dualcache_ff::tls::TlsProvider;
 use std::thread;
 use std::time::Duration;
 
-mod common;
-use common::run_with_timeout;
+use crate::common::run_with_timeout;
 
 #[test]
 fn test_batch_buf_overflow() {
@@ -56,7 +53,7 @@ fn test_lossy_queue_drop() {
 #[test]
 fn test_daemon_shutdown_during_active() {
     run_with_timeout(Duration::from_secs(5), || {
-        let config = Config::new_expert(128, 64, 64, 200, 2);
+        let config = Config::new_expert(128, 64, 64, 200, 128);
         let (cache, daemon) = DualCacheFF::new_headless(config);
         
         // Spawn daemon
@@ -80,7 +77,7 @@ fn test_daemon_shutdown_during_active() {
 #[test]
 fn test_record_hit_out_of_bounds() {
     run_with_timeout(Duration::from_secs(5), || {
-        let config = Config::new_expert(128, 64, 64, 200, 2);
+        let config = Config::new_expert(128, 64, 64, 200, 128);
         let (cache, daemon) = DualCacheFF::<u64, u64>::new_headless(config);
         
         let handle = thread::spawn(move || {
@@ -104,7 +101,7 @@ fn test_record_hit_out_of_bounds() {
 #[test]
 fn test_hash_collision_t1_t2() {
     run_with_timeout(Duration::from_secs(5), || {
-        let config = Config::new_expert(128, 2, 2, 200, 2); // Tiny T1/T2 slots to force collisions
+        let config = Config::new_expert(128, 2, 2, 200, 128); // Tiny T1/T2 slots to force collisions
         let cache = DualCacheFF::new(config);
         
         // Insert multiple keys that will definitely collide in a 2-slot array
@@ -123,49 +120,6 @@ fn test_hash_collision_t1_t2() {
         cache.sync();
         
         // No crash means collisions are handled correctly
-    });
-}
-
-struct DummyTls {
-    allow_read: std::sync::atomic::AtomicBool,
-}
-impl TlsProvider for DummyTls {
-    fn get_worker_id(&self) -> Option<usize> {
-        if self.allow_read.load(Ordering::Relaxed) { Some(0) } else { None }
-    }
-    fn with_hit_buf(&self, _f: &mut dyn FnMut(&mut ([usize; 64], usize))) {}
-    fn with_l1_filter(&self, _f: &mut dyn FnMut(&mut ([u8; 4096], usize))) {}
-    fn with_last_flush_tick(&self, _f: &mut dyn FnMut(&mut u64)) {}
-    fn with_warmup_state(&self, f: &mut dyn FnMut(&mut u8)) {
-        let mut state = 255;
-        f(&mut state);
-    }
-}
-
-#[test]
-fn test_no_std_tls_fallback() {
-    run_with_timeout(Duration::from_secs(5), || {
-        let config = Config::new_expert(128, 64, 64, 200, 2);
-        let tls = DummyTls { allow_read: std::sync::atomic::AtomicBool::new(false) };
-        let (cache, daemon) = DualCacheFF::<u64, u64, ahash::RandomState, DummyTls>::new_headless_with_tls(config, tls);
-        
-        let handle = thread::spawn(move || {
-            daemon.run();
-        });
-        
-        // This will bypass TLS and send directly to cmd_tx
-        cache.insert(1, 100);
-        cache.sync();
-        
-        // Allow read to get an epoch checkout in std mode
-        cache.tls.allow_read.store(true, Ordering::Relaxed);
-        
-        // Get should find the item
-        assert_eq!(cache.get(&1), Some(100));
-        cache.sync();
-        
-        drop(cache);
-        handle.join().unwrap();
     });
 }
 

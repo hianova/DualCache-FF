@@ -45,7 +45,7 @@ where
         let mut rng = rand::thread_rng();
 
         let start_time = Instant::now();
-        for (_count, &key) in keys.iter().enumerate() {
+        for &key in keys.iter() {
             if rng.gen_bool(0.8) {
                 get_ops += 1;
                 if cache.get(&key).is_none() {

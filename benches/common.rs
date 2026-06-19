@@ -55,6 +55,30 @@ where
     }
 }
 
+use dualcache_ff::StaticDualCache;
+
+impl<K, V> Cache<K, V> for StaticDualCache<K, V>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    fn get(&self, key: &K) -> Option<V> {
+        self.get(key)
+    }
+
+    fn insert(&self, key: K, value: V) {
+        StaticDualCache::insert(self, key, value);
+    }
+
+    fn sync(&self) {
+        StaticDualCache::maintenance(self);
+    }
+
+    fn name(&self) -> &'static str {
+        "StaticDualCache"
+    }
+}
+
 use tinyufo::TinyUfo;
 
 impl<K, V> Cache<K, V> for TinyUfo<K, V>

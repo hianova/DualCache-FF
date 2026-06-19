@@ -1,5 +1,7 @@
 //! Static and stub cache interfaces optimized for bare-metal and ultra-constrained embedded targets.
 
+#![allow(clippy::module_inception)]
+
 pub mod static_cache;
 pub mod stub;
 

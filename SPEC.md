@@ -197,7 +197,6 @@ To fully support resource-constrained IoT/bare-metal environments (e.g., ESP32-C
 - **Concept**: Introduces a decentralized, zero-lock heuristic to gauge "cache quality" locally per-thread. By maintaining a `WARMUP_STATE` (`u8` 0-255) inside Thread-Local Storage (`TlsProvider`), the cache engines can self-adapt without expensive global atomic aggregations.
 - **Scoring Rules**:
   - `T1 Hit`: +10
-  - `T2 Hit`: -5
   - `L3 (Arena) Hit`: -10
 - **Goal**: To aggressively adapt routing logic based on the instant localized temperature of the requested data set.
 

@@ -22,7 +22,7 @@ pub enum Action {
 }
 
 pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
-    let config = Config::new_expert(128, 64, 64, 200, 4);
+    let config = Config::new_expert(128, 64, 64, 200, 128);
     let cache = DualCacheFF::new(config);
 
     let mut shadow = std::collections::HashMap::new();
@@ -69,8 +69,7 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
     // but bypassing the L1 filter ensures inserts actually make it in.
 }
 
-mod common;
-use common::run_with_timeout;
+use crate::common::run_with_timeout;
 
 #[cfg(not(fuzzing))]
 #[test]
