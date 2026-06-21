@@ -1,16 +1,14 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::sync::{Arc, ArcSlice};
-use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use crate::sync::Arc;
+use crate::sync::atomic::Ordering;
 use crate::sync::index_types::AtomicTick;
 use core::hash::{Hash, BuildHasher};
 
-use crate::storage::Cache;
-use crate::filters::{T1, T2};
 use crate::lossy_queue::{LossyQueue, OneshotAck};
-use crate::cache::WorkerState;
 use crate::core_cache::CoreCache;
+use crate::shared_core::SharedCore;
 
 // ── Command ───────────────────────────────────────────────────────────────
 
@@ -27,6 +25,8 @@ pub enum Command<K, V> {
     Clear(Arc<OneshotAck>),
     /// Blocking maintenance flush — caller spins on `OneshotAck::wait()`.
     Sync(Arc<OneshotAck>),
+    /// Dynamically adjust Daemon poll interval (Power-Saving Mode).
+    SetPollInterval(u64),
     /// Signal Daemon to exit its run loop.
     Shutdown,
 }
@@ -35,7 +35,7 @@ pub enum Command<K, V> {
 
 pub struct Daemon<K, V, S> {
     pub hasher: S,
-    pub core: CoreCache<K, V>,
+    pub core: Arc<SharedCore<K, V>>,
     pub cmd_rx: Arc<LossyQueue<Command<K, V>>>,
     pub hit_rx: Arc<LossyQueue<[usize; 64]>>,
     /// Configurable poll interval in microseconds (1 000–10 000 µs).
@@ -55,31 +55,15 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         hasher: S,
-        capacity: usize,
-        t1: Arc<T1<K, V>>,
-        t2: Arc<T2<K, V>>,
-        cache: Arc<Cache<K, V>>,
+        core: Arc<SharedCore<K, V>>,
         cmd_rx: Arc<LossyQueue<Command<K, V>>>,
         hit_rx: Arc<LossyQueue<[usize; 64]>>,
-        epoch: Arc<AtomicU32>,
-        duration: u32,
         poll_us: u64,
-        worker_states: ArcSlice<WorkerState>,
         daemon_tick: Arc<AtomicTick>,
-        is_cold_start: Arc<AtomicBool>,
     ) -> Self {
         Self {
             hasher,
-            core: CoreCache::new(
-                capacity,
-                t1,
-                t2,
-                cache,
-                epoch,
-                duration,
-                worker_states,
-                is_cold_start,
-            ),
+            core,
             cmd_rx,
             hit_rx,
             poll_us,
@@ -90,17 +74,38 @@ where
     /// Main Daemon event loop.
     pub fn run(mut self) {
         #[cfg(feature = "std")]
+        if let Ok(mut guard) = self.core.daemon_thread.lock() {
+            *guard = Some(std::thread::current());
+        }
+
+        #[cfg(feature = "std")]
         let mut last_epoch_tick = std::time::Instant::now();
 
         loop {
-            // ── Drain command queue (up to 8192 commands per poll) ────────
+            // If suspend mode is manually toggled, wait here until resumed.
+            while self.core.is_suspended.load(Ordering::Acquire) {
+                #[cfg(feature = "std")]
+                std::thread::park();
+                #[cfg(not(feature = "std"))]
+                core::hint::spin_loop();
+            }
+
             let mut processed = 0u32;
+            let mut has_commands = false;
+
+            // Only acquire the lock if we actually have work or periodic maintenance
+            // Actually, we acquire the lock to do anything.
+            let mut core = self.core.acquire_lock();
+
+            // ── Drain command queue (up to 8192 commands per poll) ────────
             loop {
                 match self.cmd_rx.try_recv() {
-                    Some(Command::Shutdown) => return,
                     Some(cmd) => {
-                        self.process_cmd(cmd);
+                        if !Self::process_cmd(&mut core, cmd, &mut self.poll_us) {
+                            return; // Shutdown triggers false
+                        }
                         processed += 1;
+                        has_commands = true;
                         if processed >= 8192 {
                             break;
                         }
@@ -113,50 +118,50 @@ where
             #[cfg(feature = "std")]
             {
                 let now = std::time::Instant::now();
-                if now.duration_since(last_epoch_tick)
-                    >= std::time::Duration::from_millis(100)
-                {
-                    self.core.epoch.fetch_add(1, Ordering::Relaxed);
-                    last_epoch_tick = now;
+                let elapsed = now.duration_since(last_epoch_tick).as_millis() as u64;
+                if elapsed >= 100 {
+                    let ticks = (elapsed / 100) as u32;
+                    core.epoch.fetch_add(ticks, Ordering::Relaxed);
+                    last_epoch_tick += std::time::Duration::from_millis((ticks as u64) * 100);
                 }
             }
             #[cfg(not(feature = "std"))]
             {
                 let tick = self.daemon_tick.load(Ordering::Relaxed);
                 if tick % 100 == 0 {
-                    self.core.epoch.fetch_add(1, Ordering::Relaxed);
+                    core.epoch.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
             // ── Phase 1: Collect hit indices into accumulator ─────────────────
             while let Some(batch) = self.hit_rx.try_recv() {
-                self.core.process_hits(&batch);
-                if self.core.hit_accumulator.len() >= 8192 {
+                core.process_hits(&batch);
+                has_commands = true;
+                if core.hit_accumulator.len() >= 8192 {
                     break;
                 }
             }
 
             // ── Maintenance (GC + hit processing + eviction) ──────────────
-            self.core.maintenance();
+            core.maintenance();
 
             // ── Advance daemon_tick ───────────────────────────────────────
-            #[cfg(any(feature = "loom", loom))]
-            {
-                if processed > 0 {
-                    self.daemon_tick.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            #[cfg(not(any(feature = "loom", loom)))]
-            {
-                self.daemon_tick.fetch_add(1, Ordering::Relaxed);
-            }
+            self.daemon_tick.fetch_add(1, Ordering::Relaxed);
 
-            // ── Idle sleep / spin ─────────────────────────────────────────
-            if processed == 0 {
-                #[cfg(any(feature = "loom", loom))]
-                loom::thread::yield_now();
-                #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-                std::thread::sleep(std::time::Duration::from_micros(self.poll_us));
+            // Release the lock before we potentially park
+            drop(core);
+
+            // ── Idle sleep / park ─────────────────────────────────────────
+            if !has_commands {
+                #[cfg(feature = "std")]
+                {
+                    self.core.is_parked.store(true, Ordering::Release);
+                    // double check to prevent lost wakeups
+                    if self.cmd_rx.is_empty() && self.hit_rx.is_empty() && !self.core.is_suspended.load(Ordering::Acquire) {
+                        std::thread::park_timeout(std::time::Duration::from_millis(100));
+                    }
+                    self.core.is_parked.store(false, Ordering::Release);
+                }
                 #[cfg(not(feature = "std"))]
                 core::hint::spin_loop();
             }
@@ -164,37 +169,41 @@ where
     }
 
     #[inline(always)]
-    fn process_cmd(&mut self, cmd: Command<K, V>) -> bool {
+    fn process_cmd(core: &mut CoreCache<K, V>, cmd: Command<K, V>, poll_us: &mut u64) -> bool {
         match cmd {
             Command::Insert(k, v, hash, is_t1) => {
-                self.core.handle_admission_insert(k, v, hash, is_t1);
+                core.handle_admission_insert(k, v, hash, is_t1);
                 true
             }
             Command::BatchInsert(batch) => {
                 for (k, v, hash, is_t1) in batch {
-                    self.core.handle_admission_insert(k, v, hash, is_t1);
+                    core.handle_admission_insert(k, v, hash, is_t1);
                 }
                 true
             }
             Command::InsertT1(k, v, hash) => {
-                self.core.handle_insert_t1(k, v, hash);
+                core.handle_insert_t1(k, v, hash);
                 true
             }
             Command::Remove(k, hash) => {
-                self.core.handle_remove(k, hash);
+                core.handle_remove(k, hash);
                 true
             }
             Command::Clear(ack) => {
-                self.core.handle_clear();
+                core.handle_clear();
                 ack.signal();
                 true
             }
             Command::Sync(ack) => {
-                self.core.maintenance();
+                core.maintenance();
                 ack.signal();
                 true
             }
-            Command::Shutdown => unreachable!("handled in run()"),
+            Command::SetPollInterval(us) => {
+                *poll_us = us;
+                true
+            }
+            Command::Shutdown => false,
         }
     }
 }

@@ -106,11 +106,12 @@ where
             return;
         }
         let count = latencies.len() as f64;
-        let p50 = latencies[(count * 0.50) as usize];
-        let p90 = latencies[(count * 0.90) as usize];
-        let p99 = latencies[(count * 0.99) as usize];
-        let p99_9 = latencies[(count * 0.999) as usize];
-        let p99_99 = latencies[(count * 0.9999) as usize];
+        let max_idx = latencies.len() - 1;
+        let p50 = latencies[((count * 0.50) as usize).min(max_idx)];
+        let p90 = latencies[((count * 0.90) as usize).min(max_idx)];
+        let p99 = latencies[((count * 0.99) as usize).min(max_idx)];
+        let p99_9 = latencies[((count * 0.999) as usize).min(max_idx)];
+        let p99_99 = latencies[((count * 0.9999) as usize).min(max_idx)];
         let max = *latencies.last().unwrap();
         println!("  [{}] P50: {:>8} ns | P90: {:>8} ns | P99: {:>8} ns | P99.9: {:>8} ns | P99.99: {:>8} ns | Max: {:>8} ns", 
                  label, p50, p90, p99, p99_9, p99_99, max);

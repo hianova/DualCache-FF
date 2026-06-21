@@ -1,8 +1,28 @@
+use core::cell::{Cell, RefCell};
 use core::ops::{Deref, DerefMut};
+#[allow(unused_imports)]
 use crate::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::index_types::TickType;
-use core::cell::{Cell, RefCell};
-use alloc::vec::Vec;
+
+pub static GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
+
+pub struct WorkerState {
+    pub local_epoch: CachePadded<AtomicUsize>,
+}
+
+impl Default for WorkerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WorkerState {
+    pub fn new() -> Self {
+        Self {
+            local_epoch: CachePadded::new(AtomicUsize::new(0)),
+        }
+    }
+}
 
 // ── CachePadded ───────────────────────────────────────────────────────────
 
@@ -43,39 +63,69 @@ impl<T> DerefMut for CachePadded<T> {
 
 // ── DefaultSpawner ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultSpawner;
-
-impl DefaultSpawner {
-    #[inline]
-    #[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-    pub fn spawn(&self, f: alloc::boxed::Box<dyn FnOnce() + Send + 'static>) {
-        std::thread::spawn(f);
-    }
-
-    #[inline]
-    #[cfg(any(feature = "loom", loom))]
-    pub fn spawn(&self, f: alloc::boxed::Box<dyn FnOnce() + Send + 'static>) {
-        loom::thread::spawn(move || f());
-    }
-}
-
-// ── DefaultTls ────────────────────────────────────────────────────────────
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-mod std_tls_impl {
+#[cfg(feature = "std")]
+pub mod std_components {
     use super::*;
-    use std::sync::Mutex;
+    use alloc::boxed::Box;
 
-    struct IdAllocator {
-        free_list: Mutex<Vec<usize>>,
-        next_id: AtomicUsize,
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct DefaultSpawner;
+
+    impl DefaultSpawner {
+        #[inline]
+        pub fn spawn(&self, f: Box<dyn FnOnce() + Send + 'static>) {
+            std::thread::spawn(f);
+        }
     }
 
-    static ALLOCATOR: IdAllocator = IdAllocator {
-        free_list: Mutex::new(Vec::new()),
-        next_id: AtomicUsize::new(0),
-    };
+    // ── DefaultTls ────────────────────────────────────────────────────────────
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    struct IdAllocator {
+        bits: [AtomicUsize; 128],
+    }
+
+    impl IdAllocator {
+        const fn new() -> Self {
+            #[allow(clippy::declare_interior_mutable_const)]
+            const ZERO: AtomicUsize = AtomicUsize::new(0);
+            Self { bits: [ZERO; 128] }
+        }
+
+        fn alloc(&self) -> usize {
+            for (i, word) in self.bits.iter().enumerate() {
+                let mut current = word.load(Ordering::Relaxed);
+                while current != !0 {
+                    let bit = current.trailing_ones() as usize;
+                    if bit < usize::BITS as usize {
+                        let mask = 1_usize << bit;
+                        match word.compare_exchange_weak(
+                            current,
+                            current | mask,
+                            Ordering::Acquire,
+                            Ordering::Relaxed,
+                        ) {
+                            Ok(_) => return i * (usize::BITS as usize) + bit,
+                            Err(v) => current = v,
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+            panic!("Exceeded maximum number of concurrent threads in DualCache-FF");
+        }
+
+        fn free(&self, id: usize) {
+            let word_idx = id / (usize::BITS as usize);
+            let bit_idx = id % (usize::BITS as usize);
+            if word_idx < self.bits.len() {
+                self.bits[word_idx].fetch_and(!(1_usize << bit_idx), Ordering::Release);
+            }
+        }
+    }
+
+    static ALLOCATOR: IdAllocator = IdAllocator::new();
 
     struct ThreadIdGuard {
         id: usize,
@@ -83,19 +133,13 @@ mod std_tls_impl {
 
     impl Drop for ThreadIdGuard {
         fn drop(&mut self) {
-            if let Ok(mut list) = ALLOCATOR.free_list.lock() {
-                list.push(self.id);
-            }
+            ALLOCATOR.free(self.id);
         }
     }
 
     thread_local! {
         static WORKER_ID: usize = {
-            let id = if let Ok(mut list) = ALLOCATOR.free_list.lock() {
-                list.pop().unwrap_or_else(|| ALLOCATOR.next_id.fetch_add(1, Ordering::Relaxed))
-            } else {
-                ALLOCATOR.next_id.fetch_add(1, Ordering::Relaxed)
-            };
+            let id = ALLOCATOR.alloc();
             
             GUARD.with(|g| {
                 *g.borrow_mut() = Some(ThreadIdGuard { id });
@@ -163,161 +207,91 @@ mod std_tls_impl {
     }
 }
 
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
-pub use std_tls_impl::DefaultTls;
+#[cfg(feature = "std")]
+pub use std_components::{DefaultSpawner, DefaultTls};
 
-#[cfg(any(feature = "loom", loom))]
-mod loom_tls_impl {
+
+
+#[cfg(test)]
+mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    struct IdAllocator {
-        free_list: Mutex<Vec<usize>>,
-        next_id: AtomicUsize,
+    #[test]
+    fn test_cache_padded() {
+        let mut padded = CachePadded::new(42);
+        assert_eq!(*padded, 42);
+        *padded = 43;
+        assert_eq!(*padded, 43);
+        assert_eq!(padded.into_inner(), 43);
     }
 
-    loom::lazy_static! {
-        static ref ALLOCATOR: IdAllocator = IdAllocator {
-            free_list: Mutex::new(Vec::new()),
-            next_id: AtomicUsize::new(0),
-        };
+    #[test]
+    fn test_cache_padded_align() {
+        assert!(std::mem::align_of::<CachePadded<u8>>() >= 64, "CachePadded must be cache-line aligned");
+        assert!(std::mem::size_of::<CachePadded<u8>>() >= 64, "CachePadded size must be at least 64 bytes");
     }
 
-    struct ThreadIdGuard {
-        id: usize,
+    #[test]
+    fn test_worker_state() {
+        use core::sync::atomic::Ordering;
+        let ws = WorkerState::new();
+        assert_eq!(ws.local_epoch.0.load(Ordering::Relaxed), 0);
+        let ws_default = WorkerState::default();
+        assert_eq!(ws_default.local_epoch.0.load(Ordering::Relaxed), 0);
     }
 
-    impl Drop for ThreadIdGuard {
-        fn drop(&mut self) {
-            if let Ok(mut list) = ALLOCATOR.free_list.lock() {
-                list.push(self.id);
+    #[test]
+    fn test_id_allocator_concurrent_via_tls() {
+        #[cfg(feature = "std")]
+        {
+            let mut handles = vec![];
+            for _ in 0..10 {
+                handles.push(std::thread::spawn(|| {
+                    let tls = DefaultTls::default();
+                    for _ in 0..100 {
+                        let id = tls.get_worker_id().unwrap();
+                        assert!(id < 8192);
+                    }
+                }));
+            }
+            for h in handles {
+                h.join().unwrap();
             }
         }
     }
 
-    loom::thread_local! {
-        static WORKER_ID: usize = {
-            let id = if let Ok(mut list) = ALLOCATOR.free_list.lock() {
-                list.pop().unwrap_or_else(|| ALLOCATOR.next_id.fetch_add(1, Ordering::Relaxed))
-            } else {
-                ALLOCATOR.next_id.fetch_add(1, Ordering::Relaxed)
-            };
-            GUARD.with(|g| {
-                *g.borrow_mut() = Some(ThreadIdGuard { id });
+    #[test]
+    fn test_default_tls_methods() {
+        #[cfg(feature = "std")]
+        {
+            let tls = DefaultTls::default();
+            let id = tls.get_worker_id().unwrap();
+            assert!(id < 8192);
+            
+            let res = tls.with_l1_filter(|f| {
+                f.0[0] = 1;
+                true
             });
-            id
-        };
-
-        static GUARD: RefCell<Option<ThreadIdGuard>> = RefCell::new(None);
-        static HIT_BUF: RefCell<([usize; 64], usize)> = RefCell::new(([0; 64], 0));
-        static L1_FILTER: RefCell<([u8; 4096], usize)> = RefCell::new(([0; 4096], 0));
-        static LAST_FLUSH_TICK: Cell<TickType> = Cell::new(0);
-        static WARMUP_STATE: Cell<u8> = Cell::new(0);
+            assert!(res.is_some());
+            assert!(res.unwrap()); 
+            
+            tls.with_hit_buf(|buf| {
+                buf.0[0] = 123;
+                buf.1 += 1;
+                assert_eq!(buf.1, 1);
+                buf.1 = 0; // clear
+            });
+        }
     }
 
-    #[derive(Clone, Default)]
-    pub struct DefaultTls;
-
-    impl DefaultTls {
-        #[inline(always)]
-        pub fn get_worker_id(&self) -> Option<usize> {
-            Some(WORKER_ID.with(|id| *id))
-        }
-
-        #[inline(always)]
-        pub fn with_hit_buf<F, R>(&self, f: F) -> Option<R>
-        where
-            F: FnOnce(&mut ([usize; 64], usize)) -> R,
+    #[test]
+    fn test_default_spawner() {
+        #[cfg(feature = "std")]
         {
-            Some(HIT_BUF.with(|buf| f(&mut *buf.borrow_mut())))
-        }
-
-        #[inline(always)]
-        pub fn with_l1_filter<F, R>(&self, f: F) -> Option<R>
-        where
-            F: FnOnce(&mut ([u8; 4096], usize)) -> R,
-        {
-            Some(L1_FILTER.with(|filter| f(&mut *filter.borrow_mut())))
-        }
-
-        #[inline(always)]
-        pub fn with_last_flush_tick<F, R>(&self, f: F) -> Option<R>
-        where
-            F: FnOnce(&mut TickType) -> R,
-        {
-            Some(LAST_FLUSH_TICK.with(|cell| {
-                let mut val = cell.get();
-                let res = f(&mut val);
-                cell.set(val);
-                res
-            }))
-        }
-
-        #[inline(always)]
-        pub fn with_warmup_state<F, R>(&self, f: F) -> R
-        where
-            F: FnOnce(&mut u8) -> R,
-        {
-            WARMUP_STATE.with(|cell| {
-                let mut val = cell.get();
-                let res = f(&mut val);
-                cell.set(val);
-                res
-            })
+            let spawner = DefaultSpawner::default();
+            spawner.spawn(Box::new(|| {
+                // Thread will just exit
+            }));
         }
     }
 }
-
-#[cfg(any(feature = "loom", loom))]
-pub use loom_tls_impl::DefaultTls;
-
-#[cfg(not(any(feature = "std", feature = "loom", loom)))]
-mod no_std_tls_impl {
-    use super::*;
-
-    #[derive(Clone, Default)]
-    pub struct DefaultTls;
-
-    impl DefaultTls {
-        #[inline(always)]
-        pub fn get_worker_id(&self) -> Option<usize> {
-            None
-        }
-
-        #[inline(always)]
-        pub fn with_hit_buf<F, R>(&self, _f: F) -> Option<R>
-        where
-            F: FnOnce(&mut ([usize; 64], usize)) -> R,
-        {
-            None
-        }
-
-        #[inline(always)]
-        pub fn with_l1_filter<F, R>(&self, _f: F) -> Option<R>
-        where
-            F: FnOnce(&mut ([u8; 4096], usize)) -> R,
-        {
-            None
-        }
-
-        #[inline(always)]
-        pub fn with_last_flush_tick<F, R>(&self, _f: F) -> Option<R>
-        where
-            F: FnOnce(&mut TickType) -> R,
-        {
-            None
-        }
-
-        #[inline(always)]
-        pub fn with_warmup_state<F, R>(&self, f: F) -> R
-        where
-            F: FnOnce(&mut u8) -> R,
-        {
-            let mut state = 255;
-            f(&mut state)
-        }
-    }
-}
-
-#[cfg(not(any(feature = "std", feature = "loom", loom)))]
-pub use no_std_tls_impl::DefaultTls;

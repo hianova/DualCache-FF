@@ -8,7 +8,7 @@ use core::hash::Hash;
 use crate::arena::Arena;
 use crate::storage::{Cache, Node};
 use crate::filters::{T1, T2};
-use crate::cache::{WorkerState, GLOBAL_EPOCH};
+use crate::components::{WorkerState, GLOBAL_EPOCH};
 
 const MAX_RANK: u8 = 3;
 
@@ -19,12 +19,14 @@ pub struct CoreCache<K, V> {
     pub t2: Arc<T2<K, V>>,
     pub cache: Arc<Cache<K, V>>,
     pub admission: Arc<AdmissionFilter>,
-    pub garbage_queue: Vec<(*mut Node<K, V>, usize)>,
+    pub garbage_queue: Vec<(*mut Node<K, V>, usize, bool)>,
     pub hit_accumulator: Vec<usize>,
     pub is_cold_start: Arc<AtomicBool>,
     pub epoch: Arc<AtomicU32>,
     pub duration: u32,
     pub worker_states: ArcSlice<WorkerState>,
+    pub on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+    pub on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
 }
 
 unsafe impl<K: Send, V: Send> Send for CoreCache<K, V> {}
@@ -44,6 +46,8 @@ where
         duration: u32,
         worker_states: ArcSlice<WorkerState>,
         is_cold_start: Arc<AtomicBool>,
+        on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+        on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
     ) -> Self {
         Self {
             arena: Arena::new(capacity),
@@ -57,6 +61,8 @@ where
             epoch,
             duration,
             worker_states,
+            on_evict,
+            on_promote,
         }
     }
 
@@ -102,7 +108,7 @@ where
         let old_ptr = self.cache.nodes[global_idx].swap(node_ptr, Ordering::Release);
         if !old_ptr.is_null() {
             let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
-            self.garbage_queue.push((old_ptr, epoch));
+            self.garbage_queue.push((old_ptr, epoch, false));
         }
 
         self.cache.index_store(hash, tag, entry);
@@ -136,17 +142,17 @@ where
             g_idx: global_idx as u32,
         }));
 
-        let old_ptr = self.cache.nodes[global_idx].swap(node_ptr, Ordering::Release);
-        if !old_ptr.is_null() {
+        let old_cache_ptr = self.cache.nodes[global_idx].swap(node_ptr, Ordering::Release);
+        if !old_cache_ptr.is_null() {
             let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
-            self.garbage_queue.push((old_ptr, epoch));
+            self.garbage_queue.push((old_cache_ptr, epoch, false));
         }
+
+        self.t1.store_slot(hash, node_ptr);
 
         self.cache.index_store(hash, tag, entry);
         self.arena.set_hash(global_idx, hash);
         self.arena.set_rank(global_idx, 255);
-
-        self.t1.store_slot(hash, node_ptr);
     }
 
     #[inline(always)]
@@ -157,7 +163,7 @@ where
                 self.cache.nodes[g_idx].swap(core::ptr::null_mut(), Ordering::Release);
             if !old_ptr.is_null() {
                 let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
-                self.garbage_queue.push((old_ptr, epoch));
+                self.garbage_queue.push((old_ptr, epoch, true));
                 self.t1.clear_if_matches(hash, old_ptr);
                 self.t2.clear_if_matches(hash, old_ptr);
             }
@@ -192,9 +198,16 @@ where
                 }
             }
 
-            self.garbage_queue.retain(|&(ptr, epoch)| {
+            self.garbage_queue.retain(|&(ptr, epoch, is_eviction)| {
                 if epoch < min_active_epoch {
-                    unsafe { drop(Box::from_raw(ptr)) };
+                    unsafe {
+                        let node = *Box::from_raw(ptr);
+                        if is_eviction {
+                            if let Some(cb) = &self.on_evict {
+                                cb(node.key, node.value);
+                            }
+                        }
+                    };
                     false
                 } else {
                     true
@@ -256,7 +269,7 @@ where
                     self.cache.nodes[idx].swap(core::ptr::null_mut(), Ordering::Release);
                 if !old_ptr.is_null() {
                     let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
-                    self.garbage_queue.push((old_ptr, epoch));
+                    self.garbage_queue.push((old_ptr, epoch, true)); // Eviction by capacity
                     self.t1.clear_if_matches(hash, old_ptr);
                     self.t2.clear_if_matches(hash, old_ptr);
                 }

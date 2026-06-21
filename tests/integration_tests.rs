@@ -1,3 +1,5 @@
+#![cfg(feature = "std")]
+
 use std::sync::Mutex;
 
 pub static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -13,5 +15,5 @@ mod it {
     mod static_cache;
     mod test_hash;
     mod unsafe_spec;
-    mod miri_core;
+    mod coverage_extra;
 }

@@ -1,40 +1,14 @@
 use dualcache_ff::{Config, DualCacheFF};
 use std::sync::Arc;
 
-#[cfg(feature = "loom")]
-use loom::thread;
-#[cfg(not(feature = "loom"))]
 use std::thread;
-
-#[cfg(feature = "loom")]
-use loom::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(not(feature = "loom"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-#[cfg(feature = "loom")]
-use loom::sync::Mutex;
-#[cfg(not(feature = "loom"))]
 use std::sync::Mutex;
-
 use std::collections::HashMap;
 
 use crate::common::run_with_timeout;
 
-#[cfg(feature = "loom")]
-macro_rules! test_runner {
-    ($name:ident, $body:expr) => {
-        #[test]
-        fn $name() {
-            let mut builder = loom::model::Builder::new();
-            builder.preemption_bound = Some(2);
-            builder.check(|| {
-                $body
-            });
-        }
-    };
-}
 
-#[cfg(not(feature = "loom"))]
 macro_rules! test_runner {
     ($name:ident, $body:expr) => {
         #[test]
@@ -83,7 +57,6 @@ test_runner!(test_concurrent_ops, {
     
     assert_eq!(ops.load(Ordering::Relaxed), 8);
 
-    #[cfg(not(feature = "loom"))]
     {
         // Wait for Daemon to converge in real execution
         cache.sync();
@@ -100,7 +73,6 @@ test_runner!(test_concurrent_ops, {
     }
 });
 
-#[cfg(not(feature = "loom"))]
 #[test]
 fn test_ttl_mechanic() {
     run_with_timeout(std::time::Duration::from_secs(10), || {
@@ -145,8 +117,8 @@ test_runner!(test_concurrent_insert_t1, {
         let handle = thread::spawn(move || {
             let offset = i * 100;
             let session = c.begin_cold_start_session();
-            session.warmup(offset, offset);
-            session.warmup(offset + 1, offset + 1);
+            session.insert_t1(offset, offset);
+            session.insert_t1(offset + 1, offset + 1);
             let _ = c.get(&offset);
             ops_clone.fetch_add(2, Ordering::Relaxed);
         });
@@ -159,7 +131,6 @@ test_runner!(test_concurrent_insert_t1, {
     
     assert_eq!(ops.load(Ordering::Relaxed), 4);
 
-    #[cfg(not(feature = "loom"))]
     {
         cache.sync();
         assert_eq!(cache.get(&0), Some(0));

@@ -1,4 +1,4 @@
-#![cfg(not(feature = "loom"))]
+
 #![cfg_attr(fuzzing, no_main)]
 
 #[cfg(fuzzing)]
@@ -32,7 +32,7 @@ pub fn run_fuzz_ops(actions: impl IntoIterator<Item = Action>) {
             Action::Insert(k, v) => {
                 shadow.insert(k, v);
                 let session = cache.begin_cold_start_session();
-                session.warmup(k, v);
+                session.insert_t1(k, v);
             }
             Action::Get(k) => {
                 let _ = cache.get(&k);

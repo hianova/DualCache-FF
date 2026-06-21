@@ -1,4 +1,4 @@
-#![cfg(not(feature = "loom"))]
+
 
 use dualcache_ff::{Config, DualCacheFF};
 use dualcache_ff::unsafe_core::{Node, WorkerSlot};
@@ -88,7 +88,7 @@ fn test_qsbr_epoch_retention_and_uaf_safety() {
             assert_eq!(val, Some("secure_data".to_string()));
 
             // Now get current global epoch and check-in manually for a long active transaction simulation
-            let global_epoch = dualcache_ff::cache::GLOBAL_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+            let global_epoch = dualcache_ff::components::GLOBAL_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
             cache_clone.worker_states[id].local_epoch.store(global_epoch, std::sync::atomic::Ordering::Release);
 
             // Keep the local thread checked in during the sleep

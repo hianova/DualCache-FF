@@ -2,49 +2,20 @@ extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{vec, vec::Vec, boxed::Box};
 
-use crate::components::CachePadded;
+
 use crate::daemon::{Command, Daemon};
 use crate::lossy_queue::{LossyQueue, OneshotAck};
 use crate::unsafe_core::{Cache, T1, T2, WorkerSlot};
 use ahash::RandomState;
-use core::hash::{BuildHasher, Hash};
-use crate::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::hash::{BuildHasher, Hash, Hasher};
+use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::sync::index_types::{AtomicTick, TickType};
 use crate::sync::{Arc, ArcSlice, new_arc_slice};
 use crate::config::Config;
 
-// ── QSBR global epoch ─────────────────────────────────────────────────────
-
-// Global QSBR epoch. Daemon increments this every maintenance cycle.
-// Workers store their local epoch on `get()` entry and reset to 0 on exit,
-// allowing Daemon to safely reclaim stale pointers.
-#[cfg(any(feature = "loom", loom))]
-loom::lazy_static! {
-    pub static ref GLOBAL_EPOCH: loom::sync::atomic::AtomicUsize = loom::sync::atomic::AtomicUsize::new(1);
-}
-
-#[cfg(not(any(feature = "loom", loom)))]
-pub static GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
-
-/// Per-worker QSBR state — cache-line padded to prevent false sharing
-/// between workers checking in/out simultaneously.
-pub struct WorkerState {
-    pub local_epoch: CachePadded<AtomicUsize>,
-}
-
-impl Default for WorkerState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl WorkerState {
-    pub fn new() -> Self {
-        Self {
-            local_epoch: CachePadded::new(AtomicUsize::new(0)),
-        }
-    }
-}
+use crate::components::{WorkerState, GLOBAL_EPOCH};
+use crate::shared_core::SharedCore;
+use crate::core_cache::CoreCache;
 
 
 use crate::components::{DefaultTls, DefaultSpawner};
@@ -72,6 +43,8 @@ pub struct DualCacheFF<K, V, S = RandomState> {
     pub is_cold_start: Arc<AtomicBool>,
     /// The thread-local storage provider, injected at compile-time for zero overhead.
     pub tls: DefaultTls,
+    /// Shared core for fallback sleep mode routing
+    pub shared_core: Arc<SharedCore<K, V>>,
 }
 
 impl<K, V, S: Clone> Clone for DualCacheFF<K, V, S> {
@@ -90,13 +63,14 @@ impl<K, V, S: Clone> Clone for DualCacheFF<K, V, S> {
             flush_tick_threshold: self.flush_tick_threshold,
             is_cold_start: self.is_cold_start.clone(),
             tls: self.tls.clone(),
+            shared_core: self.shared_core.clone(),
         }
     }
 }
 
 // ── Constructor (std mode — auto-spawns Daemon thread) ────────────────────
 
-#[cfg(any(feature = "std", feature = "loom", loom))]
+#[cfg(feature = "std")]
 impl<K, V> DualCacheFF<K, V, RandomState>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
@@ -109,9 +83,19 @@ where
     pub fn new(config: Config) -> Self {
         Self::new_with_spawner(config, DefaultSpawner)
     }
+
+    /// Create a new `DualCacheFF` with eviction and promotion callbacks.
+    #[inline]
+    pub fn new_with_callbacks(
+        config: Config,
+        on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+        on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+    ) -> Self {
+        Self::new_with_tls_and_spawner_and_callbacks(config, DefaultTls::default(), DefaultSpawner::default(), on_evict, on_promote)
+    }
 }
 
-#[cfg(any(feature = "std", feature = "loom", loom))]
+#[cfg(feature = "std")]
 impl<K, V> DualCacheFF<K, V, RandomState>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
@@ -121,6 +105,17 @@ where
     #[inline]
     pub fn new_with_tls(config: Config, tls: DefaultTls) -> Self {
         Self::new_with_tls_and_spawner(config, tls, DefaultSpawner)
+    }
+
+    /// Create a new `DualCacheFF` with a custom TLS provider and callbacks.
+    #[inline]
+    pub fn new_with_tls_and_callbacks(
+        config: Config,
+        tls: DefaultTls,
+        on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+        on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+    ) -> Self {
+        Self::new_with_tls_and_spawner_and_callbacks(config, tls, DefaultSpawner::default(), on_evict, on_promote)
     }
 }
 
@@ -132,11 +127,9 @@ where
     V: Send + Sync + Clone + 'static,
 {
     /// Create a new `DualCacheFF` and automatically spawn the background Daemon using a custom spawner.
-    #[cfg(any(feature = "std", feature = "loom", loom))]
+    #[cfg(feature = "std")]
     pub fn new_with_spawner(config: Config, spawner: DefaultSpawner) -> Self {
-        let (cache, daemon) = Self::new_headless(config);
-        spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
-        cache
+        Self::new_with_tls_and_spawner(config, DefaultTls::default(), spawner)
     }
 
     /// Create a `DualCacheFF` and its `Daemon` without spawning any thread.
@@ -152,18 +145,63 @@ where
     /// rtos::spawn_task(|| daemon.run()); // RTOS-specific API
     /// ```
     pub fn new_headless(config: Config) -> (Self, Daemon<K, V, RandomState>) {
-        Self::new_headless_with_tls(config, DefaultTls)
+        Self::new_headless_with_callbacks(config, DefaultTls, RandomState::new(), None, None)
     }
 }
 
-impl<K, V> DualCacheFF<K, V, RandomState>
+impl<K, V, S> DualCacheFF<K, V, S> {
+    #[inline(always)]
+    #[cfg(feature = "std")]
+    pub(crate) fn wake_daemon_if_parked(&self) {
+        if self.shared_core.is_parked.load(Ordering::Relaxed) {
+            if self.shared_core.is_parked.compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                if let Ok(guard) = self.shared_core.daemon_thread.lock() {
+                    if let Some(thread) = guard.as_ref() {
+                        thread.unpark();
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<K, V, S> DualCacheFF<K, V, S>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,
+    S: BuildHasher + Clone + Send + 'static,
 {
-    /// Create a `DualCacheFF` and its `Daemon` with a custom thread-local storage provider.
-    pub fn new_headless_with_tls(config: Config, tls: DefaultTls) -> (Self, Daemon<K, V, RandomState>) {
-        let hasher = RandomState::new();
+    #[cfg(feature = "std")]
+    pub fn new_with_tls_and_spawner(config: Config, tls: DefaultTls, spawner: DefaultSpawner) -> Self
+    where
+        S: Default,
+    {
+        Self::new_with_tls_and_spawner_and_callbacks(config, tls, spawner, None, None)
+    }
+
+    #[cfg(feature = "std")]
+    pub fn new_with_tls_and_spawner_and_callbacks(
+        config: Config,
+        tls: DefaultTls,
+        spawner: DefaultSpawner,
+        on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+        on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+    ) -> Self
+    where
+        S: Default,
+    {
+        let (cache, daemon) = Self::new_headless_with_callbacks(config, tls, S::default(), on_evict, on_promote);
+        spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
+        cache
+    }
+
+    pub fn new_headless_with_callbacks(
+        config: Config,
+        tls: DefaultTls,
+        hasher: S,
+        on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+        on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
+    ) -> (Self, Daemon<K, V, S>) {
         let t1 = Arc::new(T1::new(config.t1_slots));
         let t2 = Arc::new(T2::new(config.t2_slots));
         let cache = Arc::new(Cache::new(config.capacity));
@@ -182,20 +220,27 @@ where
         let miss_buffers = new_arc_slice(buffers);
         let worker_states = new_arc_slice(states);
 
-        let daemon = Daemon::new(
-            hasher.clone(),
+        let core_cache = CoreCache::new(
             config.capacity,
             t1.clone(),
             t2.clone(),
             cache.clone(),
-            cmd_q.clone(),
-            hit_q.clone(),
             epoch.clone(),
             config.duration,
-            config.poll_us,
             worker_states.clone(),
-            daemon_tick.clone(),
             is_cold_start.clone(),
+            on_evict,
+            on_promote,
+        );
+        let shared_core = Arc::new(SharedCore::new(core_cache));
+
+        let daemon = Daemon::new(
+            hasher.clone(),
+            shared_core.clone(),
+            cmd_q.clone(),
+            hit_q.clone(),
+            config.poll_us,
+            daemon_tick.clone(),
         );
 
         let this = Self {
@@ -212,21 +257,14 @@ where
             flush_tick_threshold: (config.poll_us as TickType).max(1),
             is_cold_start,
             tls,
+            shared_core,
         };
         
         (this, daemon)
     }
-
-    /// Create a `DualCacheFF` and spawn its `Daemon` using both a custom TLS provider and custom spawner.
-    #[cfg(any(feature = "std", feature = "loom", loom))]
-    pub fn new_with_tls_and_spawner(config: Config, tls: DefaultTls, spawner: DefaultSpawner) -> Self
-    {
-        let (cache, daemon) = Self::new_headless_with_tls(config, tls);
-        spawner.spawn(alloc::boxed::Box::new(move || daemon.run()));
-        cache
-    }
-
 }
+
+
 
 // ── Public API (std + no_std) ─────────────────────────────────────────────
 
@@ -244,6 +282,8 @@ where
         self.with_hit_buf(|state| {
             if state.1 > 0_usize {
                 let _ = self.hit_tx.try_send(state.0);
+                #[cfg(feature = "std")]
+                self.wake_daemon_if_parked();
                 state.1 = 0;
             }
         });
@@ -254,13 +294,35 @@ where
             if !buf.is_empty() {
                 let batch = buf.drain_to_vec();
                 let _ = self.cmd_tx.try_send(Command::BatchInsert(batch));
+                #[cfg(feature = "std")]
+                self.wake_daemon_if_parked();
             }
         }
 
         // Send a Sync command and spin-wait for acknowledgment
         let ack = OneshotAck::new();
         self.cmd_tx.send_blocking(Command::Sync(ack.clone()));
+        #[cfg(feature = "std")]
+        self.wake_daemon_if_parked();
         ack.wait();
+    }
+
+    /// Suspend the background Daemon thread and route all requests synchronously (like StaticDualCache).
+    /// Safe to call concurrently. The Daemon will park (zero CPU) until `resume()` is called.
+    #[cfg(feature = "std")]
+    pub fn suspend(&self) {
+        self.shared_core.is_suspended.store(true, Ordering::Release);
+    }
+
+    /// Resume the background Daemon thread and restore wait-free processing mode.
+    #[cfg(feature = "std")]
+    pub fn resume(&self) {
+        self.shared_core.is_suspended.store(false, Ordering::Release);
+        if let Ok(guard) = self.shared_core.daemon_thread.lock() {
+            if let Some(thread) = guard.as_ref() {
+                thread.unpark();
+            }
+        }
     }
 
     /// Look up a key.
@@ -312,7 +374,6 @@ where
                     {
                         res = Some(node.value.clone());
                         hit_g_idx = Some(node.g_idx);
-                        // self.tls.with_warmup_state(&mut |s| *s = s.saturating_sub(5));
                     }
 
             // ── Cache (L3) check ──────────────────────────────────────────────
@@ -338,35 +399,32 @@ where
         }
 
         if let Some(g_idx) = hit_g_idx {
-            self.record_hit(g_idx as usize);
+            if self.shared_core.is_suspended.load(Ordering::Relaxed) {
+                let mut core = self.shared_core.acquire_lock();
+                core.process_hits(&[g_idx as usize]);
+            } else {
+                self.record_hit(g_idx as usize);
+            }
         }
 
         res
     }
 
     /// Insert a key-value pair.
-    ///
-    /// # L1 Probation Filter (std only)
-    /// Items that appear only once in a TLS epoch are silently dropped.
-    /// This prevents cache pollution from scan traffic.
-    /// In no_std mode the filter is skipped and all items are forwarded.
-    ///
-    /// # Task 6 — Time-based TLS Flush (std only)
-    /// The TLS batch buffer normally flushes when it reaches 32 items.
-    /// Additionally, if the Daemon tick counter has advanced by at least
-    /// `flush_tick_threshold` since the last flush, the buffer is force-drained
-    /// even if nearly empty. This prevents hot items from being invisible to
-    /// the Daemon for too long (the "split-brain eviction" bug).
     pub fn insert(&self, key: K, value: V) {
         let hash = self.hash(&key);
+
+        if self.shared_core.is_suspended.load(Ordering::Relaxed) {
+            let mut core = self.shared_core.acquire_lock();
+            core.handle_admission_insert(key, value, hash, false);
+            return;
+        }
 
         let mut id_opt = None;
         let is_cold = self.is_cold_start.load(Ordering::Relaxed);
         let mut bypass = is_cold;
 
         if !bypass {
-            // Perform thread-safe fast lookup to see if key exists
-            // ── QSBR Check-in ───────────────────────
             let global_epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
             self.with_worker_id(|id| {
                 if id < self.worker_states.len() {
@@ -378,18 +436,13 @@ where
             });
 
             if id_opt.is_some() {
-                // T1 check
                 if self.t1.get_node(hash).is_some_and(|node| node.key == key) {
                     bypass = true;
                 }
-
-                // T2 check
                 if !bypass
                     && self.t2.get_node(hash).is_some_and(|node| node.key == key) {
                         bypass = true;
                     }
-
-                // Cache (L3) check
                 if !bypass {
                     let tag = (hash >> 48) as u16;
                     if self.cache.index_probe(hash, tag)
@@ -401,7 +454,6 @@ where
                 }
             }
 
-            // ── QSBR Check-out ─────────────────────────────────────
             if let Some(id) = id_opt {
                 self.worker_states[id]
                     .local_epoch
@@ -412,73 +464,62 @@ where
         let pass = if bypass {
             true
         } else {
-            // L1 Probation Filter
             self.with_l1_filter(|state| {
                 let idx = (hash as usize) & 4095_usize;
                 let val = state.0[idx];
-
                 state.1 += 1;
                 if state.1 >= 4096_usize {
-                    for x in state.0.iter_mut() {
-                        *x >>= 1;
-                    }
+                    for x in state.0.iter_mut() { *x >>= 1; }
                     state.1 = 0;
                 }
-
-                if val < 1_u8 {
-                    state.0[idx] = 1;
-                    false
-                } else {
-                    if val < 2_u8 {
-                        state.0[idx] = 2;
-                    }
-                    true
-                }
-            }).unwrap_or(true) // no TLS -> pass-through
+                if val < 1_u8 { state.0[idx] = 1; false } 
+                else { if val < 2_u8 { state.0[idx] = 2; } true }
+            }).unwrap_or(true)
         };
 
-        if !pass {
-            return;
-        }
+        if !pass { return; }
 
         let mut warmup_state = 255;
         self.tls.with_warmup_state(|s| warmup_state = *s);
         let is_t1 = warmup_state < 100;
 
-        // Task 6: Time-based flush detection
         let current_tick = self.daemon_tick.load(Ordering::Relaxed);
         let mut should_time_flush = false;
         self.with_last_flush_tick(|tick| {
             should_time_flush = current_tick.wrapping_sub(*tick) >= self.flush_tick_threshold;
         });
 
-        // Worker TLS batch buffer
         let mut option_kv = Some((key, value));
         let pushed_to_buf = self.with_worker_id(|id| {
             let (k, v) = option_kv.take().unwrap();
             if id >= self.miss_buffers.len() {
-                // Worker overflow: gracefully degrade to direct send
                 let _ = self.cmd_tx.try_send(Command::Insert(k, v, hash, is_t1));
                 return;
             }
-
-            // Safety: id is unique per thread → exclusive slot access
             let buf: &mut crate::unsafe_core::BatchBuf<K, V> = self.miss_buffers[id].get_mut_safe();
             let capacity_flush = buf.push((k, v, hash, is_t1));
 
             if capacity_flush || (should_time_flush && !buf.is_empty()) {
                 let batch = buf.drain_to_vec();
                 let _ = self.cmd_tx.try_send(Command::BatchInsert(batch));
-                self.with_last_flush_tick(|tick| {
-                    *tick = current_tick;
-                });
+                #[cfg(feature = "std")]
+                self.wake_daemon_if_parked();
+                self.with_last_flush_tick(|tick| { *tick = current_tick; });
             }
         });
 
         if pushed_to_buf.is_none()
             && let Some((k, v)) = option_kv {
                 let _ = self.cmd_tx.try_send(Command::Insert(k, v, hash, is_t1));
+                #[cfg(feature = "std")]
+                self.wake_daemon_if_parked();
             }
+    }
+
+    /// Insert an item and block until the Daemon has processed it.
+    pub fn insert_sync(&self, key: K, value: V) {
+        self.insert(key, value);
+        self.sync();
     }
 
     /// Start a Cold Start Session to inject items directly to T1.
@@ -489,8 +530,6 @@ where
     /// Remove a key from the cache.
     pub fn remove(&self, key: &K) {
         let hash = self.hash(key);
-
-        // ── flush this thread's buffer first for causal ordering ─────
         self.with_worker_id(|id| {
             if id < self.miss_buffers.len() {
                 let buf: &mut crate::unsafe_core::BatchBuf<K, V> = self.miss_buffers[id].get_mut_safe();
@@ -502,14 +541,20 @@ where
                 }
             }
         });
-
         self.cmd_tx.send_blocking(Command::Remove(key.clone(), hash));
     }
 
     /// Clear all cached data.
     pub fn clear(&self) {
+        if self.shared_core.is_suspended.load(Ordering::Acquire) {
+            let mut core = self.shared_core.acquire_lock();
+            core.handle_clear();
+            return;
+        }
         let ack = OneshotAck::new();
         self.cmd_tx.send_blocking(Command::Clear(ack.clone()));
+        #[cfg(feature = "std")]
+        self.wake_daemon_if_parked();
         ack.wait();
     }
 
@@ -517,45 +562,23 @@ where
 
     #[inline(always)]
     fn with_worker_id<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(usize) -> R,
-    {
-        self.tls.get_worker_id().map(f)
-    }
+    where F: FnOnce(usize) -> R { self.tls.get_worker_id().map(f) }
 
     #[inline(always)]
     fn with_hit_buf<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut ([usize; 64], usize)) -> R,
-    {
-        self.tls.with_hit_buf(f)
-    }
+    where F: FnOnce(&mut ([usize; 64], usize)) -> R { self.tls.with_hit_buf(f) }
 
     #[inline(always)]
     fn with_l1_filter<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut ([u8; 4096], usize)) -> R,
-    {
-        self.tls.with_l1_filter(f)
-    }
+    where F: FnOnce(&mut ([u8; 4096], usize)) -> R { self.tls.with_l1_filter(f) }
 
     #[inline(always)]
     fn with_last_flush_tick<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut TickType) -> R,
-    {
-        self.tls.with_last_flush_tick(f)
-    }
+    where F: FnOnce(&mut TickType) -> R { self.tls.with_last_flush_tick(f) }
 
     #[inline(always)]
-    fn hash(&self, key: &K) -> u64 {
-        self.hasher.hash_one(key)
-    }
+    fn hash(&self, key: &K) -> u64 { self.hasher.hash_one(key) }
 
-    /// Buffer a Cache-hit global index for Daemon processing.
-    ///
-    /// std: fills the 64-element TLS array and ships it to `hit_tx` when full.
-    /// no_std: sends directly (no TLS batch buffering available).
     #[inline(always)]
     fn record_hit(&self, global_idx: usize) {
         let opt = self.with_hit_buf(|state| {
@@ -564,6 +587,8 @@ where
             state.1 += 1;
             if state.1 == 64_usize {
                 let _ = self.hit_tx.try_send(state.0);
+                #[cfg(feature = "std")]
+                self.wake_daemon_if_parked();
                 state.0 = [usize::MAX; 64];
                 state.1 = 0;
             }
@@ -573,6 +598,8 @@ where
             let mut batch = [usize::MAX; 64];
             batch[0] = global_idx;
             let _ = self.hit_tx.try_send(batch);
+            #[cfg(feature = "std")]
+            self.wake_daemon_if_parked();
         }
     }
 }
@@ -581,14 +608,12 @@ impl<K, V, S> Drop for DualCacheFF<K, V, S> {
     fn drop(&mut self) {
         if Arc::strong_count(&self.cmd_tx) <= 2 {
             let _ = self.cmd_tx.try_send(Command::Shutdown);
+            #[cfg(feature = "std")]
+            self.wake_daemon_if_parked();
         }
     }
 }
 
-
-/// A session object for injecting items directly into T1 during cold starts.
-/// By requiring a session object, we prevent accidental use of `insert_t1`
-/// in normal hot paths which would bypass TLS batching and overload the daemon.
 pub struct ColdStartSession<'a, K, V, S> {
     cache: &'a DualCacheFF<K, V, S>,
 }
@@ -599,11 +624,19 @@ where
     V: Send + Sync + Clone + 'static,
     S: BuildHasher + Clone + Send + 'static,
 {
-    /// Insert a key-value pair directly as a high-priority "genius" item.
-    /// This bypasses the L1 probation filter, doesn't use the thread-local batch buffer,
-    /// and assigns the item the maximum survival rank (e.g. 255) and promotes it to T1 immediately.
-    pub fn warmup(&self, key: K, value: V) {
-        let hash = self.cache.hash(&key);
+    pub fn insert_t1(&self, key: K, value: V) {
+        let mut s = self.cache.hasher.build_hasher();
+        key.hash(&mut s);
+        let hash = s.finish();
+        
+        if self.cache.shared_core.is_suspended.load(Ordering::Acquire) {
+            let mut core = self.cache.shared_core.acquire_lock();
+            core.handle_insert_t1(key, value, hash);
+            return;
+        }
+
         let _ = self.cache.cmd_tx.try_send(Command::InsertT1(key, value, hash));
+        #[cfg(feature = "std")]
+        self.cache.wake_daemon_if_parked();
     }
 }

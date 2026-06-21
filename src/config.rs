@@ -7,18 +7,8 @@ pub struct Config {
     pub duration: u32,
     pub threads: usize,
     /// Daemon poll interval in **microseconds** (1 000–10 000 µs = 1–10 ms).
-    /// Controls the latency vs. idle-CPU trade-off.
-    /// Lower = faster hit-signal delivery, higher CPU when idle.
-    /// Higher = more efficient idle, but hotter TLS buffers may stall longer.
     pub poll_us: u64,
     /// TLS flush threshold in **daemon ticks**.
-    /// A Worker forces a TLS buffer flush when it detects that the Daemon
-    /// tick counter has advanced by at least this many ticks since the last
-    /// flush, regardless of buffer fill level.
-    ///
-    /// Rule of thumb: `flush_tick_threshold ≈ 1ms / poll_us`.
-    /// For poll_us = 1 000 µs (1 ms): threshold = 1.
-    /// For poll_us = 5 000 µs (5 ms): threshold = 1 (flush every 5 ms).
     pub flush_tick_threshold: u64,
 }
 
@@ -94,5 +84,77 @@ impl Config {
     pub fn with_flush_tick_threshold(mut self, ticks: u64) -> Self {
         self.flush_tick_threshold = if ticks < 1 { 1 } else { ticks };
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_poll_clamping() {
+        let c1 = Config::with_memory_budget(1024, 8).with_poll_us(500);
+        assert_eq!(c1.poll_us, 1_000);
+
+        let c2 = Config::with_memory_budget(1024, 8).with_poll_us(15_000);
+        assert_eq!(c2.poll_us, 10_000);
+
+        let c3 = Config::with_memory_budget(1024, 8).with_poll_us(5_000);
+        assert_eq!(c3.poll_us, 5_000);
+    }
+
+    #[test]
+    fn test_config_flush_tick() {
+        let c1 = Config::with_memory_budget(1024, 8).with_flush_tick_threshold(0);
+        assert_eq!(c1.flush_tick_threshold, 1);
+
+        let c2 = Config::with_memory_budget(1024, 8).with_flush_tick_threshold(10);
+        assert_eq!(c2.flush_tick_threshold, 10);
+    }
+
+    #[test]
+    fn test_config_memory_budget_asserts() {
+        let config = Config::with_memory_budget(1024, 8); // 1024 MB
+        assert!(config.capacity > 0);
+        assert!(config.capacity.is_power_of_two());
+        assert!(config.t1_slots.is_power_of_two());
+        assert!(config.t2_slots.is_power_of_two());
+        assert!(config.t1_slots <= 4096);
+        assert_eq!(config.duration, 8);
+        assert!(config.threads >= 1);
+    }
+
+    #[test]
+    fn test_config_new_expert_valid() {
+        let config = Config::new_expert(1024, 512, 1024, 60, 4);
+        assert_eq!(config.capacity, 1024);
+        assert_eq!(config.t1_slots, 512);
+        assert_eq!(config.t2_slots, 1024);
+        assert_eq!(config.duration, 60);
+        assert_eq!(config.threads, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "Capacity MUST be a power of two")]
+    fn test_config_new_expert_invalid_capacity() {
+        Config::new_expert(1000, 512, 1024, 60, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "T1 slots MUST be a power of two")]
+    fn test_config_new_expert_invalid_t1() {
+        Config::new_expert(1024, 500, 1024, 60, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "T2 slots MUST be a power of two")]
+    fn test_config_new_expert_invalid_t2() {
+        Config::new_expert(1024, 512, 1000, 60, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "T1 size exceeds L1 Cache physical limits")]
+    fn test_config_new_expert_invalid_t1_size() {
+        Config::new_expert(1024, 8192, 1024, 60, 4);
     }
 }

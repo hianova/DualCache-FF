@@ -231,7 +231,7 @@ fn start_timeout_watchdog(timeout: Duration) {
 }
 
 fn main() {
-    start_timeout_watchdog(Duration::from_secs(300));
+    start_timeout_watchdog(Duration::from_secs(60)); // 1 minute watchdog
     let args: Vec<String> = std::env::args().collect();
     let is_full_bench = args.iter().any(|a| a == "--full_bench") || cfg!(feature = "full_bench");
 

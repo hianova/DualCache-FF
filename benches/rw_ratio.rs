@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 const CAPACITY: u64 = 100_000;
 const KEY_SPACE: u64 = 1_000_000;
 const THREADS: usize = 4;
-const TOTAL_OPS: u64 = 5_000_000; // 5M ops for fast but representative runs
+const TOTAL_OPS: u64 = 1_000_000; // 1M ops for faster completion
 
 fn start_timeout_watchdog(timeout: Duration) {
     std::thread::spawn(move || {
@@ -102,7 +102,7 @@ where
 }
 
 fn main() {
-    start_timeout_watchdog(Duration::from_secs(120)); // 2 minutes watchdog
+    start_timeout_watchdog(Duration::from_secs(60)); // 1 minute watchdog
 
     let args: Vec<String> = std::env::args().collect();
     let is_full_bench = args.iter().any(|a| a == "--full_bench") || cfg!(feature = "full_bench");

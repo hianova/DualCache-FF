@@ -1,16 +1,11 @@
-#[cfg(any(feature = "loom", loom))]
-mod loom;
-#[cfg(any(feature = "loom", loom))]
-pub use loom::*;
-
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+#[cfg(feature = "std")]
 mod std_impl;
-#[cfg(all(feature = "std", not(any(feature = "loom", loom))))]
+#[cfg(feature = "std")]
 pub use std_impl::*;
 
-#[cfg(all(not(feature = "std"), not(any(feature = "loom", loom))))]
+#[cfg(not(feature = "std"))]
 mod no_std;
-#[cfg(all(not(feature = "std"), not(any(feature = "loom", loom))))]
+#[cfg(not(feature = "std"))]
 pub use no_std::*;
 
 #[cfg(target_has_atomic = "64")]

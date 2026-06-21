@@ -46,3 +46,38 @@ pub mod cell {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::cell::UnsafeCell;
+
+    #[test]
+    fn test_unsafe_cell_get_with() {
+        let cell = UnsafeCell::new(42);
+        assert_eq!(unsafe { *cell.get() }, 42);
+        cell.with(|ptr| {
+            assert_eq!(unsafe { *ptr }, 42);
+        });
+    }
+
+    #[test]
+    fn test_unsafe_cell_with_mut() {
+        let cell = UnsafeCell::new(10);
+        cell.with_mut(|ptr| {
+            unsafe { *ptr = 20; }
+        });
+        
+        let val = cell.with(|ptr| unsafe { *ptr });
+        assert_eq!(val, 20);
+    }
+
+    #[test]
+    fn test_new_arc_slice() {
+        use super::new_arc_slice;
+        let slice: std::sync::Arc<[i32]> = new_arc_slice(vec![42; 5]);
+        assert_eq!(slice.len(), 5);
+        for &v in slice.iter() {
+            assert_eq!(v, 42);
+        }
+    }
+}

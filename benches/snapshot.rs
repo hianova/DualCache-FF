@@ -73,7 +73,7 @@ fn run_phase(cache: Arc<DualCacheFF<u64, u64>>, keys: &[u64], phase_name: &str) 
 }
 
 fn main() {
-    start_timeout_watchdog(Duration::from_secs(300)); // longer timeout for multiple runs
+    start_timeout_watchdog(Duration::from_secs(60)); // 1 minute watchdog
 
     println!("Generating zipf keys (Total {} ops)...", TOTAL_OPS);
     let zipf = Zipf::new(KEY_SPACE, 1.1).unwrap();
@@ -138,7 +138,7 @@ fn main() {
         let start_warmup = Instant::now();
         let session = cache_fast.begin_cold_start_session();
         for &hot_key in &hot_spots {
-            session.warmup(hot_key, hot_key);
+            session.insert_t1(hot_key, hot_key);
         }
         cache_fast.sync();
         let warmup_elapsed = start_warmup.elapsed();

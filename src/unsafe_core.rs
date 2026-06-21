@@ -5,4 +5,5 @@
 pub use crate::arena::Arena;
 pub use crate::storage::{Cache, Node};
 pub use crate::filters::{T1, T2};
+#[cfg(feature = "std")]
 pub use crate::workers::{BatchBuf, WorkerSlot};

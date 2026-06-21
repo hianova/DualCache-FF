@@ -1,4 +1,4 @@
-#![cfg(not(feature = "loom"))]
+
 
 use dualcache_ff::{Config, DualCacheFF};
 use dualcache_ff::unsafe_core::{BatchBuf};
@@ -107,7 +107,7 @@ fn test_hash_collision_t1_t2() {
         // Insert multiple keys that will definitely collide in a 2-slot array
         for i in 0..10 {
             let session = cache.begin_cold_start_session();
-            session.warmup(i, i);
+            session.insert_t1(i, i);
         }
         
         cache.sync();
@@ -132,7 +132,7 @@ fn test_cold_start_session_pressure() {
         // Fill cache past capacity (128) using ColdStartSession
         for i in 0..200 {
             let session = cache.begin_cold_start_session();
-            session.warmup(i, i * 10);
+            session.insert_t1(i, i * 10);
         }
         
         cache.sync();

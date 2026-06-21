@@ -85,6 +85,18 @@ impl<T> LossyQueue<T> {
         }
     }
 
+    /// Returns the approximate number of pending items in the queue.
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Relaxed);
+        if tail >= head {
+            tail - head
+        } else {
+            0
+        }
+    }
+
     /// Worker path — try to enqueue an item.
     ///
     /// Uses FAA to claim a slot index, then CAS EMPTY→WRITING as a physical
@@ -135,10 +147,7 @@ impl<T> LossyQueue<T> {
                             core::hint::spin_loop();
                             spins += 1;
                         } else {
-                            #[cfg(any(feature = "loom", loom))]
-                            loom::thread::yield_now();
-                            #[cfg(not(any(feature = "loom", loom)))]
-                            std::thread::yield_now();
+                            core::hint::spin_loop();
                         }
                     }
                     #[cfg(not(feature = "std"))]
@@ -171,20 +180,24 @@ impl<T> LossyQueue<T> {
             None
         }
     }
+
+    /// Check if the queue is empty (i.e. the head slot is not READY).
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        let idx = self.head.load(Ordering::Relaxed) & self.mask;
+        self.buffer[idx].state.load(Ordering::Acquire) != READY
+    }
 }
 
 impl<T> Drop for LossyQueue<T> {
     fn drop(&mut self) {
-        // Drain any READY items that were never consumed.
-        loop {
-            let idx = self.head.load(Ordering::Relaxed) & self.mask;
-            let slot = &self.buffer[idx];
+        // Drain ALL READY items in the buffer.
+        // We do not rely on `head` because a stalled WRITING slot could prematurely break the loop,
+        // causing subsequent READY slots to leak.
+        for slot in self.buffer.iter() {
             if slot.state.load(Ordering::Acquire) == READY {
                 slot.data.with_mut(|ptr| unsafe { (*ptr).assume_init_drop() });
                 slot.state.store(EMPTY, Ordering::Relaxed);
-                self.head.fetch_add(1, Ordering::Relaxed);
-            } else {
-                break;
             }
         }
     }
@@ -232,10 +245,7 @@ impl OneshotAck {
                     core::hint::spin_loop();
                     spins += 1;
                 } else {
-                    #[cfg(any(feature = "loom", loom))]
-                    loom::thread::yield_now();
-                    #[cfg(not(any(feature = "loom", loom)))]
-                    std::thread::yield_now();
+                    core::hint::spin_loop();
                 }
             }
         }
@@ -245,5 +255,128 @@ impl OneshotAck {
                 core::hint::spin_loop();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    #[should_panic(expected = "LossyQueue capacity must be a power of two")]
+    fn test_lossy_queue_non_power_of_two() {
+        LossyQueue::<i32>::new(3); // Should panic
+    }
+
+    #[test]
+    fn test_lossy_queue_basic() {
+        let q = LossyQueue::new(2);
+        assert!(q.is_empty());
+        assert_eq!(q.try_recv(), None);
+
+        assert!(q.try_send(1).is_ok());
+        assert!(!q.is_empty());
+        assert!(q.try_send(2).is_ok());
+        
+        // Full queue
+        assert_eq!(q.try_send(3), Err(3));
+
+        // FIFO
+        assert_eq!(q.try_recv(), Some(1));
+        assert_eq!(q.try_recv(), Some(2));
+        assert_eq!(q.try_recv(), None);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn test_lossy_queue_send_blocking() {
+        let q = Arc::new(LossyQueue::new(2));
+        q.try_send(1).unwrap();
+        q.try_send(2).unwrap();
+        
+        let q_clone = q.clone();
+        let handle = thread::spawn(move || {
+            // Drain the queue until we get the blocked value
+            loop {
+                if let Some(v) = q_clone.try_recv() {
+                    if v == 3 {
+                        return true;
+                    }
+                } else {
+                    thread::yield_now();
+                }
+            }
+        });
+
+        // This will spin until the thread above recvs an item
+        q.send_blocking(3);
+        assert!(handle.join().unwrap());
+    }
+
+    #[test]
+    fn test_lossy_queue_mpsc() {
+        let q = Arc::new(LossyQueue::new(1024));
+        let mut handles = vec![];
+        
+        for i in 0..4 {
+            let q_clone = q.clone();
+            handles.push(thread::spawn(move || {
+                for j in 0..100 {
+                    let _ = q_clone.try_send(i * 1000 + j);
+                }
+            }));
+        }
+        
+        for h in handles {
+            h.join().unwrap();
+        }
+        
+        let mut count = 0;
+        while q.try_recv().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 400);
+    }
+
+    #[test]
+    fn test_lossy_queue_drop_does_not_leak() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+        
+        struct DropItem;
+        impl Drop for DropItem {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        
+        {
+            let q = LossyQueue::new(4);
+            let _ = q.try_send(DropItem);
+            let _ = q.try_send(DropItem);
+            // q dropped here
+        }
+        assert_eq!(DROP_COUNT.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_oneshot_ack() {
+        let ack = Arc::new(OneshotAck::new());
+        let ack_clone = ack.clone();
+        
+        let handle = thread::spawn(move || {
+            // Signal after some minimal delay
+            thread::yield_now();
+            ack_clone.signal();
+            ack_clone.signal(); // Multiple signals should be safe and no-op
+        });
+        
+        ack.wait();
+        handle.join().unwrap();
+        
+        // Wait again should return immediately
+        ack.wait();
     }
 }
