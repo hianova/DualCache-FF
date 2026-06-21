@@ -89,13 +89,14 @@ fn test_qsbr_epoch_retention_and_uaf_safety() {
 
             // Now get current global epoch and check-in manually for a long active transaction simulation
             let global_epoch = dualcache_ff::components::GLOBAL_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
-            cache_clone.worker_states[id].local_epoch.store(global_epoch, std::sync::atomic::Ordering::Release);
+            let inner = unsafe { &*cache_clone.registry.get_inner() };
+            inner.states[id].local_epoch.store(global_epoch, std::sync::atomic::Ordering::Release);
 
             // Keep the local thread checked in during the sleep
             thread::sleep(Duration::from_millis(150));
 
-            // Checkout manually
-            cache_clone.worker_states[id].local_epoch.store(0, std::sync::atomic::Ordering::Release);
+            let inner = unsafe { &*cache_clone.registry.get_inner() };
+            inner.states[id].local_epoch.store(0, std::sync::atomic::Ordering::Release);
         });
 
         // Let the reader thread check-in first

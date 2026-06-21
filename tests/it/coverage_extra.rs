@@ -35,6 +35,13 @@ fn test_suspend_resume_and_unregistered_thread() {
     cache.clear();
     assert_eq!(cache.get(&"sk1".to_string()), None);
     
+    // Access from unregistered thread to trigger fallback in `insert` and `record_hit`
+    let c = cache.clone();
+    std::thread::spawn(move || {
+        c.insert("uk".to_string(), "uv".to_string());
+        let _ = c.get(&"uk".to_string()); // Triggers fallback `hit_tx`
+    }).join().unwrap();
+    
     cache.resume();
     
     let cache_clone = cache.clone();
@@ -49,7 +56,7 @@ fn test_suspend_resume_and_unregistered_thread() {
 
 #[test]
 fn test_cache_bypasses_and_internals() {
-    let config = Config::new_expert(16, 2, 2, 200, 2);
+    let config = Config::new_expert(16, 1024, 1024, 200, 2);
     let (cache, _daemon) = DualCacheFF::<u64, u64>::new_headless(config);
     
     let s = cache.hasher.clone();
@@ -217,6 +224,9 @@ fn test_cache_edge_cases() {
         c2.insert(1000, 1000);
     });
     handle.join().unwrap();
+    
+    // Ensure the daemon processes the Insert command sent by the unregistered thread
+    cache.sync();
 }
 
 #[test]
@@ -255,4 +265,181 @@ fn test_daemon_edge_cases() {
     
     // Wait for the daemon to process `Shutdown` (triggering line 199) and gracefully exit
     handle.join().unwrap();
+}
+
+#[test]
+fn test_advanced_features() {
+    use dualcache_ff::Config;
+    use dualcache_ff::DualCacheFF;
+    let config = Config::new_expert(256, 8, 8, 200, 8);
+    let cache = DualCacheFF::<u64, u64>::new(config);
+    
+    // 1. Warmup batch
+    let session = cache.begin_cold_start_session();
+    let items = (0..200).map(|i| (i, i * 2));
+    session.warmup_batch(items);
+    session.warmup_sync();
+    
+    for i in 0..200 {
+        assert_eq!(cache.get(&i), Some(i * 2));
+    }
+    
+    // 2. Warmup with rank
+    session.warmup_with_rank(999, 1000, dualcache_ff::daemon::CacheTier::Tier1, 200);
+    session.warmup_sync();
+    assert_eq!(cache.get(&999), Some(1000));
+    
+    // Test warmup when suspended
+    cache.suspend();
+    let batch_items = (1001..1150).map(|i| (i, i)); // > 128 items
+    session.warmup_batch(batch_items);
+    session.warmup_with_rank(1003, 1003, dualcache_ff::daemon::CacheTier::Tier1, 100);
+    assert_eq!(cache.get(&1001), Some(1001));
+    assert_eq!(cache.get(&1149), Some(1149));
+    assert_eq!(cache.get(&1003), Some(1003));
+    cache.resume();
+    
+    // 3. get_with_filter
+    let filter = |k: &u64| *k < 1000;
+    assert_eq!(cache.get_with_filter(&999, filter), Some(1000)); // Should hit
+    assert_eq!(cache.get_with_filter(&1003, filter), None); // Should be filtered
+    assert_eq!(cache.get_with_filter(&5000, filter), None); // Should be filtered
+    
+    // 4. get_or_load
+    let loaded = cache.get_or_load(&2000, || -> Result<u64, ()> {
+        Ok(4000)
+    }).unwrap();
+    assert_eq!(loaded, 4000);
+    
+    cache.sync();
+    assert_eq!(cache.get(&2000), Some(4000)); // Should be cached now
+    
+    cache.shutdown_gracefully(None);
+}
+
+#[test]
+fn test_registry_ensure_capacity() {
+    use dualcache_ff::Config;
+    use dualcache_ff::DualCacheFF;
+    use std::sync::Arc;
+    let config = Config::new_expert(256, 8, 8, 200, 2); // Initial capacity 2
+    let cache = Arc::new(DualCacheFF::<u64, u64>::new(config));
+    
+    // Spawn many threads to force registry expansion and backoff
+    let mut handles = vec![];
+    let barrier = Arc::new(std::sync::Barrier::new(64));
+    
+    for i in 0..64 {
+        let c = cache.clone();
+        let b = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            b.wait();
+            c.insert(i, i);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            c.get(&i);
+        }));
+    }
+    
+    for h in handles {
+        h.join().unwrap();
+    }
+    
+    // Check that length expanded properly
+    let ptr = cache.registry.get_inner();
+    let len = unsafe { (&(*ptr).states).len() };
+    assert!(len >= 16);
+    
+    cache.shutdown_gracefully(None);
+}
+
+#[test]
+fn test_cache_constructors_with_callbacks() {
+    use dualcache_ff::Config;
+    use dualcache_ff::DualCacheFF;
+    use dualcache_ff::components::DefaultTls;
+    use std::sync::Arc;
+    let config = Config::new_expert(256, 8, 8, 200, 8);
+    
+    let evict_cb: Arc<dyn Fn(u64, u64) + Send + Sync> = Arc::new(|_k, _v| {});
+    let promote_cb: Arc<dyn Fn(u64, u64) + Send + Sync> = Arc::new(|_k, _v| {});
+    
+    let cache1 = DualCacheFF::<u64, u64>::new_with_callbacks(
+        config.clone(),
+        Some(evict_cb.clone()),
+        Some(promote_cb.clone()),
+    );
+    for i in 0..300 {
+        cache1.insert_sync(i, i);
+    }
+    cache1.shutdown_gracefully(None);
+    
+    let cache2 = DualCacheFF::<u64, u64>::new_with_tls_and_callbacks(
+        config.clone(),
+        DefaultTls::default(),
+        Some(evict_cb),
+        Some(promote_cb),
+    );
+    cache2.shutdown_gracefully(None);
+}
+
+#[test]
+fn test_daemon_health() {
+    use dualcache_ff::Config;
+    use dualcache_ff::DualCacheFF;
+    let config = Config::new_expert(256, 8, 8, 200, 8);
+    let cache = DualCacheFF::<u64, u64>::new(config);
+    
+    // Wait for the daemon to start and set its status to Running
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    
+    // Once started, should be Running
+    let health1 = cache.daemon_health();
+    assert!(matches!(health1, dualcache_ff::daemon::DaemonStatus::Running));
+    
+    // Shutdown the daemon
+    cache.shutdown_gracefully(None);
+    
+    // Wait for the thread to drop DaemonGuard
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    
+    // Should be Stopped after shutdown
+    let health2 = cache.daemon_health();
+    assert!(matches!(health2, dualcache_ff::daemon::DaemonStatus::Stopped));
+}
+
+#[test]
+fn test_set_poll_interval() {
+    use dualcache_ff::Config;
+    use dualcache_ff::DualCacheFF;
+    let config = Config::new_expert(256, 8, 8, 200, 8);
+    let cache = DualCacheFF::<u64, u64>::new(config);
+    
+    // Set poll interval to a valid value by sending the command directly
+    let _ = cache.cmd_tx.try_send(dualcache_ff::daemon::Command::SetPollInterval(500));
+    
+    cache.shutdown_gracefully(None);
+}
+
+#[test]
+fn test_insert_sync() {
+    use dualcache_ff::Config;
+    use dualcache_ff::DualCacheFF;
+    let config = Config::new_expert(256, 8, 8, 200, 8);
+    let cache = DualCacheFF::<u64, u64>::new(config);
+    
+    // Test insert_sync
+    cache.insert_sync(12345, 67890);
+    assert_eq!(cache.get(&12345), Some(67890));
+    
+    cache.shutdown_gracefully(None);
+}
+
+#[test]
+fn test_oneshot_ack_clone_drop() {
+    use dualcache_ff::lossy_queue::OneshotAck;
+    let ack = OneshotAck::new();
+    let ack_clone = ack.clone();
+    drop(ack_clone);
+    ack.signal();
+    ack.wait();
 }

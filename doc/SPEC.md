@@ -223,3 +223,50 @@ To fully support resource-constrained IoT/bare-metal environments (e.g., ESP32-C
 
 ### 4. Miri Strict UB Validation
 - **Pointer Soundness**: All unsafe core manipulations (such as `StaticDualCache`'s `UnsafeCell` replacements, `Box::from_raw` deallocations, and `WorkerSlot::get_mut_safe` aliasing) are validated rigorously against Miri's strict Tree Borrows/Stacked Borrows models, confirming absolute absence of Use-After-Free (UAF) and undefined behavior.
+
+---
+
+## Phase 13: Dynamic Thread Registry & Lock-Free QSBR (v0.6.0)
+
+### 1. Lock-Free Dynamic `ThreadRegistry`
+- **Context**: Previous versions bound the thread-local state array limit via a hardcoded `config.threads` threshold. Spawning more active threads resulted in unregistered "overflow threads" bypassing critical telemetry and local admission filter checks.
+- **Dynamic Capacity**: We introduced a lock-free `ThreadRegistry` using a spinlock-guarded double-checked growth pattern. The active worker thread registry dynamically resizes its inner allocations (`RegistryInner`) using a power-of-two capacity scale.
+- **QSBR Pointer Retirement**: To ensure no-overhead reading access, old registry memory buffers are retired and deallocated lazily via standard QSBR. When capacity expands, the old pointer is pushed to the Daemon's `registry_garbage_queue` as a retired registry task (`Command::RetireRegistry`) and reclaimed only when all concurrent readers have completed their epochs.
+
+### 2. Thread ID Recycling & Allocation Safeguards
+- **Reusable IDs**: A global atomic `IdAllocator` tracks thread identification numbers. When a worker thread terminates, its assigned ID is automatically recycled back into a global thread-safe list via a custom thread-local `ThreadIdGuard` implementing `Drop`.
+- **Validation**: Added `ALLOCATOR.is_allocated(id)` to verify ID allocations, preventing duplicate ID assignments and guaranteeing safe, collision-free indexing.
+
+---
+
+## Phase 14: Daemon Graceful Shutdown, Panic Guard & Recovery (v0.6.0)
+
+### 1. Robust State Transitions & Graceful Shutdown
+- **Daemon Status Tracking**: Replaced simple state booleans with a robust `DaemonStatus` enum containing `NotStarted`, `Running`, `ShuttingDown`, `Stopped`, and `Panicked`.
+- **Graceful Draining**: The shutdown sequence (`Command::Shutdown`) forces the Daemon to process all remaining commands, flush telemetry buffers, and drain nodes in `garbage_queue` and `registry_garbage_queue`. If concurrent reader threads hang, the shutdown process advances `GLOBAL_EPOCH` to force-free remaining nodes and guarantee zero memory leaks.
+
+### 2. Panic Monitoring, Recovery, and Health Queries
+- **Panic Guard**: A custom `DaemonGuard` uses thread panicking detectors (`std::thread::panicking()`) to capture unforeseen panics in the Daemon thread execution block, immediately transitioning the status flag to `DaemonStatus::Panicked`.
+- **Dynamic Re-spawning**: Callers can query status via `daemon_health()` and invoke `restart_daemon` to recreate and re-spawn a fresh background Daemon instance under a new thread, restoring normal asynchronous operations seamlessly.
+
+---
+
+## Phase 15: Warmup & Rank-Injected Cache Tiers (v0.6.0)
+
+### 1. Bypassed Promotion & Cold-Start Session
+- **ColdStartSession**: Caching systems often suffer from high initial miss rates under cold starts due to strict admission policies dropping one-hit-wonders. We introduced `ColdStartSession` to let operators bypass local L1 filters and batch-inject pre-warmed datasets.
+- **CacheTier Routing**: Batch insert commands (`BatchInsertT1`, `BatchInsertT2`, `BatchInsertCore`) route elements directly to `T1` (hottest), `T2` (secondary filter), or `Core` (L3). 
+- **Rank Injection**: Operators can invoke `warmup_with_rank` to inject a node with a pre-configured frequency rank directly into a specified tier, enabling manual heat configuration of critical resources.
+
+---
+
+## Phase 16: Coalesced Fetching (SingleFlight) & Observability (v0.6.0)
+
+### 1. SingleFlight Miss Coalescing
+- **Penetration Protection**: Concurrent cache misses on the same key can trigger massive upstream storms (Cache Breakdown). We integrated a `SingleFlight` component utilizing thread condition variables (`Condvar`) to coalesce concurrent misses.
+- **Coalesced Loading**: When multiple threads miss, only one thread executes the upstream loader (`get_or_load_singleflight`). Other threads block on a shared `Condvar` and wake up once the result is synchronously populated, completely eliminating redundant backend database lookups.
+
+### 2. Observability & Backpressure Telemetry
+- **LossyQueue Telemetry**: Added a `dropped_count` atomic counter and an `on_drop` callback hook to `LossyQueue`. If the system is saturated and enqueuing fails, the caller receives drop notification counts for logging and backpressure adjustment.
+- **Heat Index Queries**: Added `get_heat_rank` to query the current frequency rank of any key, and `boost_heat` / `get_with_weight` to manually bump cache item ranks, providing granular control over the cache's eviction clock.
+

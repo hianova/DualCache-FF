@@ -55,9 +55,10 @@ pub struct LossyQueue<T> {
     mask: usize,
     /// Producer cursor — FAA, unbounded (wraps via mask).
     tail: AtomicUsize,
-    /// Consumer (Daemon) cursor — single-threaded advance.
     head: AtomicUsize,
     buffer: Box<[Slot<T>]>,
+    pub dropped_count: AtomicUsize,
+    on_drop: Option<Arc<dyn Fn(usize) + Send + Sync>>,
 }
 
 unsafe impl<T: Send> Send for LossyQueue<T> {}
@@ -82,7 +83,16 @@ impl<T> LossyQueue<T> {
             tail: AtomicUsize::new(0),
             head: AtomicUsize::new(0),
             buffer: buf.into_boxed_slice(),
+            dropped_count: AtomicUsize::new(0),
+            on_drop: None,
         }
+    }
+
+    /// Create with an on-drop callback for backpressure tracking.
+    pub fn new_with_callback(capacity: usize, on_drop: Arc<dyn Fn(usize) + Send + Sync>) -> Self {
+        let mut q = Self::new(capacity);
+        q.on_drop = Some(on_drop);
+        q
     }
 
     /// Returns the approximate number of pending items in the queue.
@@ -110,6 +120,12 @@ impl<T> LossyQueue<T> {
         // Pre-check: if physically full, don't even try to FAA.
         // This prevents tail from flying away and causing massive overlaps.
         if tail.wrapping_sub(head) >= self.buffer.len() {
+            let drops = self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
+            if drops % 1024 == 0 {
+                if let Some(cb) = &self.on_drop {
+                    cb(drops);
+                }
+            }
             return Err(item);
         }
 
@@ -123,6 +139,12 @@ impl<T> LossyQueue<T> {
             .compare_exchange(EMPTY, WRITING, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            let drops = self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
+            if drops % 1024 == 0 {
+                if let Some(cb) = &self.on_drop {
+                    cb(drops);
+                }
+            }
             return Err(item);
         }
 
@@ -250,11 +272,28 @@ impl OneshotAck {
             }
         }
         #[cfg(not(feature = "std"))]
-        {
-            while !self.ready.load(Ordering::Acquire) {
+        while !self.ready.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Caller: spin until the signal arrives or timeout is reached.
+    #[cfg(feature = "std")]
+    pub fn wait_timeout(&self, timeout: core::time::Duration) -> bool {
+        let start = std::time::Instant::now();
+        let mut spins = 0;
+        while !self.ready.load(Ordering::Acquire) {
+            if start.elapsed() > timeout {
+                return false;
+            }
+            if spins < 100 {
                 core::hint::spin_loop();
+                spins += 1;
+            } else {
+                std::thread::yield_now();
             }
         }
+        true
     }
 }
 
@@ -378,5 +417,68 @@ mod tests {
         
         // Wait again should return immediately
         ack.wait();
+        assert!(ack.wait_timeout(std::time::Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn test_oneshot_ack_timeout() {
+        let ack = Arc::new(OneshotAck::new());
+        // Should timeout and hit yield_now()
+        assert!(!ack.wait_timeout(std::time::Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn test_lossy_queue_len_and_drops() {
+        use std::sync::atomic::Ordering;
+        let mut q = LossyQueue::new(2); // capacity 2
+        
+        let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let drops_clone = drops.clone();
+        q.on_drop = Some(std::sync::Arc::new(move |_| {
+            drops_clone.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        assert_eq!(q.len(), 0);
+        assert!(q.try_send(1).is_ok());
+        assert_eq!(q.len(), 1);
+        assert!(q.try_send(2).is_ok());
+        assert_eq!(q.len(), 2);
+        
+        // Queue is full, this will fail and increment drop count
+        assert!(q.try_send(3).is_err());
+        
+        // Let's force drop cb by simulating 1024 drops
+        q.dropped_count.store(1023, Ordering::Relaxed);
+        assert!(q.try_send(4).is_err());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        
+        // Test concurrent writer collision manually
+        let slot = &q.buffer[0];
+        slot.state.store(crate::lossy_queue::WRITING, Ordering::Relaxed);
+        q.head.store(0, Ordering::Relaxed);
+        q.tail.store(0, Ordering::Relaxed);
+        
+        q.dropped_count.store(1023, Ordering::Relaxed);
+        assert!(q.try_send(5).is_err());
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+
+        // Test tail < head for len()
+        q.head.store(2, Ordering::Relaxed);
+        q.tail.store(1, Ordering::Relaxed);
+        assert_eq!(q.len(), 0);
+
+        // Test drops % 1024 == 0 when on_drop is None
+        let q2 = LossyQueue::new(2);
+        q2.dropped_count.store(1023, Ordering::Relaxed);
+        q2.head.store(0, Ordering::Relaxed);
+        q2.tail.store(2, Ordering::Relaxed); // full
+        assert!(q2.try_send(1).is_err()); // will hit the drops % 1024 == 0 path but without cb
+
+        let q3 = LossyQueue::new(2);
+        q3.dropped_count.store(1023, Ordering::Relaxed);
+        q3.buffer[0].state.store(crate::lossy_queue::WRITING, Ordering::Relaxed);
+        q3.head.store(0, Ordering::Relaxed);
+        q3.tail.store(0, Ordering::Relaxed);
+        assert!(q3.try_send(2).is_err());
     }
 }

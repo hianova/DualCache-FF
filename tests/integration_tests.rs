@@ -16,4 +16,6 @@ mod it {
     mod test_hash;
     mod unsafe_spec;
     mod coverage_extra;
+    mod final_coverage;
+    mod insights_coverage;
 }

@@ -108,7 +108,18 @@ test_runner!(test_dual_cache_stub, {
     stub.clear();
     stub.sync();
 
-    let (stub2, _daemon) = DualCacheStub::<i32, String>::new_headless(config);
+    let (stub2, _daemon) = DualCacheStub::<i32, String>::new_headless(Config::new_expert(128, 64, 64, 200, 128));
     stub2.insert(2, "two".to_string());
     assert_eq!(stub2.get(&2), None);
+});
+
+test_runner!(test_static_cache_coverage_extras, {
+    let config = Config::new_expert(128, 64, 64, 200, 128);
+    let cache = StaticDualCache::<u64, u64>::new_with_callbacks(config.clone(), None, None);
+    cache.insert(1, 1);
+    
+    let (cache2, daemon) = StaticDualCache::<u64, u64>::new_headless(config.clone());
+    daemon.run(); // covers DummyDaemon::run
+    
+    let _session = cache2.begin_cold_start_session();
 });

@@ -11,6 +11,7 @@ pub struct SharedCore<K, V> {
     pub core: UnsafeCell<CoreCache<K, V>>,
     pub is_suspended: AtomicBool,
     pub is_parked: AtomicBool,
+    pub status: crate::sync::atomic::AtomicU8,
     #[cfg(feature = "std")]
     pub daemon_thread: Mutex<Option<Thread>>,
 }
@@ -25,6 +26,7 @@ impl<K, V> SharedCore<K, V> {
             core: UnsafeCell::new(core),
             is_suspended: AtomicBool::new(false),
             is_parked: AtomicBool::new(false),
+            status: crate::sync::atomic::AtomicU8::new(crate::daemon::DaemonStatus::NotStarted as u8),
             #[cfg(feature = "std")]
             daemon_thread: Mutex::new(None),
         }

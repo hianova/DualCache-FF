@@ -68,12 +68,16 @@ pub mod std_components {
     use super::*;
     use alloc::boxed::Box;
 
+    pub trait Spawner: Send + Sync + 'static {
+        fn spawn(&self, f: Box<dyn FnOnce() + Send + 'static>);
+    }
+
     #[derive(Debug, Clone, Copy, Default)]
     pub struct DefaultSpawner;
 
-    impl DefaultSpawner {
+    impl Spawner for DefaultSpawner {
         #[inline]
-        pub fn spawn(&self, f: Box<dyn FnOnce() + Send + 'static>) {
+        fn spawn(&self, f: Box<dyn FnOnce() + Send + 'static>) {
             std::thread::spawn(f);
         }
     }
@@ -81,18 +85,18 @@ pub mod std_components {
     // ── DefaultTls ────────────────────────────────────────────────────────────
 
     use core::sync::atomic::{AtomicUsize, Ordering};
-    struct IdAllocator {
+    pub(crate) struct IdAllocator {
         bits: [AtomicUsize; 128],
     }
 
     impl IdAllocator {
-        const fn new() -> Self {
+        pub(crate) const fn new() -> Self {
             #[allow(clippy::declare_interior_mutable_const)]
             const ZERO: AtomicUsize = AtomicUsize::new(0);
             Self { bits: [ZERO; 128] }
         }
 
-        fn alloc(&self) -> usize {
+        pub(crate) fn alloc(&self) -> usize {
             for (i, word) in self.bits.iter().enumerate() {
                 let mut current = word.load(Ordering::Relaxed);
                 while current != !0 {
@@ -116,11 +120,21 @@ pub mod std_components {
             panic!("Exceeded maximum number of concurrent threads in DualCache-FF");
         }
 
-        fn free(&self, id: usize) {
+        pub(crate) fn free(&self, id: usize) {
             let word_idx = id / (usize::BITS as usize);
             let bit_idx = id % (usize::BITS as usize);
             if word_idx < self.bits.len() {
                 self.bits[word_idx].fetch_and(!(1_usize << bit_idx), Ordering::Release);
+            }
+        }
+
+        pub fn is_allocated(&self, id: usize) -> bool {
+            let word_idx = id / (usize::BITS as usize);
+            let bit_idx = id % (usize::BITS as usize);
+            if word_idx < self.bits.len() {
+                (self.bits[word_idx].load(Ordering::Acquire) & (1_usize << bit_idx)) != 0
+            } else {
+                false
             }
         }
     }
@@ -161,6 +175,11 @@ pub mod std_components {
         #[inline(always)]
         pub fn get_worker_id(&self) -> Option<usize> {
             Some(WORKER_ID.with(|id| *id))
+        }
+
+        #[inline(always)]
+        pub fn is_worker_active(&self, id: usize) -> bool {
+            ALLOCATOR.is_allocated(id)
         }
 
         #[inline(always)]
@@ -208,7 +227,7 @@ pub mod std_components {
 }
 
 #[cfg(feature = "std")]
-pub use std_components::{DefaultSpawner, DefaultTls};
+pub use std_components::{DefaultSpawner, DefaultTls, Spawner};
 
 
 
@@ -292,6 +311,26 @@ mod tests {
             spawner.spawn(Box::new(|| {
                 // Thread will just exit
             }));
+        }
+    }
+
+    #[test]
+    fn test_id_allocator_is_allocated() {
+        let alloc = super::std_components::IdAllocator::new();
+        let id1 = alloc.alloc();
+        assert!(alloc.is_allocated(id1));
+        assert!(!alloc.is_allocated(id1 + 1));
+        assert!(!alloc.is_allocated(1000)); // Out of bounds bit
+        alloc.free(id1);
+        assert!(!alloc.is_allocated(id1));
+    }
+
+    #[test]
+    #[should_panic(expected = "Exceeded maximum number of concurrent threads")]
+    fn test_id_allocator_exhaustion() {
+        let alloc = super::std_components::IdAllocator::new();
+        for _ in 0..8193 {
+            alloc.alloc();
         }
     }
 }

@@ -5,6 +5,11 @@ use crate::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr;
 use crate::storage::Node;
 
+/// A bloom filter trait to prevent cache penetration.
+pub trait BloomFilter<K> {
+    fn might_contain(&self, key: &K) -> bool;
+}
+
 /// T1 — Hottest tier: direct-mapped L1 filter (fits in CPU L1 cache).
 ///
 /// Each slot stores a raw pointer to the most recently seen node for

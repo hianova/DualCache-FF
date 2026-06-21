@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "dualcache-ff"
-version = "0.5.1"
+version = "1.0.0"
 dependencies = [
  "TinyUFO",
  "ahash",

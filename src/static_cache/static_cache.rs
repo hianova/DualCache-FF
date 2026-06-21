@@ -5,11 +5,10 @@ use core::hash::{BuildHasher, Hash, Hasher};
 use ahash::RandomState;
 use core::cell::UnsafeCell;
 
-use crate::sync::{Arc, ArcSlice, new_arc_slice};
+use crate::sync::Arc;
 use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::filters::{T1, T2};
 use crate::storage::Cache;
-use crate::components::WorkerState;
 use crate::core_cache::CoreCache;
 use crate::Config;
 
@@ -21,7 +20,8 @@ pub struct StaticDualCache<K, V, S = RandomState> {
     pub t2: Arc<T2<K, V>>,
     pub cache: Arc<Cache<K, V>>,
     pub epoch: Arc<AtomicU32>,
-    pub worker_states: ArcSlice<WorkerState>,
+    pub registry: Arc<crate::registry::ThreadRegistry<K, V>>,
+    pub is_cold_start: Arc<AtomicBool>,
     
     // Protects `core`
     lock: AtomicBool,
@@ -31,12 +31,15 @@ pub struct StaticDualCache<K, V, S = RandomState> {
 unsafe impl<K: Send, V: Send, S: Send> Send for StaticDualCache<K, V, S> {}
 unsafe impl<K: Sync, V: Sync, S: Sync> Sync for StaticDualCache<K, V, S> {}
 
+/// A dummy daemon struct for StaticDualCache to maintain API parity with DualCacheFF.
 pub struct DummyDaemon;
 impl DummyDaemon {
+    /// No-op run loop.
     #[inline(always)]
     pub fn run(self) {}
 }
 
+/// A dummy cold start session for StaticDualCache to maintain API parity with DualCacheFF.
 pub struct DummyColdStartSession;
 
 impl<K, V> StaticDualCache<K, V, RandomState>
@@ -44,10 +47,12 @@ where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,
 {
+    /// Create a new `StaticDualCache` using standard settings.
     pub fn new(config: Config) -> Self {
         Self::with_hasher(config, RandomState::new())
     }
 
+    /// Create a new `StaticDualCache` with eviction/promotion callbacks.
     pub fn new_with_callbacks(
         config: Config,
         on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
@@ -56,6 +61,7 @@ where
         Self::with_hasher_and_callbacks(config, RandomState::new(), on_evict, on_promote)
     }
 
+    /// Create a headless `StaticDualCache` and a `DummyDaemon` (for API symmetry).
     pub fn new_headless(config: Config) -> (Self, DummyDaemon) {
         (Self::new(config), DummyDaemon)
     }
@@ -67,10 +73,12 @@ where
     V: Send + Sync + Clone + 'static,
     S: BuildHasher + Clone + Send + 'static,
 {
+    /// Create a `StaticDualCache` with a custom hasher.
     pub fn with_hasher(config: Config, hasher: S) -> Self {
         Self::with_hasher_and_callbacks(config, hasher, None, None)
     }
 
+    /// Create a `StaticDualCache` with a custom hasher and eviction/promotion callbacks.
     pub fn with_hasher_and_callbacks(
         config: Config,
         hasher: S,
@@ -83,11 +91,7 @@ where
         let epoch = Arc::new(AtomicU32::new(0));
         let is_cold_start = Arc::new(AtomicBool::new(true));
 
-        let mut states = Vec::with_capacity(config.threads);
-        for _ in 0..config.threads {
-            states.push(WorkerState::new());
-        }
-        let worker_states = new_arc_slice(states);
+        let registry = Arc::new(crate::registry::ThreadRegistry::new(config.threads));
 
         let core = CoreCache::new(
             config.capacity,
@@ -96,8 +100,8 @@ where
             cache.clone(),
             epoch.clone(),
             config.duration,
-            worker_states.clone(),
-            is_cold_start,
+            registry.clone(),
+            is_cold_start.clone(),
             on_evict,
             on_promote,
         );
@@ -108,7 +112,8 @@ where
             t2,
             cache,
             epoch,
-            worker_states,
+            registry,
+            is_cold_start: is_cold_start.clone(),
             lock: AtomicBool::new(false),
             core: UnsafeCell::new(core),
         }
@@ -117,6 +122,14 @@ where
     /// No-op sync to maintain API symmetry with DualCacheFF.
     #[inline(always)]
     pub fn sync(&self) {}
+
+    /// Returns the number of active/occupied entries in (T1, T2, Core Cache)
+    pub fn entry_count(&self) -> (usize, usize, usize) {
+        let t1_count = self.t1.slots.iter().filter(|ptr| !ptr.load(Ordering::Relaxed).is_null()).count();
+        let t2_count = self.t2.slots.iter().filter(|ptr| !ptr.load(Ordering::Relaxed).is_null()).count();
+        let cache_count = self.cache.nodes.iter().filter(|ptr| !ptr.load(Ordering::Relaxed).is_null()).count();
+        (t1_count, t2_count, cache_count)
+    }
 
     /// Dummy cold start session to maintain API symmetry.
     #[inline(always)]
@@ -219,6 +232,7 @@ where
         self.release_lock();
     }
 
+    /// Insert an item directly into T1 (Hot Tier) synchronously.
     pub fn insert_t1(&self, key: K, value: V) {
         let mut s = self.hasher.build_hasher();
         key.hash(&mut s);
@@ -229,6 +243,7 @@ where
         self.release_lock();
     }
 
+    /// Remove a key from the cache synchronously.
     pub fn remove(&self, key: &K) {
         let mut s = self.hasher.build_hasher();
         key.hash(&mut s);
@@ -239,12 +254,14 @@ where
         self.release_lock();
     }
 
+    /// Trigger manual eviction and garbage reclamation synchronously.
     pub fn maintenance(&self) {
         let core = self.acquire_lock();
         core.maintenance();
         self.release_lock();
     }
 
+    /// Clear all cache contents synchronously.
     pub fn clear(&self) {
         let core = self.acquire_lock();
         core.handle_clear();

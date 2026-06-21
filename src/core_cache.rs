@@ -8,7 +8,7 @@ use core::hash::Hash;
 use crate::arena::Arena;
 use crate::storage::{Cache, Node};
 use crate::filters::{T1, T2};
-use crate::components::{WorkerState, GLOBAL_EPOCH};
+use crate::components::GLOBAL_EPOCH;
 
 const MAX_RANK: u8 = 3;
 
@@ -20,16 +20,37 @@ pub struct CoreCache<K, V> {
     pub cache: Arc<Cache<K, V>>,
     pub admission: Arc<AdmissionFilter>,
     pub garbage_queue: Vec<(*mut Node<K, V>, usize, bool)>,
+    pub registry_garbage_queue: Vec<(u32, *mut crate::registry::RegistryInner<K, V>)>,
     pub hit_accumulator: Vec<usize>,
     pub is_cold_start: Arc<AtomicBool>,
     pub epoch: Arc<AtomicU32>,
     pub duration: u32,
-    pub worker_states: ArcSlice<WorkerState>,
+    pub registry: Arc<crate::registry::ThreadRegistry<K, V>>,
     pub on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
     pub on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
 }
 
 unsafe impl<K: Send, V: Send> Send for CoreCache<K, V> {}
+
+impl<K, V> Drop for CoreCache<K, V> {
+    fn drop(&mut self) {
+        for &(ptr, _, is_eviction) in &self.garbage_queue {
+            unsafe {
+                let node = alloc::boxed::Box::from_raw(ptr);
+                if is_eviction {
+                    if let Some(cb) = &self.on_evict {
+                        cb(node.key, node.value);
+                    }
+                }
+            }
+        }
+        for &(_, ptr) in &self.registry_garbage_queue {
+            unsafe {
+                let _ = alloc::boxed::Box::from_raw(ptr);
+            }
+        }
+    }
+}
 
 impl<K, V> CoreCache<K, V>
 where
@@ -44,7 +65,7 @@ where
         cache: Arc<Cache<K, V>>,
         epoch: Arc<AtomicU32>,
         duration: u32,
-        worker_states: ArcSlice<WorkerState>,
+        registry: Arc<crate::registry::ThreadRegistry<K, V>>,
         is_cold_start: Arc<AtomicBool>,
         on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
         on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
@@ -56,11 +77,12 @@ where
             cache,
             admission: Arc::new(AdmissionFilter::new(capacity)),
             garbage_queue: Vec::new(),
+            registry_garbage_queue: Vec::new(),
             hit_accumulator: Vec::with_capacity(8192),
             is_cold_start,
             epoch,
             duration,
-            worker_states,
+            registry,
             on_evict,
             on_promote,
         }
@@ -116,6 +138,116 @@ where
         self.arena.set_rank(global_idx, MAX_RANK);
     }
 
+    pub fn handle_insert_t2(&mut self, k: K, v: V, hash: u64) {
+        let tag = (hash >> 48) as u16;
+        let global_idx = if let Some(idx) = self.cache.index_probe(hash, tag) {
+            idx
+        } else {
+            if self.arena.free_list_empty() {
+                self.evict_batch();
+            }
+            if let Some(new_idx) = self.arena.pop_free_slot() {
+                new_idx
+            } else {
+                return;
+            }
+        };
+
+        let entry = (tag as u64) << 48 | (global_idx as u64 & 0x0000_FFFF_FFFF_FFFF);
+
+        let node_ptr = Box::into_raw(Box::new(Node {
+            key: k,
+            value: v,
+            expire_at: self.epoch.load(Ordering::Relaxed) + self.duration,
+            g_idx: global_idx as u32,
+        }));
+
+        let old_ptr = self.cache.nodes[global_idx].swap(node_ptr, Ordering::Release);
+        if !old_ptr.is_null() {
+            let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
+            self.garbage_queue.push((old_ptr, epoch, false));
+        }
+
+        self.cache.index_store(hash, tag, entry);
+        self.arena.set_hash(global_idx, hash);
+        self.arena.set_rank(global_idx, MAX_RANK);
+        self.t2.store_slot(hash, node_ptr);
+    }
+
+    pub fn handle_insert_core(&mut self, k: K, v: V, hash: u64) {
+        let tag = (hash >> 48) as u16;
+        let global_idx = if let Some(idx) = self.cache.index_probe(hash, tag) {
+            idx
+        } else {
+            if self.arena.free_list_empty() {
+                self.evict_batch();
+            }
+            if let Some(new_idx) = self.arena.pop_free_slot() {
+                new_idx
+            } else {
+                return;
+            }
+        };
+
+        let entry = (tag as u64) << 48 | (global_idx as u64 & 0x0000_FFFF_FFFF_FFFF);
+
+        let node_ptr = Box::into_raw(Box::new(Node {
+            key: k,
+            value: v,
+            expire_at: self.epoch.load(Ordering::Relaxed) + self.duration,
+            g_idx: global_idx as u32,
+        }));
+
+        let old_ptr = self.cache.nodes[global_idx].swap(node_ptr, Ordering::Release);
+        if !old_ptr.is_null() {
+            let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
+            self.garbage_queue.push((old_ptr, epoch, false));
+        }
+
+        self.cache.index_store(hash, tag, entry);
+        self.arena.set_hash(global_idx, hash);
+        self.arena.set_rank(global_idx, MAX_RANK);
+    }
+
+    pub fn handle_insert_with_rank(&mut self, k: K, v: V, hash: u64, tier: crate::daemon::CacheTier, rank: u8) {
+        let tag = (hash >> 48) as u16;
+        let global_idx = if let Some(idx) = self.cache.index_probe(hash, tag) {
+            idx
+        } else {
+            if self.arena.free_list_empty() {
+                self.evict_batch();
+            }
+            if let Some(new_idx) = self.arena.pop_free_slot() {
+                new_idx
+            } else {
+                return;
+            }
+        };
+
+        let entry = (tag as u64) << 48 | (global_idx as u64 & 0x0000_FFFF_FFFF_FFFF);
+
+        let node_ptr = Box::into_raw(Box::new(Node {
+            key: k,
+            value: v,
+            expire_at: self.epoch.load(Ordering::Relaxed) + self.duration,
+            g_idx: global_idx as u32,
+        }));
+
+        let old_ptr = self.cache.nodes[global_idx].swap(node_ptr, Ordering::Release);
+        if !old_ptr.is_null() {
+            let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
+            self.garbage_queue.push((old_ptr, epoch, false));
+        }
+
+        self.cache.index_store(hash, tag, entry);
+        self.arena.set_hash(global_idx, hash);
+        self.arena.set_rank(global_idx, rank);
+        match tier {
+            crate::daemon::CacheTier::Tier1 => self.t1.store_slot(hash, node_ptr),
+            crate::daemon::CacheTier::Tier2 => self.t2.store_slot(hash, node_ptr),
+            crate::daemon::CacheTier::Core => {}
+        }
+    }
     #[inline(always)]
     pub fn handle_insert_t1(&mut self, k: K, v: V, hash: u64) {
         let tag = (hash >> 48) as u16;
@@ -186,18 +318,19 @@ where
     }
 
     pub fn maintenance(&mut self) {
-        if !self.garbage_queue.is_empty() {
-            let current_global = GLOBAL_EPOCH.load(Ordering::Relaxed);
-            GLOBAL_EPOCH.store(current_global + 1, Ordering::Release);
+        let current_global = GLOBAL_EPOCH.load(Ordering::Relaxed);
+        GLOBAL_EPOCH.store(current_global + 1, Ordering::Release);
 
-            let mut min_active_epoch = current_global + 1;
-            for state in self.worker_states.iter() {
-                let local = state.local_epoch.load(Ordering::Acquire);
-                if local != 0 && local < min_active_epoch {
-                    min_active_epoch = local;
-                }
+        let mut min_active_epoch = current_global + 1;
+        let inner = unsafe { &*self.registry.get_inner() };
+        for state in inner.states.iter() {
+            let local = state.local_epoch.load(Ordering::Acquire);
+            if local != 0 && local < min_active_epoch {
+                min_active_epoch = local;
             }
+        }
 
+        if !self.garbage_queue.is_empty() {
             self.garbage_queue.retain(|&(ptr, epoch, is_eviction)| {
                 if epoch < min_active_epoch {
                     unsafe {
@@ -208,6 +341,19 @@ where
                             }
                         }
                     };
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+
+        if !self.registry_garbage_queue.is_empty() {
+            self.registry_garbage_queue.retain(|&(epoch, ptr)| {
+                if epoch < min_active_epoch as u32 {
+                    unsafe {
+                        let _ = alloc::boxed::Box::from_raw(ptr);
+                    }
                     false
                 } else {
                     true
@@ -336,5 +482,91 @@ impl AdmissionFilter {
         for val in self.ghost_set.iter() {
             val.store(0, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Node;
+    use alloc::boxed::Box;
+
+    #[test]
+    fn test_core_cache_drop() {
+        let mut core = CoreCache::<u64, u64>::new(
+            10,
+            Arc::new(T1::new(10)),
+            Arc::new(T2::new(10)),
+            Arc::new(Cache::new(10)),
+            Arc::new(AtomicU32::new(1)),
+            200,
+            Arc::new(crate::registry::ThreadRegistry::new(10)),
+            Arc::new(AtomicBool::new(true)),
+            Some(Arc::new(|_k, _v| {})),
+            None,
+        );
+
+        // Add dummy node to garbage queue
+        let ptr = Box::into_raw(Box::new(Node {
+            key: 1,
+            value: 1,
+            expire_at: 0,
+            g_idx: 0,
+        }));
+        core.garbage_queue.push((ptr, 0, true));
+
+        // Add dummy registry to registry garbage queue
+        let reg_ptr = Box::into_raw(Box::new(crate::registry::RegistryInner {
+            states: vec![].into_boxed_slice(),
+            buffers: vec![].into_boxed_slice(),
+        }));
+        core.registry_garbage_queue.push((0, reg_ptr));
+
+        // Let core drop
+        drop(core);
+    }
+
+    #[test]
+    fn test_core_cache_insert_variations() {
+        let mut core = CoreCache::<u64, u64>::new(
+            10,
+            Arc::new(T1::new(10)),
+            Arc::new(T2::new(10)),
+            Arc::new(Cache::new(10)),
+            Arc::new(AtomicU32::new(1)),
+            200,
+            Arc::new(crate::registry::ThreadRegistry::new(10)),
+            Arc::new(AtomicBool::new(true)),
+            Some(Arc::new(|_k, _v| {})),
+            None,
+        );
+
+        // 1. handle_insert_t2
+        core.handle_insert_t2(1, 1, 1);
+        // overwrite t2
+        core.handle_insert_t2(1, 2, 1);
+        
+        // 2. handle_insert_core
+        core.handle_insert_core(2, 2, 2);
+        // overwrite core
+        core.handle_insert_core(2, 3, 2);
+
+        // 3. handle_insert_with_rank
+        core.handle_insert_with_rank(3, 3, 3, crate::daemon::CacheTier::Tier1, 1);
+        // overwrite with rank
+        core.handle_insert_with_rank(3, 4, 3, crate::daemon::CacheTier::Tier2, 2);
+        core.handle_insert_with_rank(3, 5, 3, crate::daemon::CacheTier::Core, 3);
+        
+        // Fill up arena to trigger evict_batch() inside handle_insert_with_hash
+        for i in 10..20 {
+            core.handle_insert_with_hash(i, i, i);
+        }
+        // now full, next insert triggers evict_batch
+        core.handle_insert_with_hash(20, 20, 20);
+        
+        // Fill up to trigger evict_batch in other functions
+        core.handle_insert_t2(21, 21, 21);
+        core.handle_insert_core(22, 22, 22);
+        core.handle_insert_with_rank(23, 23, 23, crate::daemon::CacheTier::Tier1, 1);
     }
 }

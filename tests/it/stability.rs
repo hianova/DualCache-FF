@@ -41,8 +41,8 @@ fn test_memory_stability() {
                 let _ = cache.get(&(i % 1000));
             }
 
-            // Drop the cache. This should send Command::Shutdown to the background thread.
-            drop(cache);
+            // Gracefully shutdown the cache
+            cache.shutdown_gracefully(None);
         }
 
         // Wait for the background thread to finish and all memory to be reclaimed
@@ -84,8 +84,8 @@ fn test_memory_stability() {
 
             cache.sync();
 
-            // Drop the cache. This should send Command::Shutdown to the daemon.
-            drop(cache);
+            // Gracefully shutdown the cache
+            cache.shutdown_gracefully(None);
 
             // Ensure the daemon thread exited cleanly (no thread leak!)
             daemon_handle.join().unwrap();

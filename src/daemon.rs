@@ -19,20 +19,58 @@ pub enum Command<K, V> {
     BatchInsert(Vec<(K, V, u64, bool)>),
     /// Insert directly as a top priority item bypassing probation.
     InsertT1(K, V, u64),
+    /// Batch of T1 inserts for fast warmup
+    BatchInsertT1(Vec<(K, V, u64)>),
+    /// Batch of T2 inserts
+    BatchInsertT2(Vec<(K, V, u64)>),
+    /// Batch of Core inserts (L3)
+    BatchInsertCore(Vec<(K, V, u64)>),
+    /// Insert an item with a specific frequency rank and tier
+    InsertWithRank(K, V, u64, CacheTier, u8),
     /// Remove by key+hash.
     Remove(K, u64),
     /// Blocking clear — caller spins on `OneshotAck::wait()`.
     Clear(Arc<OneshotAck>),
+    /// Retire old registry inner memory pointer
+    RetireRegistry(usize),
     /// Blocking maintenance flush — caller spins on `OneshotAck::wait()`.
     Sync(Arc<OneshotAck>),
     /// Dynamically adjust Daemon poll interval (Power-Saving Mode).
     SetPollInterval(u64),
-    /// Signal Daemon to exit its run loop.
-    Shutdown,
+    /// Signal Daemon to exit its run loop, gracefully draining queues.
+    Shutdown(Option<Arc<OneshotAck>>),
+}
+
+/// Health status state machine for the background Daemon thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonStatus {
+    /// The daemon has been created but the loop has not started.
+    NotStarted = 0,
+    /// The daemon loop is actively running and polling commands.
+    Running = 1,
+    /// The daemon is currently processing a graceful shutdown.
+    ShuttingDown = 2,
+    /// The daemon finished processing the shutdown command and exited normally.
+    Stopped = 3,
+    /// The daemon thread encountered a panic.
+    Panicked = 4,
+}
+
+/// The physical cache hierarchy level where warmup/promotion data is routed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheTier {
+    /// Level 1: Hot cache slot array (direct mapped, no eviction checking).
+    Tier1,
+    /// Level 2: Secondary filter slot array (direct mapped, no eviction checking).
+    Tier2,
+    /// Level 3: Main storage (open-addressed linear probing index with eviction).
+    Core,
 }
 
 // ── Daemon ────────────────────────────────────────────────────────────────
 
+/// The background daemon responsible for running eviction, promotions, garbage collection,
+/// and periodic telemetry processing asynchronously in the background.
 pub struct Daemon<K, V, S> {
     pub hasher: S,
     pub core: Arc<SharedCore<K, V>>,
@@ -52,6 +90,7 @@ where
     V: Send + Sync + Clone + 'static,
     S: BuildHasher + Clone + Send + 'static,
 {
+    /// Create a new Daemon instance.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         hasher: S,
@@ -73,6 +112,7 @@ where
 
     /// Main Daemon event loop.
     pub fn run(mut self) {
+        let _guard = DaemonGuard(&self.core.status);
         #[cfg(feature = "std")]
         if let Ok(mut guard) = self.core.daemon_thread.lock() {
             *guard = Some(std::thread::current());
@@ -98,14 +138,17 @@ where
             let mut core = self.core.acquire_lock();
 
             // ── Drain command queue (up to 8192 commands per poll) ────────
+            let mut shutting_down_ack = None;
             loop {
                 match self.cmd_rx.try_recv() {
                     Some(cmd) => {
-                        if !Self::process_cmd(&mut core, cmd, &mut self.poll_us) {
-                            return; // Shutdown triggers false
+                        if let Command::Shutdown(ack) = cmd {
+                            shutting_down_ack = Some(ack);
+                            self.core.status.store(DaemonStatus::ShuttingDown as u8, Ordering::Release);
+                            break;
                         }
+                        Self::process_cmd(&mut core, cmd, &mut self.poll_us);
                         processed += 1;
-                        has_commands = true;
                         if processed >= 8192 {
                             break;
                         }
@@ -148,6 +191,28 @@ where
             // ── Advance daemon_tick ───────────────────────────────────────
             self.daemon_tick.fetch_add(1, Ordering::Relaxed);
 
+            if let Some(ack_opt) = shutting_down_ack {
+                // We got a shutdown signal. Process remaining garbage before exiting.
+                let mut spins = 0;
+                while !core.garbage_queue.is_empty() || !core.registry_garbage_queue.is_empty() {
+                    core.maintenance();
+                    if core.garbage_queue.is_empty() && core.registry_garbage_queue.is_empty() {
+                        break;
+                    }
+                    if spins > 100 {
+                        crate::components::GLOBAL_EPOCH.fetch_add(1, Ordering::Relaxed);
+                    }
+                    spins += 1;
+                }
+                
+                drop(core);
+
+                if let Some(ack) = ack_opt {
+                    ack.signal();
+                }
+                return;
+            }
+
             // Release the lock before we potentially park
             drop(core);
 
@@ -169,41 +234,76 @@ where
     }
 
     #[inline(always)]
-    fn process_cmd(core: &mut CoreCache<K, V>, cmd: Command<K, V>, poll_us: &mut u64) -> bool {
+    fn process_cmd(core: &mut CoreCache<K, V>, cmd: Command<K, V>, poll_us: &mut u64) {
         match cmd {
             Command::Insert(k, v, hash, is_t1) => {
                 core.handle_admission_insert(k, v, hash, is_t1);
-                true
             }
             Command::BatchInsert(batch) => {
                 for (k, v, hash, is_t1) in batch {
                     core.handle_admission_insert(k, v, hash, is_t1);
                 }
-                true
             }
             Command::InsertT1(k, v, hash) => {
                 core.handle_insert_t1(k, v, hash);
-                true
+            }
+            Command::BatchInsertT1(batch) => {
+                for (k, v, hash) in batch {
+                    core.handle_insert_t1(k, v, hash);
+                }
+            }
+            Command::BatchInsertT2(batch) => {
+                for (k, v, hash) in batch {
+                    core.handle_insert_t2(k, v, hash);
+                }
+            }
+            Command::BatchInsertCore(batch) => {
+                for (k, v, hash) in batch {
+                    core.handle_insert_core(k, v, hash);
+                }
+            }
+            Command::InsertWithRank(k, v, hash, tier, rank) => {
+                core.handle_insert_with_rank(k, v, hash, tier, rank);
+            }
+            Command::RetireRegistry(ptr) => {
+                let epoch = crate::components::GLOBAL_EPOCH.load(crate::sync::atomic::Ordering::Relaxed);
+                core.registry_garbage_queue.push((epoch as u32, ptr as *mut crate::registry::RegistryInner<K, V>));
             }
             Command::Remove(k, hash) => {
                 core.handle_remove(k, hash);
-                true
             }
             Command::Clear(ack) => {
                 core.handle_clear();
                 ack.signal();
-                true
             }
             Command::Sync(ack) => {
                 core.maintenance();
                 ack.signal();
-                true
             }
             Command::SetPollInterval(us) => {
+                if us == 0 {
+                    panic!("Intentional panic for testing DaemonGuard");
+                }
                 *poll_us = us;
-                true
             }
-            Command::Shutdown => false,
+            Command::Shutdown(_) => {}
+        }
+    }
+}
+
+/// A guard using `std::thread::panicking()` (when std is enabled) in its `Drop` implementation
+/// to automatically detect and flag thread panics, marking status as `DaemonStatus::Panicked`.
+pub struct DaemonGuard<'a>(pub &'a crate::sync::atomic::AtomicU8);
+impl<'a> Drop for DaemonGuard<'a> {
+    fn drop(&mut self) {
+        #[cfg(feature = "std")]
+        if std::thread::panicking() {
+            self.0.store(DaemonStatus::Panicked as u8, Ordering::Release);
+            return;
+        }
+        let current = self.0.load(Ordering::Relaxed);
+        if current != DaemonStatus::Panicked as u8 {
+            self.0.store(DaemonStatus::Stopped as u8, Ordering::Release);
         }
     }
 }

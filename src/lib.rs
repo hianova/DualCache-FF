@@ -34,19 +34,17 @@ pub mod config;
 #[cfg(feature = "std")]
 pub mod cache;
 #[doc(hidden)]
-#[cfg(feature = "std")]
+#[doc(hidden)]
 pub mod daemon;
 #[doc(hidden)]
 pub mod filters;
 #[doc(hidden)]
-#[cfg(feature = "std")]
 pub mod lossy_queue;
 #[doc(hidden)]
 pub mod storage;
 #[doc(hidden)]
 pub mod unsafe_core;
 #[doc(hidden)]
-#[cfg(feature = "std")]
 pub mod workers;
 #[doc(hidden)]
 pub mod static_cache;
@@ -54,15 +52,19 @@ pub mod static_cache;
 pub mod core_cache;
 #[doc(hidden)]
 pub mod shared_core;
+#[doc(hidden)]
+pub mod registry;
 pub(crate) mod sync;
 
 pub use config::Config;
 pub use components::{WorkerState, CachePadded};
 pub use static_cache::static_cache::StaticDualCache;
+pub use filters::BloomFilter;
 
 #[cfg(feature = "std")]
-pub use cache::DualCacheFF;
+pub use cache::{DualCacheFF, ColdStartSession};
 #[cfg(feature = "std")]
-pub use components::{DefaultSpawner, DefaultTls};
+pub use components::{DefaultSpawner, DefaultTls, Spawner};
 #[cfg(feature = "std")]
-pub use daemon::Daemon;
+pub use daemon::{Daemon, DaemonStatus, CacheTier};
+

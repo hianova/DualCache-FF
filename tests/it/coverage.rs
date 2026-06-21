@@ -119,7 +119,15 @@ fn test_hash_collision_t1_t2() {
         
         cache.sync();
         
+        cache.sync();
+        
         // No crash means collisions are handled correctly
+        
+        // Now, keys 0-9 are in L3. Because T1 and T2 are tiny (size 2), 
+        // most of these keys have been evicted from T1/T2 but remain in L3.
+        // If we insert one of these keys again, it should trigger the bypass = true logic!
+        cache.insert(5, 5); // Should hit L3 but not T1/T2, setting bypass = true
+        cache.sync();
     });
 }
 

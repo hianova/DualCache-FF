@@ -30,6 +30,8 @@ pub struct Cache<K, V> {
 unsafe impl<K: Send, V: Send> Send for Cache<K, V> {}
 unsafe impl<K: Send + Sync, V: Send + Sync> Sync for Cache<K, V> {}
 
+
+
 impl<K, V> Cache<K, V> {
     pub fn new(capacity: usize) -> Self {
         let index_size = (capacity * 2).next_power_of_two();
