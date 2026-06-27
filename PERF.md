@@ -3,50 +3,6 @@
 ## Benchmark Results
 
 ```text
-running 40 tests
-test cache::extra_coverage_tests::test_wake_daemon_if_parked ... ignored
-test cache::tests::test_daemon_command_insert_coverage ... ignored
-test cache::tests::test_daemon_panic_guard ... ignored
-test cache::tests::test_daemon_shutdown_with_garbage ... ignored
-test cache::tests::test_quiescent ... ignored
-test components::extra_coverage_tests::test_allocator_missed_lines ... ignored
-test components::tests::test_cache_padded ... ignored
-test components::tests::test_cache_padded_align ... ignored
-test components::tests::test_default_spawner ... ignored
-test components::tests::test_default_tls_methods ... ignored
-test components::tests::test_id_allocator_concurrent_via_tls ... ignored
-test components::tests::test_id_allocator_exhaustion - should panic ... ignored
-test components::tests::test_id_allocator_is_allocated ... ignored
-test components::tests::test_worker_state ... ignored
-test config::tests::test_config_flush_tick ... ignored
-test config::tests::test_config_memory_budget_asserts ... ignored
-test config::tests::test_config_new_expert_invalid_capacity - should panic ... ignored
-test config::tests::test_config_new_expert_invalid_t1 - should panic ... ignored
-test config::tests::test_config_new_expert_invalid_t1_size - should panic ... ignored
-test config::tests::test_config_new_expert_invalid_t2 - should panic ... ignored
-test config::tests::test_config_new_expert_valid ... ignored
-test config::tests::test_config_poll_clamping ... ignored
-test core_cache::tests::test_core_cache_drop ... ignored
-test core_cache::tests::test_core_cache_insert_variations ... ignored
-test lossy_queue::tests::test_lossy_queue_basic ... ignored
-test lossy_queue::tests::test_lossy_queue_drop_does_not_leak ... ignored
-test lossy_queue::tests::test_lossy_queue_len_and_drops ... ignored
-test lossy_queue::tests::test_lossy_queue_mpsc ... ignored
-test lossy_queue::tests::test_lossy_queue_non_power_of_two - should panic ... ignored
-test lossy_queue::tests::test_lossy_queue_send_blocking ... ignored
-test lossy_queue::tests::test_oneshot_ack ... ignored
-test lossy_queue::tests::test_oneshot_ack_timeout ... ignored
-test static_cache::static_cache::tests::test_static_cache_coverage ... ignored
-test sync::std_impl::tests::test_new_arc_slice ... ignored
-test sync::std_impl::tests::test_unsafe_cell_get_with ... ignored
-test sync::std_impl::tests::test_unsafe_cell_with_mut ... ignored
-test workers::tests::test_batch_buf_drop ... ignored
-test workers::tests::test_batch_buf_push_and_drain ... ignored
-test workers::tests::test_worker_slot_default ... ignored
-test workers::tests::test_worker_slot_safe_access ... ignored
-
-test result: ok. 0 passed; 0 failed; 40 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
 Generating realistic zipf distribution...
 --- CAPEX Constraint Benchmark (Isolated Processes) ---
 Capacity: 2048 Items | Total Ops: 200000 (Single Thread)
