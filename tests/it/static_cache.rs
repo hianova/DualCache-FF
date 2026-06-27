@@ -107,6 +107,10 @@ test_runner!(test_dual_cache_stub, {
     stub.remove(&1);
     stub.clear();
     stub.sync();
+    let _ = stub.daemon_health();
+    stub.suspend();
+    stub.resume();
+    stub.shutdown_gracefully(None);
 
     let (stub2, _daemon) = DualCacheStub::<i32, String>::new_headless(Config::new_expert(128, 64, 64, 200, 128));
     stub2.insert(2, "two".to_string());
