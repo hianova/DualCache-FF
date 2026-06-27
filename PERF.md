@@ -54,11 +54,11 @@ Generating realistic zipf distribution...
 
 === DualCacheFF (Static) (CAPEX Constrained) ===
              Baseline Mem RSS: 3584.00 KB
-                 Peak Mem RSS: 5088.00 KB
-  - Execution Time:  7.61ms
-  - Real Hit Rate:   89.51%
-  - Net Footprint:   1504.00 KB
-  - Avg Cost/Item:   752.00 Bytes (Footprint / Capacity)
+                 Peak Mem RSS: 5072.00 KB
+  - Execution Time:  4.68ms
+  - Real Hit Rate:   89.53%
+  - Net Footprint:   1488.00 KB
+  - Avg Cost/Item:   744.00 Bytes (Footprint / Capacity)
 
 running 0 tests
 
@@ -68,16 +68,16 @@ Generating zipf keys (Total 2,000,000 ops)...
 Aligned benchmark physical capacity: 131072
 
 === DualCacheFF ===
-  Real Hit Rate: 84.54%
-  [READ ] P50:       84 ns | P90:      250 ns | P99:      458 ns | P99.9:      625 ns | P99.99:    30875 ns | Max:  3248166 ns
-  [WRITE] P50:       84 ns | P90:      292 ns | P99:      750 ns | P99.9:     1292 ns | P99.99:    23125 ns | Max:  4143458 ns
+  Real Hit Rate: 83.06%
+  [READ ] P50:       42 ns | P90:      208 ns | P99:      458 ns | P99.9:      708 ns | P99.99:    11125 ns | Max:  8156291 ns
+  [WRITE] P50:       42 ns | P90:      250 ns | P99:      541 ns | P99.9:     1333 ns | P99.99:    12583 ns | Max:  5306208 ns
 Running Memory Benchmarks (Isolated Processes)...
 
 --- DualCacheFF ---
-    Baseline (empty) RSS: 1.92 MB
+    Baseline (empty) RSS: 1.94 MB
           After Init RSS: 41.08 MB
-    After 1M Inserts RSS: 68.20 MB
-DualcacheFF overhead per item: 53.50 bytes
+    After 1M Inserts RSS: 69.23 MB
+DualcacheFF overhead per item: 54.57 bytes
 
 ========== Summary ==========
 Refer to output logs above for per-item overheads.
@@ -87,125 +87,125 @@ Aligned benchmark physical capacity: 131072
 === DualCacheFF Read/Write Ratios ===
 | Read/Write Ratio | Throughput (ops/s) | Hit Rate (%) |
 |------------------|--------------------|--------------|
-| 0% Read / 100% Write |        14173206.16 |        0.00% |
-| 10% Read / 90% Write |        16530826.80 |       85.87% |
-| 25% Read / 75% Write |        23250970.18 |       85.76% |
-| 50% Read / 50% Write |        22771046.44 |       85.40% |
-| 75% Read / 25% Write |        29439291.31 |       85.70% |
-| 100% Read / 0% Write |        28384663.97 |       74.54% |
+| 0% Read / 100% Write |        45302592.32 |        0.00% |
+| 10% Read / 90% Write |        33804245.63 |       85.79% |
+| 25% Read / 75% Write |        45817702.81 |       85.79% |
+| 50% Read / 50% Write |        42259473.76 |       85.78% |
+| 75% Read / 25% Write |        44576026.93 |       85.54% |
+| 100% Read / 0% Write |        57224331.51 |       81.53% |
 Generating zipf keys (Total 50000000 ops)...
 Aligned benchmark physical capacity: 1048576
 
 ===================================================================
 == Sampling Specification: 1000 operations sampled ==
 ===================================================================
-Found 547 unique hot keys from the first 1000 ops.
+Found 556 unique hot keys from the first 1000 ops.
 
 [Scenario A] Normal Insert Baseline (Cold Start, No Warmup)
-  [Initial   ] Hit Rate:  80.23% | Throughput:  36580124.19 ops/s
-  [Growth    ] Hit Rate:  89.70% | Throughput:  39268736.20 ops/s
-  [Plateau   ] Hit Rate:  89.96% | Throughput:  40289087.62 ops/s
+  [Initial   ] Hit Rate:  80.73% | Throughput:  56306569.45 ops/s
+  [Growth    ] Hit Rate:  89.63% | Throughput:  66993445.81 ops/s
+  [Plateau   ] Hit Rate:  89.26% | Throughput:  55168815.11 ops/s
 
-[Scenario B] Snapshot Fast Pass (Injecting 547 Hot Keys)
-  (Fast Pass Warmup took 205.833µs)
-  [Initial   ] Hit Rate:  80.68% | Throughput:  52679636.64 ops/s
-  [Growth    ] Hit Rate:  89.66% | Throughput:  56601089.13 ops/s
-  [Plateau   ] Hit Rate:  89.87% | Throughput:  45126517.11 ops/s
+[Scenario B] Snapshot Fast Pass (Injecting 556 Hot Keys)
+  (Fast Pass Warmup took 400.833µs)
+  [Initial   ] Hit Rate:  76.62% | Throughput:  44476813.68 ops/s
+  [Growth    ] Hit Rate:  89.61% | Throughput:  56662054.25 ops/s
+  [Plateau   ] Hit Rate:  90.19% | Throughput:  46602729.04 ops/s
 
 === Hit Rate Improvement ===
-  Initial Stage:  +0.45%
-  Growth Stage :  -0.04%
-  Plateau Stage:  -0.09%
+  Initial Stage:  -4.11%
+  Growth Stage :  -0.02%
+  Plateau Stage:  +0.93%
 
 ===================================================================
 == Sampling Specification: 10000 operations sampled ==
 ===================================================================
-Found 4058 unique hot keys from the first 10000 ops.
+Found 4053 unique hot keys from the first 10000 ops.
 
 [Scenario A] Normal Insert Baseline (Cold Start, No Warmup)
-  [Initial   ] Hit Rate:  73.33% | Throughput:  57458468.30 ops/s
-  [Growth    ] Hit Rate:  89.25% | Throughput:  48115316.37 ops/s
-  [Plateau   ] Hit Rate:  89.28% | Throughput:  44361033.38 ops/s
+  [Initial   ] Hit Rate:  80.73% | Throughput:  46948724.90 ops/s
+  [Growth    ] Hit Rate:  89.56% | Throughput:  63109934.73 ops/s
+  [Plateau   ] Hit Rate:  90.21% | Throughput:  57946401.21 ops/s
 
-[Scenario B] Snapshot Fast Pass (Injecting 4058 Hot Keys)
-  (Fast Pass Warmup took 695.334µs)
-  [Initial   ] Hit Rate:  71.11% | Throughput:  63808574.28 ops/s
-  [Growth    ] Hit Rate:  86.34% | Throughput:  49779667.17 ops/s
-  [Plateau   ] Hit Rate:  87.34% | Throughput:  49939232.82 ops/s
+[Scenario B] Snapshot Fast Pass (Injecting 4053 Hot Keys)
+  (Fast Pass Warmup took 412.917µs)
+  [Initial   ] Hit Rate:  80.37% | Throughput:  50208994.94 ops/s
+  [Growth    ] Hit Rate:  88.47% | Throughput:  70395888.88 ops/s
+  [Plateau   ] Hit Rate:  89.57% | Throughput:  54763781.56 ops/s
 
 === Hit Rate Improvement ===
-  Initial Stage:  -2.22%
-  Growth Stage :  -2.91%
-  Plateau Stage:  -1.93%
+  Initial Stage:  -0.37%
+  Growth Stage :  -1.09%
+  Plateau Stage:  -0.64%
 
 ===================================================================
 == Sampling Specification: 50000 operations sampled ==
 ===================================================================
-Found 16229 unique hot keys from the first 50000 ops.
+Found 16030 unique hot keys from the first 50000 ops.
 
 [Scenario A] Normal Insert Baseline (Cold Start, No Warmup)
-  [Initial   ] Hit Rate:  80.16% | Throughput:  40369311.38 ops/s
-  [Growth    ] Hit Rate:  89.61% | Throughput:  56329918.07 ops/s
-  [Plateau   ] Hit Rate:  89.95% | Throughput:  47095417.17 ops/s
+  [Initial   ] Hit Rate:  75.70% | Throughput:  37533663.00 ops/s
+  [Growth    ] Hit Rate:  89.60% | Throughput:  59289986.21 ops/s
+  [Plateau   ] Hit Rate:  89.54% | Throughput:  55397384.48 ops/s
 
-[Scenario B] Snapshot Fast Pass (Injecting 16229 Hot Keys)
-  (Fast Pass Warmup took 1.02025ms)
-  [Initial   ] Hit Rate:  81.17% | Throughput:  55855780.38 ops/s
-  [Growth    ] Hit Rate:  89.69% | Throughput:  41931814.15 ops/s
-  [Plateau   ] Hit Rate:  89.53% | Throughput:  45946756.61 ops/s
+[Scenario B] Snapshot Fast Pass (Injecting 16030 Hot Keys)
+  (Fast Pass Warmup took 1.435125ms)
+  [Initial   ] Hit Rate:  81.18% | Throughput:  55306675.52 ops/s
+  [Growth    ] Hit Rate:  89.59% | Throughput:  62956580.80 ops/s
+  [Plateau   ] Hit Rate:  86.14% | Throughput:  57462598.83 ops/s
 
 === Hit Rate Improvement ===
-  Initial Stage:  +1.01%
-  Growth Stage :  +0.08%
-  Plateau Stage:  -0.42%
+  Initial Stage:  +5.48%
+  Growth Stage :  -0.01%
+  Plateau Stage:  -3.40%
 
 Running throughput benchmarks with OPS_PER_BENCH = 50000000
 Aligned benchmark physical capacity: 1048576
 
 === DualCacheFF Workload: uniform ===
-  - Throughput (引擎空轉吞吐): 27734440.14 ops/s
-  - DB Penetrates (潛在穿透次數): 46149734
-  - Hit Rate (真實業務命中率): 7.70%
+  - Throughput (引擎空轉吞吐): 46881186.10 ops/s
+  - DB Penetrates (潛在穿透次數): 46275078
+  - Hit Rate (真實業務命中率): 7.45%
 
 
 === StaticDualCache Workload: uniform ===
-  - Throughput (引擎空轉吞吐): 6583012.31 ops/s
-  - DB Penetrates (潛在穿透次數): 45022440
+  - Throughput (引擎空轉吞吐): 15983389.85 ops/s
+  - DB Penetrates (潛在穿透次數): 45018772
   - Hit Rate (真實業務命中率): 9.96%
 
 
 === DualCacheFF Workload: zipf ===
-  - Throughput (引擎空轉吞吐): 12776522.27 ops/s
-  - DB Penetrates (潛在穿透次數): 29840023
-  - Hit Rate (真實業務命中率): 40.32%
+  - Throughput (引擎空轉吞吐): 47254081.08 ops/s
+  - DB Penetrates (潛在穿透次數): 10538877
+  - Hit Rate (真實業務命中率): 78.92%
 
 
 === StaticDualCache Workload: zipf ===
-  - Throughput (引擎空轉吞吐): 12449408.45 ops/s
-  - DB Penetrates (潛在穿透次數): 6909787
-  - Hit Rate (真實業務命中率): 86.18%
+  - Throughput (引擎空轉吞吐): 25608072.75 ops/s
+  - DB Penetrates (潛在穿透次數): 6917911
+  - Hit Rate (真實業務命中率): 86.16%
 
 
 === DualCacheFF Workload: scan ===
-  - Throughput (引擎空轉吞吐): 41888502.63 ops/s
-  - DB Penetrates (潛在穿透次數): 46221577
-  - Hit Rate (真實業務命中率): 7.56%
+  - Throughput (引擎空轉吞吐): 63823309.87 ops/s
+  - DB Penetrates (潛在穿透次數): 46265622
+  - Hit Rate (真實業務命中率): 7.47%
 
 
 === StaticDualCache Workload: scan ===
-  - Throughput (引擎空轉吞吐): 10625566.03 ops/s
-  - DB Penetrates (潛在穿透次數): 45018943
+  - Throughput (引擎空轉吞吐): 17706793.21 ops/s
+  - DB Penetrates (潛在穿透次數): 45019272
   - Hit Rate (真實業務命中率): 9.96%
 
 
 === DualCacheFF Workload: mixed ===
-  - Throughput (引擎空轉吞吐): 39506498.01 ops/s
-  - DB Penetrates (潛在穿透次數): 32839259
-  - Hit Rate (真實業務命中率): 34.32%
+  - Throughput (引擎空轉吞吐): 43135161.28 ops/s
+  - DB Penetrates (潛在穿透次數): 33678795
+  - Hit Rate (真實業務命中率): 32.64%
 
 
 === StaticDualCache Workload: mixed ===
-  - Throughput (引擎空轉吞吐): 19906039.51 ops/s
-  - DB Penetrates (潛在穿透次數): 30839743
-  - Hit Rate (真實業務命中率): 38.32%
+  - Throughput (引擎空轉吞吐): 20497355.00 ops/s
+  - DB Penetrates (潛在穿透次數): 32538800
+  - Hit Rate (真實業務命中率): 34.92%
 ```

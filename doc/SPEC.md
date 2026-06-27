@@ -15,29 +15,34 @@ pub struct Config {
     pub flush_tick_threshold: u64, // TLS forced flush threshold (ticks)
 }
 
-pub trait DaemonSpawner: Send + Sync {
+pub trait Spawner: Send + Sync + 'static {
     fn spawn(&self, f: Box<dyn FnOnce() + Send + 'static>);
 }
 
-pub trait TlsProvider: Send + Sync {
-    fn get_worker_id(&self) -> Option<usize>;
-    fn with_hit_buf(&self, f: &mut dyn FnMut(&mut ([usize; 64], usize)));
-    fn with_l1_filter(&self, f: &mut dyn FnMut(&mut ([u8; 4096], usize)));
-    fn with_last_flush_tick(&self, f: &mut dyn FnMut(&mut u64));
+pub struct DefaultTls;
+impl DefaultTls {
+    pub fn get_worker_id(&self) -> Option<usize>;
+    pub fn is_worker_active(&self, id: usize) -> bool;
+    pub fn with_hit_buf<F, R>(&self, f: F) -> Option<R> where F: FnOnce(&mut ([usize; 64], usize)) -> R;
+    pub fn with_l1_filter<F, R>(&self, f: F) -> Option<R> where F: FnOnce(&mut ([u8; 4096], usize)) -> R;
 }
 
-pub struct DualCacheFF<K, V, S = RandomState, Tls: TlsProvider = DefaultTls> {
+pub struct DualCacheFF<K, V, S = RandomState> {
     pub hasher: S,
     pub t1: Arc<T1<K, V>>,
     pub t2: Arc<T2<K, V>>,
     pub cache: Arc<Cache<K, V>>,
-    pub cmd_tx: Arc<LossyQueue<Command<K, V>>>, // Custom Wait-Free queue
+    pub cmd_tx: Arc<LossyQueue<Command<K, V>>>,
     pub hit_tx: Arc<LossyQueue<[usize; 64]>>,
     pub epoch: Arc<AtomicU32>,
-    pub worker_states: Arc<[WorkerState]>,
-    pub miss_buffers: Arc<[WorkerSlot<K, V>]>,
-    pub daemon_tick: Arc<AtomicU64>,             // Background counter
-    pub tls: Tls, // Zero-cost TLS provider generic parameter
+    pub registry: Arc<crate::registry::ThreadRegistry<K, V>>,
+    pub daemon_tick: Arc<AtomicTick>,
+    pub flush_tick_threshold: TickType,
+    pub is_cold_start: Arc<AtomicBool>,
+    pub tls: DefaultTls,
+    pub shared_core: Arc<SharedCore<K, V>>,
+    pub drop_guard: Arc<DualCacheDropGuard<K, V>>,
+    pub bloom_filter: Option<Arc<dyn crate::filters::BloomFilter<K> + Send + Sync>>,
 }
 ```
 
@@ -158,11 +163,10 @@ To fully support resource-constrained IoT/bare-metal environments (e.g., ESP32-C
 - **Aesthetic / Intent**: Complete physical compile-time erasure. All API methods (`new`, `new_headless`, `get`, `insert`, `remove`, `clear`, `sync`) are annotated with `#[inline(always)]` and evaluate to direct no-ops.
 - **Physical Footprint**: 0 bytes RAM, 0 CPU cycles in release mode. Useful to compile-out caching mechanisms cleanly when building for target nodes with extreme memory constraints.
 
-### 2. Zero-Allocation Static Cache (`StaticDualCache<K, V, const N: usize, S = RandomState>`)
-- **Aesthetic / Intent**: 100% `alloc`-free active caching with direct-mapped layout.
-- **Concurrency Guarantee**: Thread safety is achieved at the slot level. Each of the `N` cache slots (`CacheSlot<K, V>`) possesses its own atomic spinlock (`AtomicBool`) guarding an `UnsafeCell<Option<(K, V)>>`.
-- **Memory Overhead**: Statically allocated in memory (typically in BSS or data segments when declared in global `static`), eliminating dynamic fragmentation risks entirely.
-- **API Parity**: Matches the frontend pipeline of `DualCacheFF` (`get`, `insert`, `remove`, `clear`, `sync`, and `new_headless` returning `(Self, ())`).
+### 2. Static Cache (`StaticDualCache<K, V, S = RandomState>`)
+- **Aesthetic / Intent**: Synchronous, single-threaded/RTOS-friendly cache interface. It eliminates the background Daemon thread and its idle CPU overhead, performing all cache updates synchronously.
+- **Concurrency Guarantee**: Thread safety is achieved by guarding the inner `CoreCache` with a fast, low-overhead atomic spinlock (`AtomicBool`). Since `CoreCache` operations are wait-free and strictly bounded, spin times are extremely short (~10ns).
+- **API Parity**: Exposes the exact same API as `DualCacheFF` (`get`, `insert`, `remove`, `clear`, `sync`, and `new_headless` returning `(Self, DummyDaemon)`).
 
 ---
 
@@ -269,4 +273,17 @@ To fully support resource-constrained IoT/bare-metal environments (e.g., ESP32-C
 ### 2. Observability & Backpressure Telemetry
 - **LossyQueue Telemetry**: Added a `dropped_count` atomic counter and an `on_drop` callback hook to `LossyQueue`. If the system is saturated and enqueuing fails, the caller receives drop notification counts for logging and backpressure adjustment.
 - **Heat Index Queries**: Added `get_heat_rank` to query the current frequency rank of any key, and `boost_heat` / `get_with_weight` to manually bump cache item ranks, providing granular control over the cache's eviction clock.
+
+---
+
+## Phase 17: Zero-Cost Callbacks & Dynamic Poll Tuning (v1.0.0 / v5.0.0)
+
+### 1. Eviction and Promotion Callbacks
+- **Zero-Cost Callback Registration**: Callbacks for evictions (`on_evict`) and promotions (`on_promote`) can be registered at instantiation via constructors like `new_with_callbacks`. 
+- **Underlying Hooking**: These callbacks (`Option<Arc<dyn Fn(K, V) + Send + Sync>>`) are embedded directly into `CoreCache`. When the clock eviction algorithm evicts a node, or when an item is promoted to a higher cache tier, the respective closure is executed with minimal overhead.
+
+### 2. Dynamic Poll Tuning (Power-Saving Mode)
+- **Concept**: To avoid constant thread spinning/polling when the command queue is quiet, the background Daemon now supports adjusting its poll interval via `Command::SetPollInterval(us)`.
+- **Power Efficiency Integration**: The caller can dynamically signal the Daemon to change its poll interval, allowing fine-grained control over background latency vs power consumption in both standard and embedded targets.
+
 
