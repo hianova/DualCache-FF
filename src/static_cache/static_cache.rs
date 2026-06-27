@@ -78,13 +78,13 @@ where
         Self::with_hasher_and_callbacks(config, hasher, None, None)
     }
 
-    /// Create a `StaticDualCache` with a custom hasher and eviction/promotion callbacks.
     pub fn with_hasher_and_callbacks(
-        config: Config,
+        mut config: Config,
         hasher: S,
         on_evict: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
         on_promote: Option<Arc<dyn Fn(K, V) + Send + Sync>>,
     ) -> Self {
+        config.threads = 0;
         let t1 = Arc::new(T1::new(config.capacity));
         let t2 = Arc::new(T2::new(config.capacity));
         let cache = Arc::new(Cache::new(config.capacity));
@@ -122,6 +122,10 @@ where
     /// No-op sync to maintain API symmetry with DualCacheFF.
     #[inline(always)]
     pub fn sync(&self) {}
+
+    /// No-op quiescent to maintain API symmetry with DualCacheFF.
+    #[inline(always)]
+    pub fn quiescent(&self) {}
 
     /// Returns the number of active/occupied entries in (T1, T2, Core Cache)
     pub fn entry_count(&self) -> (usize, usize, usize) {
@@ -267,6 +271,29 @@ where
         core.handle_clear();
         self.release_lock();
     }
+
+    /// Returns the health status of the Daemon (always Stopped for StaticDualCache).
+    #[inline(always)]
+    pub fn daemon_health(&self) -> crate::daemon::DaemonStatus {
+        crate::daemon::DaemonStatus::Stopped
+    }
+
+    /// Restart the daemon if it has panicked or stopped (no-op for StaticDualCache).
+    #[cfg(feature = "std")]
+    #[inline(always)]
+    pub fn restart_daemon<Sp: crate::components::Spawner>(&self, _spawner: Sp, _poll_us: u64) {}
+
+    /// Shutdown the daemon gracefully, waiting for queues to drain (no-op for StaticDualCache).
+    #[inline(always)]
+    pub fn shutdown_gracefully(&self, _timeout: Option<core::time::Duration>) {}
+
+    /// Suspend the background Daemon thread (no-op for StaticDualCache).
+    #[inline(always)]
+    pub fn suspend(&self) {}
+
+    /// Resume the background Daemon thread (no-op for StaticDualCache).
+    #[inline(always)]
+    pub fn resume(&self) {}
 }
 
 #[cfg(test)]

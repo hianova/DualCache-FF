@@ -1,7 +1,8 @@
 
 
 use dualcache_ff::{Config, DualCacheFF};
-use dualcache_ff::unsafe_core::{Node, WorkerSlot};
+use dualcache_ff::storage::Node;
+use dualcache_ff::workers::WorkerSlot;
 use std::thread;
 use std::time::Duration;
 

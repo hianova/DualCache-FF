@@ -5,7 +5,9 @@ use alloc::{vec, vec::Vec, boxed::Box};
 
 use crate::daemon::{Command, Daemon, DaemonStatus, DaemonGuard};
 use crate::lossy_queue::{LossyQueue, OneshotAck};
-use crate::unsafe_core::{Cache, T1, T2, WorkerSlot};
+use crate::storage::Cache;
+use crate::filters::{T1, T2};
+use crate::workers::WorkerSlot;
 use ahash::RandomState;
 use core::hash::{BuildHasher, Hash, Hasher};
 use crate::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -324,14 +326,26 @@ where
 
 
 
-// ── Public API (std + no_std) ─────────────────────────────────────────────
-
 impl<K, V, S> DualCacheFF<K, V, S>
 where
     K: Hash + Eq + Send + Sync + Clone + 'static,
     V: Send + Sync + Clone + 'static,
     S: BuildHasher + Clone + Send + 'static,
 {
+    /// Manually declare a quiescent (quiet) state for the current thread.
+    ///
+    /// This clears the current thread's local epoch marker, indicating it is not
+    /// accessing any cached data. This allows the background Daemon thread to safely
+    /// reclaim any retired memory nodes. It should be called periodically by threads
+    /// that perform long-running tasks or stay active without making cache reads/writes.
+    #[inline(always)]
+    pub fn quiescent(&self) {
+        if let Some(id) = self.tls.get_worker_id() {
+            let state = self.get_worker_state(id);
+            state.local_epoch.store(0, Ordering::Release);
+        }
+    }
+
     /// Returns the health status of the Daemon background thread.
     pub fn daemon_health(&self) -> crate::daemon::DaemonStatus {
         let val = self.shared_core.status.load(crate::sync::atomic::Ordering::Acquire);
@@ -409,10 +423,9 @@ where
             }
         });
 
-        // ── flush all worker slots ───────────────────────────────────
         for i in 0..self.registry.len() {
             let slot = self.get_miss_buffer(i);
-            let buf: &mut crate::unsafe_core::BatchBuf<K, V> = slot.get_mut_safe();
+            let buf: &mut crate::workers::BatchBuf<K, V> = slot.get_mut_safe();
             if !buf.is_empty() {
                 let batch = buf.drain_to_vec();
                 let _ = self.cmd_tx.try_send(Command::BatchInsert(batch));
@@ -488,7 +501,6 @@ where
                 {
                     res = Some(node.value.clone());
                     hit_g_idx = Some(node.g_idx);
-                    self.tls.with_warmup_state(|s| *s = s.saturating_add(10));
                 }
 
             // ── T2 check ──────────────────────────────────────────────────────
@@ -769,7 +781,7 @@ where
         let mut option_kv = Some((key, value));
         let pushed_to_buf = self.with_worker_id(|id| {
             let (k, v) = option_kv.take().unwrap();
-            let buf: &mut crate::unsafe_core::BatchBuf<K, V> = self.get_miss_buffer(id).get_mut_safe();
+            let buf: &mut crate::workers::BatchBuf<K, V> = self.get_miss_buffer(id).get_mut_safe();
             let capacity_flush = buf.push((k, v, hash, is_t1));
 
             if capacity_flush || (should_time_flush && !buf.is_empty()) {
@@ -804,7 +816,7 @@ where
     pub fn remove(&self, key: &K) {
         let hash = self.hash(key);
         self.with_worker_id(|id| {
-            let buf: &mut crate::unsafe_core::BatchBuf<K, V> = self.get_miss_buffer(id).get_mut_safe();
+            let buf: &mut crate::workers::BatchBuf<K, V> = self.get_miss_buffer(id).get_mut_safe();
             if !buf.is_empty() {
                 let batch = buf.drain_to_vec();
                 let _ = self.cmd_tx.try_send(Command::BatchInsert(batch));
@@ -853,14 +865,12 @@ where
     #[inline(always)]
     fn record_hit(&self, global_idx: usize) {
         let opt = self.with_hit_buf(|state| {
-            let idx = state.1;
-            state.0[idx] = global_idx;
+            state.0[state.1] = global_idx;
             state.1 += 1;
             if state.1 == 64_usize {
                 let _ = self.hit_tx.try_send(state.0);
                 #[cfg(feature = "std")]
                 self.wake_daemon_if_parked();
-                state.0 = [usize::MAX; 64];
                 state.1 = 0;
             }
         });
@@ -1154,5 +1164,42 @@ mod tests {
             cache.shared_core.status.load(Ordering::Acquire),
             crate::daemon::DaemonStatus::Panicked as u8
         );
+    }
+
+    #[test]
+    fn test_quiescent() {
+        let config = Config::new_expert(256, 8, 8, 200, 8);
+        let cache = DualCacheFF::<u64, u64>::new(config);
+        
+        // Call quiescent
+        cache.quiescent();
+        
+        // Also test StaticDualCache quiescent
+        let static_cache = crate::static_cache::StaticDualCache::<u64, u64>::new(Config::new_expert(256, 8, 8, 200, 8));
+        static_cache.quiescent();
+        
+        cache.shutdown_gracefully(None);
+    }
+}
+
+#[cfg(test)]
+mod extra_coverage_tests {
+    use super::*;
+    use crate::config::Config;
+    #[test]
+    fn test_wake_daemon_if_parked() {
+        let config = Config::new_expert(256, 8, 8, 200, 2);
+        let cache = DualCacheFF::<u64, u64>::new(config);
+        
+        // Since is_parked is an atomic bool in shared_core, we can set it
+        cache.shared_core.is_parked.store(true, core::sync::atomic::Ordering::Relaxed);
+        cache.wake_daemon_if_parked();
+        
+        // To test when thread is None
+        if let Ok(mut guard) = cache.shared_core.daemon_thread.lock() {
+            *guard = None;
+        }
+        cache.shared_core.is_parked.store(true, core::sync::atomic::Ordering::Relaxed);
+        cache.wake_daemon_if_parked();
     }
 }

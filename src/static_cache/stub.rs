@@ -49,4 +49,22 @@ impl<K, V> DualCacheStub<K, V> {
     /// Exposes API parity with `DualCacheFF::sync`
     #[inline(always)]
     pub fn sync(&self) {}
+
+    /// Exposes API parity with `DualCacheFF::daemon_health`
+    #[inline(always)]
+    pub fn daemon_health(&self) -> crate::daemon::DaemonStatus {
+        crate::daemon::DaemonStatus::Stopped
+    }
+
+    /// Exposes API parity with `DualCacheFF::shutdown_gracefully`
+    #[inline(always)]
+    pub fn shutdown_gracefully(&self, _timeout: Option<core::time::Duration>) {}
+
+    /// Exposes API parity with `DualCacheFF::suspend`
+    #[inline(always)]
+    pub fn suspend(&self) {}
+
+    /// Exposes API parity with `DualCacheFF::resume`
+    #[inline(always)]
+    pub fn resume(&self) {}
 }

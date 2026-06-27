@@ -4,7 +4,7 @@
 //! read-to-write ratios and scan-resistance. Built for high-performance and `no_std` embedded
 //! target environments.
 //!
-//! ## 🧠 Key Concepts & Features
+//! ## Key Concepts & Features
 //!
 //! - **Wait-Free Read Path & QSBR**: All reads are completely non-blocking and wait-free.
 //!   Memory reclamation is handled via Quiet State Based Reclamation (QSBR), allowing readers
@@ -27,12 +27,14 @@ extern crate alloc;
 #[doc(hidden)]
 pub mod arena;
 #[doc(hidden)]
+#[cfg(feature = "std")]
+pub mod cache;
+#[doc(hidden)]
 pub mod components;
 #[doc(hidden)]
 pub mod config;
 #[doc(hidden)]
-#[cfg(feature = "std")]
-pub mod cache;
+pub mod core_cache;
 #[doc(hidden)]
 #[doc(hidden)]
 pub mod daemon;
@@ -41,30 +43,27 @@ pub mod filters;
 #[doc(hidden)]
 pub mod lossy_queue;
 #[doc(hidden)]
-pub mod storage;
-#[doc(hidden)]
-pub mod unsafe_core;
-#[doc(hidden)]
-pub mod workers;
-#[doc(hidden)]
-pub mod static_cache;
-#[doc(hidden)]
-pub mod core_cache;
+pub mod registry;
 #[doc(hidden)]
 pub mod shared_core;
 #[doc(hidden)]
-pub mod registry;
+pub mod static_cache;
+#[doc(hidden)]
+pub mod storage;
 pub(crate) mod sync;
+#[doc(hidden)]
+pub mod workers;
 
+pub use components::{CachePadded, WorkerState};
 pub use config::Config;
-pub use components::{WorkerState, CachePadded};
-pub use static_cache::static_cache::StaticDualCache;
 pub use filters::BloomFilter;
+pub use static_cache::static_cache::StaticDualCache;
+
+pub use daemon::DaemonStatus;
 
 #[cfg(feature = "std")]
-pub use cache::{DualCacheFF, ColdStartSession};
+pub use cache::{ColdStartSession, DualCacheFF};
 #[cfg(feature = "std")]
 pub use components::{DefaultSpawner, DefaultTls, Spawner};
 #[cfg(feature = "std")]
-pub use daemon::{Daemon, DaemonStatus, CacheTier};
-
+pub use daemon::{CacheTier, Daemon};

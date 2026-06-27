@@ -12,7 +12,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
 use dualcache_ff::{Config, DualCacheFF};
 
 #[derive(Debug, Clone)]
-#[cfg_attr(any(feature = "arbitrary", fuzzing, test), derive(arbitrary::Arbitrary))]
+#[cfg_attr(any(fuzzing, test), derive(arbitrary::Arbitrary))]
 pub enum Action {
     Insert(u8, u16),
     Get(u8),

@@ -4,7 +4,7 @@ use alloc::{boxed::Box, vec, vec::Vec};
 use core::sync::atomic::{AtomicPtr, AtomicBool, Ordering};
 use crate::sync::Arc;
 use crate::components::WorkerState;
-use crate::unsafe_core::WorkerSlot;
+use crate::workers::WorkerSlot;
 
 
 /// Inner structures of the worker registry holding states and sharded miss buffers.
@@ -37,10 +37,9 @@ impl<K, V> Drop for ThreadRegistry<K, V> {
 }
 
 impl<K, V> ThreadRegistry<K, V> {
-    /// Return the raw pointer to the current inner registry state.
     #[inline(always)]
     pub fn get_inner(&self) -> *mut RegistryInner<K, V> {
-        self.inner.load(Ordering::Acquire)
+        self.inner.load(Ordering::Relaxed)
     }
 
     /// Return the number of registered worker/thread slots.

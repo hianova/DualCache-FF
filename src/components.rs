@@ -139,7 +139,7 @@ pub mod std_components {
         }
     }
 
-    static ALLOCATOR: IdAllocator = IdAllocator::new();
+    static ALLOCATOR: IdAllocator = super::std_components::IdAllocator::new();
 
     struct ThreadIdGuard {
         id: usize,
@@ -332,5 +332,25 @@ mod tests {
         for _ in 0..8193 {
             alloc.alloc();
         }
+    }
+}
+
+#[cfg(test)]
+mod extra_coverage_tests {
+    use super::*;
+    use super::std_components::IdAllocator;
+    #[test]
+    fn test_allocator_missed_lines() {
+        let alloc = IdAllocator::new();
+        // line 137 fallback false
+        assert_eq!(alloc.is_allocated(8192), false); 
+        
+        let id = alloc.alloc();
+        assert_eq!(alloc.is_allocated(id), true);
+        
+        // lines 181-183 DefaultTls
+        let tls = DefaultTls::default();
+        // Since is_worker_active delegates to ALLOCATOR.is_allocated(id), we check the 8192 boundary
+        assert_eq!(tls.is_worker_active(8192), false);
     }
 }

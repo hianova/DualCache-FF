@@ -137,7 +137,7 @@ where
             // Actually, we acquire the lock to do anything.
             let mut core = self.core.acquire_lock();
 
-            // ── Drain command queue (up to 8192 commands per poll) ────────
+            // ── Phase 0: Drain command queue (up to 8192 commands per poll) ────────
             let mut shutting_down_ack = None;
             loop {
                 match self.cmd_rx.try_recv() {
@@ -154,6 +154,15 @@ where
                         }
                     }
                     None => break,
+                }
+            }
+
+            // ── Phase 1: Collect hit indices into accumulator ─────────────────
+            while let Some(batch) = self.hit_rx.try_recv() {
+                core.process_hits(&batch);
+                has_commands = true;
+                if core.hit_accumulator.len() >= 8192 {
+                    break;
                 }
             }
 
@@ -176,14 +185,6 @@ where
                 }
             }
 
-            // ── Phase 1: Collect hit indices into accumulator ─────────────────
-            while let Some(batch) = self.hit_rx.try_recv() {
-                core.process_hits(&batch);
-                has_commands = true;
-                if core.hit_accumulator.len() >= 8192 {
-                    break;
-                }
-            }
 
             // ── Maintenance (GC + hit processing + eviction) ──────────────
             core.maintenance();

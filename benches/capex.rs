@@ -1,6 +1,6 @@
 mod common;
 use common::Cache;
-use dualcache_ff::{Config, DualCacheFF};
+use dualcache_ff::Config;
 use memory_stats::memory_stats;
 use moka::sync::Cache as MokaCache;
 use rand::Rng;
@@ -49,11 +49,11 @@ where
             if rng.gen_bool(0.8) {
                 get_ops += 1;
                 if cache.get(&key).is_none() {
-                    cache.insert(key, key);
+                    cache.insert(key, key); 
                     misses += 1;
                 }
             } else {
-                cache.insert(key, key);
+                cache.insert(key, key); 
             }
         }
         cache.sync();
@@ -100,9 +100,9 @@ fn main() {
         .collect();
 
     if args.iter().any(|arg| arg == "--dual") {
-        measure_capex("DualCacheFF", &keys, || {
+        measure_capex("DualCacheFF (Static)", &keys, || {
             let config = Config::new_expert(2048, 2048, 2048, 60, 1);
-            Arc::new(DualCacheFF::new(config))
+            Arc::new(dualcache_ff::StaticDualCache::new(config))
         });
         return;
     } else if args.iter().any(|arg| arg == "--moka") {

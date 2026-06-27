@@ -363,6 +363,7 @@ where
 
         if !self.hit_accumulator.is_empty() {
             self.hit_accumulator.sort_unstable();
+            self.hit_accumulator.dedup();
 
             for &g_idx in &self.hit_accumulator {
                 self.arena.set_rank(g_idx, MAX_RANK);

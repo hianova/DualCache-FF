@@ -20,7 +20,7 @@ fn measure_dualcacheff() {
     use dualcache_ff::{Config, DualCacheFF};
 
     let peak = {
-        let config = Config::with_memory_budget(((CAPACITY * 128 / 1024 / 1024)), 60);
+        let config = Config::with_memory_budget(CAPACITY * 128 / 1024 / 1024, 60);
         let cache = DualCacheFF::new(config);
         let _init = print_memory("After Init");
 
@@ -115,19 +115,31 @@ fn main() {
 
     if args.iter().any(|arg| arg == "--bench") && args.len() == 2 {
         // Run as coordinator if invoked by cargo bench
-    } else if args.len() > 1 && !args.contains(&"--bench".to_string()) && !args.contains(&"--full_bench".to_string()) {
-         return; // Unknown or irrelevant flags passed by cargo, ignore unless it's our target.
+    } else if args.len() > 1
+        && !args.contains(&"--bench".to_string())
+        && !args.contains(&"--full_bench".to_string())
+    {
+        return; // Unknown or irrelevant flags passed by cargo, ignore unless it's our target.
     }
 
     println!("Running Memory Benchmarks (Isolated Processes)...");
     let exe = std::env::current_exe().unwrap();
-    
-    std::process::Command::new(&exe).arg("--dual").status().unwrap();
+
+    std::process::Command::new(&exe)
+        .arg("--dual")
+        .status()
+        .unwrap();
     if is_full_bench {
-        std::process::Command::new(&exe).arg("--moka").status().unwrap();
-        std::process::Command::new(&exe).arg("--tiny").status().unwrap();
+        std::process::Command::new(&exe)
+            .arg("--moka")
+            .status()
+            .unwrap();
+        std::process::Command::new(&exe)
+            .arg("--tiny")
+            .status()
+            .unwrap();
     }
-    
+
     println!("\n========== Summary ==========");
     println!("Refer to output logs above for per-item overheads.");
 }

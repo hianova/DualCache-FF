@@ -1,5 +1,5 @@
 use dualcache_ff::{Config, DualCacheFF};
-use dualcache_ff::unsafe_core::{WorkerSlot};
+use dualcache_ff::workers::{WorkerSlot};
 
 #[test]
 fn test_config_normal_poll() {
@@ -143,7 +143,7 @@ fn test_shared_core_contention() {
 fn test_miscellaneous_coverage() {
     let _ws: dualcache_ff::components::WorkerState = Default::default();
     
-    let _bb: dualcache_ff::unsafe_core::BatchBuf<u64, u64> = Default::default();
+    let _bb: dualcache_ff::workers::BatchBuf<u64, u64> = Default::default();
     
     let _static_cache = dualcache_ff::static_cache::StaticDualCache::<u64, u64>::new_headless(Config::new_expert(16, 2, 2, 100, 1));
     

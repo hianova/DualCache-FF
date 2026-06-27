@@ -1,7 +1,7 @@
 
 
 use dualcache_ff::{Config, DualCacheFF};
-use dualcache_ff::unsafe_core::{BatchBuf};
+use dualcache_ff::workers::{BatchBuf};
 use dualcache_ff::lossy_queue::LossyQueue;
 use std::thread;
 use std::time::Duration;
