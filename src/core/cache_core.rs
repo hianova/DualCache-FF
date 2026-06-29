@@ -122,12 +122,9 @@ where
     /// Try to reclaim retired nodes and push them back to the Arena's free list.
     /// Should be called periodically by a background daemon.
     pub fn try_reclaim(&self, node: *mut super::qsbr::ThreadStateNode) {
-        let reclaimed = super::qsbr::try_reclaim(node);
-        for &idx in &reclaimed {
-            if idx != u16::MAX {
-                unsafe { self.arena.free(idx as usize) };
-            }
-        }
+        super::qsbr::try_reclaim(node, |idx| {
+            unsafe { self.arena.free(idx as usize) };
+        });
     }
 }
 

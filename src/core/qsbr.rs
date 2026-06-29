@@ -129,28 +129,28 @@ pub fn retire(index: usize, node: *mut ThreadStateNode) {
 }
 
 /// Try to reclaim memory from the thread-local garbage queue. 
-/// Returns a list of reclaimed indices (up to 16 at a time to bound latency).
-pub fn try_reclaim(node: *mut ThreadStateNode) -> [u16; 16] {
+/// Calls the provided closure for each reclaimed node index.
+pub fn try_reclaim<F: FnMut(u16)>(node: *mut ThreadStateNode, mut f: F) {
     // Advance the global epoch. Threads that pin() after this will read the new epoch.
     // This allows previously retired nodes to eventually be reclaimed once older active epochs clear out.
     GLOBAL_EPOCH.fetch_add(1, Ordering::Relaxed);
 
-    let mut reclaimed = [u16::MAX; 16];
-    let mut count = 0;
-    
     let min_epoch = get_min_epoch();
     
     unsafe {
         let q = &mut (*node).garbage_queue;
-        while q.tail < q.head && count < 16 {
+        
+        // Debug check to ensure we aren't leaking and overwriting memory in the ring buffer
+        debug_assert!(q.head - q.tail <= GARBAGE_CAP, "QSBR garbage queue overflow! Memory leaked.");
+        
+        while q.tail < q.head {
             let idx = q.tail % GARBAGE_CAP;
             let retired = q.items[idx];
             
             // If the retired epoch is strictly less than the minimum active epoch across all threads,
             // no thread can possibly have a reference to this node anymore.
             if retired.epoch < min_epoch as u64 {
-                reclaimed[count] = retired.index;
-                count += 1;
+                f(retired.index);
                 q.tail += 1;
             } else {
                 // Epochs are monotonically increasing. If this one isn't safe, neither are the rest.
@@ -158,8 +158,6 @@ pub fn try_reclaim(node: *mut ThreadStateNode) -> [u16; 16] {
             }
         }
     }
-    
-    reclaimed
 }
 
 fn get_min_epoch() -> usize {
