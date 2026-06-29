@@ -41,3 +41,13 @@ pub mod thread {
 pub mod thread {
     pub use loom::thread::{spawn, yield_now, JoinHandle};
 }
+
+#[cfg(not(loom))]
+pub mod hint {
+    pub use core::hint::spin_loop;
+}
+
+#[cfg(loom)]
+pub mod hint {
+    pub use loom::hint::spin_loop;
+}

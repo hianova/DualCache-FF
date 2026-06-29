@@ -79,7 +79,10 @@ impl<K, V, const N: usize> Arena<K, V, N> {
                     }
                     return Some(idx);
                 }
-                Err(h) => head = h,
+                Err(h) => {
+                    head = h;
+                    crate::sync::hint::spin_loop();
+                }
             }
         }
     }
@@ -102,7 +105,10 @@ impl<K, V, const N: usize> Arena<K, V, N> {
             
             match self.free_head.compare_exchange_weak(head, new_head, Ordering::Release, Ordering::Relaxed) {
                 Ok(_) => break,
-                Err(h) => head = h,
+                Err(h) => {
+                    head = h;
+                    crate::sync::hint::spin_loop();
+                }
             }
         }
     }

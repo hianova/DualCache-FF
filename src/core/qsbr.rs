@@ -4,7 +4,14 @@ use crate::sync::atomic::{AtomicPtr, AtomicUsize, AtomicBool, Ordering};
 use alloc::boxed::Box;
 use core::ptr;
 
+#[cfg(not(loom))]
 lazy_static::lazy_static! {
+    static ref GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
+    static ref THREAD_STATES: AtomicPtr<ThreadStateNode> = AtomicPtr::new(ptr::null_mut());
+}
+
+#[cfg(loom)]
+loom::lazy_static! {
     static ref GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
     static ref THREAD_STATES: AtomicPtr<ThreadStateNode> = AtomicPtr::new(ptr::null_mut());
 }
@@ -15,7 +22,10 @@ struct RetiredNode {
     epoch: u64,
 }
 
+#[cfg(not(loom))]
 const GARBAGE_CAP: usize = 16384;
+#[cfg(loom)]
+const GARBAGE_CAP: usize = 16;
 pub struct GarbageQueue {
     items: [RetiredNode; GARBAGE_CAP],
     head: usize,
@@ -65,7 +75,7 @@ pub fn register_thread() -> *mut ThreadStateNode {
         
         // Yield to encourage a CAS collision for coverage
         #[cfg(test)]
-        std::thread::yield_now();
+        crate::sync::thread::yield_now();
 
         match THREAD_STATES.compare_exchange_weak(
             head,
@@ -74,7 +84,10 @@ pub fn register_thread() -> *mut ThreadStateNode {
             Ordering::Relaxed,
         ) {
             Ok(_) => break node,
-            Err(new_head) => head = new_head,
+            Err(new_head) => {
+                head = new_head;
+                crate::sync::hint::spin_loop();
+            }
         }
     }
 }
