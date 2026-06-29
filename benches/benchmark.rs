@@ -13,9 +13,9 @@ const TOTAL_OPS: usize = 10_000_000;
 const OPS_PER_THREAD: usize = TOTAL_OPS / THREAD_COUNT;
 const DATASET_SIZE: u64 = 1_000_000;
 const CACHE_L1_SIZE: usize = 1024; // Per thread
-const CACHE_T0_CAP: usize = 256;
+const CACHE_T0_CAP: usize = 65536;
 const CACHE_T1_CAP: usize = 4096;
-const CACHE_T2_CAP: usize = 131072;
+const CACHE_T2_CAP: usize = 262144;
 const TOTAL_CAP: usize = CACHE_T0_CAP + CACHE_T1_CAP + CACHE_T2_CAP;
 
 type BenchCache = DualCacheFF<u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, CACHE_T0_CAP, CACHE_T1_CAP, CACHE_T2_CAP, TOTAL_CAP>;
@@ -46,17 +46,30 @@ fn run_workload(
     base_cache.set_daemon_mode(true);
     let cache: Arc<BenchCache> = Arc::new(base_cache);
 
+    let mut all_ops_data = Vec::new();
+    for thread_id in 0..THREAD_COUNT {
+        let mut rng = rand::thread_rng();
+        let uniform = Uniform::new(0, DATASET_SIZE);
+        let zipf = Zipf::new(DATASET_SIZE, 0.99).unwrap();
+        let mut ops_data = Vec::with_capacity(OPS_PER_THREAD);
+        for i in 0..OPS_PER_THREAD {
+            let mut key = match pattern {
+                AccessPattern::Uniform => uniform.sample(&mut rng),
+                AccessPattern::Zipf => zipf.sample(&mut rng) as u64,
+                AccessPattern::Scan => ((i + thread_id * OPS_PER_THREAD) as u64) % DATASET_SIZE,
+            };
+            if shift_dataset && i > OPS_PER_THREAD / 2 {
+                key = (key + DATASET_SIZE / 2) % DATASET_SIZE;
+            }
+            let is_read = rng.gen_range(0..100) < read_ratio_percent;
+            ops_data.push((key, is_read));
+        }
+        all_ops_data.push(ops_data);
+    }
+
     let warmup_handle = cache.register_thread();
-    let mut rng = rand::thread_rng();
-    let uniform = Uniform::new(0, DATASET_SIZE);
-    let zipf = Zipf::new(DATASET_SIZE, 1.5).unwrap();
-    
-    for _ in 0..100_000 {
-        let key = match pattern {
-            AccessPattern::Uniform => uniform.sample(&mut rng),
-            AccessPattern::Zipf => zipf.sample(&mut rng) as u64,
-            AccessPattern::Scan => uniform.sample(&mut rng), // Warmup uniform for scan
-        };
+    // Warmup using the actual pattern
+    for &(key, _) in all_ops_data[0].iter().take(10_000) {
         cache.insert(key, key, &warmup_handle);
     }
 
@@ -75,37 +88,16 @@ fn run_workload(
         for thread_id in 0..THREAD_COUNT {
             let cache_clone = cache.clone();
             let barrier_clone = barrier.clone();
+            let ops_data = all_ops_data[thread_id].clone();
             
             handles.push(s.spawn(move |_| {
                 let tls_handle = cache_clone.register_thread();
-                let mut rng = rand::thread_rng();
-                let uniform_dist = Uniform::new(0, DATASET_SIZE);
-                let zipf_dist = Zipf::new(DATASET_SIZE, 1.5).unwrap();
                 
                 let mut hist = Histogram::<u64>::new(3).unwrap();
                 let mut hits = 0;
                 let mut reads = 0;
                 let mut local_ops = 0;
                 
-                let shift_offset = if shift_dataset { DATASET_SIZE / 2 } else { 0 };
-                let shift_trigger = OPS_PER_THREAD / 2; // Shift halfway
-
-                // Pre-generate operations to eliminate RNG overhead from the benchmark loop
-                let mut ops_data = Vec::with_capacity(OPS_PER_THREAD);
-                for i in 0..OPS_PER_THREAD {
-                    let mut key = match pattern {
-                        AccessPattern::Uniform => uniform_dist.sample(&mut rng),
-                        AccessPattern::Zipf => zipf_dist.sample(&mut rng) as u64,
-                        AccessPattern::Scan => ((i + thread_id * OPS_PER_THREAD) as u64) % DATASET_SIZE,
-                    };
-                    
-                    if shift_dataset && i > shift_trigger {
-                        key = (key + shift_offset) % DATASET_SIZE;
-                    }
-                    let is_read = rng.gen_range(0..100) < read_ratio_percent;
-                    ops_data.push((key, is_read));
-                }
-
                 barrier_clone.wait(); // Synchronize all threads to start
 
                 for (i, &(key, is_read)) in ops_data.iter().enumerate() {

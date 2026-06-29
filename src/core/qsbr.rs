@@ -11,11 +11,11 @@ lazy_static::lazy_static! {
 
 #[derive(Copy, Clone)]
 struct RetiredNode {
-    index: u16,
+    index: u32,
     epoch: u64,
 }
 
-const GARBAGE_CAP: usize = 1024;
+const GARBAGE_CAP: usize = 16384;
 pub struct GarbageQueue {
     items: [RetiredNode; GARBAGE_CAP],
     head: usize,
@@ -38,15 +38,17 @@ pub struct ThreadStateNode {
     pub epoch: AtomicUsize,
     pub next: *mut ThreadStateNode,
     pub garbage_queue: GarbageQueue,
+    pub local_free: core::cell::UnsafeCell<Vec<u32>>,
 }
 
 impl ThreadStateNode {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             active: AtomicBool::new(false),
             epoch: AtomicUsize::new(0),
             next: ptr::null_mut(),
             garbage_queue: GarbageQueue::new(),
+            local_free: core::cell::UnsafeCell::new(Vec::with_capacity(256)),
         }
     }
 }
@@ -121,7 +123,7 @@ pub fn retire(index: usize, node: *mut ThreadStateNode) {
         let q = &mut (*node).garbage_queue;
         let idx = q.head % GARBAGE_CAP;
         q.items[idx] = RetiredNode {
-            index: index as u16,
+            index: index as u32,
             epoch,
         };
         q.head += 1;
@@ -130,7 +132,7 @@ pub fn retire(index: usize, node: *mut ThreadStateNode) {
 
 /// Try to reclaim memory from the thread-local garbage queue. 
 /// Calls the provided closure for each reclaimed node index.
-pub fn try_reclaim<F: FnMut(u16)>(node: *mut ThreadStateNode, mut f: F) {
+pub fn try_reclaim<F: FnMut(u32)>(node: *mut ThreadStateNode, mut f: F) {
     // Advance the global epoch. Threads that pin() after this will read the new epoch.
     // This allows previously retired nodes to eventually be reclaimed once older active epochs clear out.
     GLOBAL_EPOCH.fetch_add(1, Ordering::Relaxed);
@@ -176,3 +178,14 @@ fn get_min_epoch() -> usize {
 }
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_qsbr_thread_state_node_new() {
+        let node = ThreadStateNode::new();
+        assert_eq!(node.epoch.load(Ordering::Relaxed), 0);
+    }
+}

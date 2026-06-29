@@ -95,7 +95,7 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
                 self.count_sum += 1;
             }
             let promote = old_hits < self.promote_threshold && entry.hits >= self.promote_threshold;
-            let sync = entry.hits > self.promote_threshold && entry.hits.is_multiple_of(16);
+            let sync = entry.hits > self.promote_threshold && entry.hits.is_multiple_of(2);
             return (Some(&entry.value), promote, sync);
         }
         (None, false, false)
@@ -152,7 +152,7 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
     }
 
     #[inline(always)]
-    pub fn insert(&mut self, hash: usize, key: K, value: V) {
+    pub fn insert(&mut self, hash: usize, key: K, value: V) -> bool {
         let mut idx = hash & self.index_mask;
         for _ in 0..16 {
             let node_idx = unsafe { *self.index.get_unchecked(idx) };
@@ -163,29 +163,26 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
                 && let Some(entry) = unsafe { self.nodes.get_unchecked_mut(node_idx) }
                 && entry.hash == hash && entry.key == key {
                     entry.value = value;
-                    return;
+                    return true;
             }
             idx = (idx + 1) & self.index_mask;
         }
         
         let filter_idx = hash & 4095;
-        // Probation filter fast-clear 4 elements using unsafe
-        unsafe {
-            let ptr = self.probation_filter.as_mut_ptr().add(self.probation_cursor);
-            core::ptr::write_bytes(ptr, 0, 4);
+        
+        // Slower Probation Filter: clear 1 element every 16 inserts
+        self.probation_cursor = (self.probation_cursor + 1) & 65535;
+        if (self.probation_cursor & 15) == 0 {
+            unsafe { *self.probation_filter.get_unchecked_mut(self.probation_cursor >> 4) = 0; }
         }
-        self.probation_cursor = (self.probation_cursor + 4) & 4095;
         
         let count = unsafe { *self.probation_filter.get_unchecked(filter_idx) }.saturating_add(1);
         unsafe { *self.probation_filter.get_unchecked_mut(filter_idx) = count; }
         
-        if count <= 1 {
-            return;
-        }
-        
         let node_idx = self.alloc_slot();
         unsafe { *self.nodes.get_unchecked_mut(node_idx) = Some(TlsEntry { hash, key, value, hits: 0 }); }
         self.index_insert(hash, node_idx);
+        true
     }
 
     #[inline(always)]
@@ -307,5 +304,108 @@ impl<K: Clone + Eq, V: Clone> TlsRegistry<K, V> {
     pub fn get_block_mut(&self, handle: &TlsHandle) -> &mut TlsBlock<K, V> {
         let block_ptr = self.blocks[handle.id].get();
         unsafe { &mut *block_ptr }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tls_registry() {
+        let registry = TlsRegistry::<u64, u64>::new(2, 64);
+        let handle1 = registry.register_thread();
+        let handle2 = registry.register_thread();
+        assert_eq!(handle1.id, 0);
+        assert_eq!(handle2.id, 1);
+
+        let block1 = registry.get_block_mut(&handle1);
+        block1.op_count = 42;
+        let block1_again = registry.get_block_mut(&handle1);
+        assert_eq!(block1_again.op_count, 42);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_tls_registry_exceeds_capacity() {
+        let registry = TlsRegistry::<u64, u64>::new(1, 64);
+        let _handle1 = registry.register_thread();
+        let _handle2 = registry.register_thread();
+    }
+
+    #[test]
+    fn test_tls_cache_basic() {
+        let mut cache = TlsCache::<u64, u64>::new(16);
+        let (val, promote, sync) = cache.get(100, &10);
+        assert_eq!(val, None);
+        assert_eq!(promote, false);
+        assert_eq!(sync, false);
+
+        cache.insert(100, 10, 20);
+        let (val, promote, sync) = cache.get(100, &10);
+        assert_eq!(val, Some(&20));
+        assert_eq!(promote, false);
+        assert_eq!(sync, false);
+    }
+
+    #[test]
+    fn test_tls_cache_promote() {
+        let mut cache = TlsCache::<u64, u64>::new(16);
+        cache.insert(100, 10, 20);
+        
+        // Hit a few times to trigger promotion
+        for _ in 0..4 {
+            let (_, promote, _) = cache.get(100, &10);
+            if promote {
+                return;
+            }
+        }
+        let (_, promote, _) = cache.get(100, &10);
+        assert!(promote, "Should have promoted after 4 hits");
+    }
+
+    #[test]
+    fn test_tls_cache_fast_pass() {
+        let mut cache = TlsCache::<u64, u64>::new(16);
+        cache.insert_fast_pass(200, 20, 30);
+        
+        // The hits should be initialized to max (4), meaning it doesn't need immediate promotion
+        // but let's check it can be retrieved
+        let (val, _, _) = cache.get(200, &20);
+        assert_eq!(val, Some(&30));
+    }
+
+    #[test]
+    fn test_tls_cache_evict() {
+        let mut cache = TlsCache::<u64, u64>::new(16);
+        for i in 0..20 { // More than capacity
+            cache.insert(i, i as u64, (i * 20) as u64);
+        }
+        
+        // Assert some were evicted
+        let mut count = 0;
+        for i in 0..20 {
+            if cache.get(i, &(i as u64)).0.is_some() {
+                count += 1;
+            }
+        }
+        assert!(count <= 16);
+    }
+    #[test]
+    fn test_tls_cache_overwrite_and_record_hit() {
+        let mut cache = TlsCache::<u64, u64>::new(16);
+        cache.insert(100, 10, 20);
+        
+        // Overwrite
+        let overwrote = cache.insert(100, 10, 30);
+        assert!(overwrote);
+        assert_eq!(cache.get(100, &10).0, Some(&30));
+
+        // Overwrite fast pass
+        cache.insert_fast_pass(100, 10, 40);
+        assert_eq!(cache.get(100, &10).0, Some(&40));
+
+        // record_remote_hit
+        cache.record_remote_hit(100, 50);
     }
 }

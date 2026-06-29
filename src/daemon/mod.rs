@@ -99,6 +99,7 @@ impl Daemon {
                 for msg in batch.drain(..) {
                     match msg {
                         DaemonMessage::Hit(hash, weight) => {
+                            core.record_remote_hit(hash, weight);
                             for tx in &broadcast_txs {
                                 let _ = tx.try_send((hash, weight));
                             }

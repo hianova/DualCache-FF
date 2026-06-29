@@ -96,102 +96,29 @@ where
     pub fn get(&self, key: &K, handle: &TlsHandle) -> Option<V> {
         let block: &mut crate::tls::TlsBlock<K, V> = self.tls_registry.get_block_mut(handle);
         
-        // Drain broadcasts periodically (every 64 ops) to reduce channel contention overhead
         block.op_count = block.op_count.wrapping_add(1);
-        #[cfg(feature = "std")]
-        if block.op_count.is_multiple_of(64)
-            && let Some(ref hit_rx) = block.hit_rx {
-                while let Ok((msg_hash, weight)) = hit_rx.try_recv() {
-                    block.cache.record_remote_hit(msg_hash, weight);
-                }
-            }
+        if block.op_count.is_multiple_of(64) {
+            self.core.try_reclaim(handle.qsbr_node);
+        }
 
-        let hash = self.core.hash_key(key);
-        
-        // 1. Check Wait-Free Core (Globally Hot Data - T0/T1/T2)
+        let _hash = self.core.hash_key(key);
         let guard = crate::core::qsbr::pin(handle.qsbr_node);
-        if let Some((val, tier)) = self.core.get(key, &guard) {
-            let cloned_val = val.clone();
-            if tier == 0 {
-                block.warmup_state = block.warmup_state.saturating_add(10); // T0 Hit: fully warmed up!
-            }
-            return Some(cloned_val);
-        }
-        
-        // 2. Check TLS cache (Thread-Local Fallback - Replaces L3)
-        let (val_opt, promote, sync) = block.cache.get(hash, key);
-        
-        #[cfg(feature = "std")]
-        if promote {
-            if let Some(val) = val_opt {
-                if let Some(ref tx) = block.tx {
-                    let _ = tx.try_send(crate::daemon::DaemonMessage::Promote(hash, key.clone(), val.clone(), 2));
-                } else {
-                    self.core.put(key.clone(), val.clone(), handle.qsbr_node);
-                }
-            }
-        } else if sync
-            && let Some(ref tx) = block.tx {
-                block.hit_batch[block.hit_batch_len as usize] = (hash, 1);
-                block.hit_batch_len += 1;
-                if block.hit_batch_len == 32 {
-                    let _ = tx.try_send(crate::daemon::DaemonMessage::HitBatch(block.hit_batch, 32));
-                    block.hit_batch_len = 0;
-                }
-            }
-        
-        #[cfg(not(feature = "std"))]
-        if promote {
-            if let Some(val) = val_opt {
-                self.core.put(key.clone(), val.clone(), handle.qsbr_node);
-                self.core.try_reclaim(handle.qsbr_node);
-            }
-        }
-
-        if let Some(val) = val_opt {
-            block.warmup_state = block.warmup_state.saturating_sub(10); // TLS Hit: decrease score (needs Fast Pass)
+        if let Some((val, _tier)) = self.core.get(key, &guard) {
             return Some(val.clone());
         }
-
-        // Total Miss
-        block.warmup_state = block.warmup_state.saturating_sub(10);
         None
     }
 
-    /// Explicitly put a value into the TLS cache (L1).
+    /// Insert a new value into the fast thread-local cache.
     /// The value will be promoted to the Core (L2) later when it reaches the promote_threshold.
     pub fn insert(&self, key: K, value: V, handle: &TlsHandle) {
         let block = self.tls_registry.get_block_mut(handle);
-        
         block.op_count = block.op_count.wrapping_add(1);
-        #[cfg(feature = "std")]
-        if block.op_count.is_multiple_of(64)
-            && let Some(ref hit_rx) = block.hit_rx {
-                while let Ok((msg_hash, weight)) = hit_rx.try_recv() {
-                    block.cache.record_remote_hit(msg_hash, weight);
-                }
-            }
-
-        let hash = self.core.hash_key(&key);
-        
-        let is_fast_pass = block.warmup_state < 100;
-        
-        if is_fast_pass {
-            block.cache.insert_fast_pass(hash, key.clone(), value.clone());
-            #[cfg(feature = "std")]
-            if let Some(ref tx) = block.tx {
-                let _ = tx.try_send(crate::daemon::DaemonMessage::Promote(hash, key, value, 0));
-            } else {
-                self.core.put_t0(key, value, handle.qsbr_node);
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                self.core.put_t0(key, value, handle.qsbr_node);
-                self.core.try_reclaim(handle.qsbr_node);
-            }
-        } else {
-            block.cache.insert(hash, key, value);
+        if block.op_count.is_multiple_of(64) {
+            self.core.try_reclaim(handle.qsbr_node);
         }
+
+        self.core.put(key, value, handle.qsbr_node);
     }
 }
 
@@ -221,7 +148,7 @@ mod tests {
     fn test_daemon_on_async() {
         use std::time::Duration;
         
-        let mut cache: DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 4, 16, 64, 84> = DualCacheFF::new(10, 16);
+        let mut cache: DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 8, 16, 64, 88> = DualCacheFF::new(10, 16);
         
         // Turn ON Daemon (automatically spawns daemon)
         cache.set_daemon_mode(true);

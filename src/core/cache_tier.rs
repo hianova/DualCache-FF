@@ -73,28 +73,41 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> CacheTier<K, V, CAPACITY, W
             }
         }
         
-        // If no matching key or empty slot was found, perform Ring Clock + Pseudo-LFU Eviction
+        // If no matching key or empty slot was found, perform Pseudo-LFU Eviction
         let mut min_hits = u16::MAX;
-        let mut replace_idx = 0;
+        let mut candidates = [0; 8];
+        let mut candidates_len = 0;
         
-        for i in 0..WAYS {
-            let slot = unsafe { set.get_unchecked(i) };
+        for (i, slot) in set.iter().enumerate() {
             let hits = slot.hits.load(crate::sync::atomic::Ordering::Relaxed);
-            
             if hits < min_hits {
                 min_hits = hits;
-                replace_idx = i;
-            } else if hits == min_hits {
-                // Break ties using the hash to prevent degrading to 1-Way Set Associative
-                if (hash >> (i as u32)) & 1 == 1 {
-                    replace_idx = i;
-                }
+                candidates_len = 0;
+                candidates[candidates_len] = i;
+                candidates_len += 1;
+            } else if hits == min_hits && candidates_len < 8 {
+                candidates[candidates_len] = i;
+                candidates_len += 1;
             }
-            // Ring Clock Decay: Shift count right (decay by half)
-            slot.hits.store(hits >> 1, crate::sync::atomic::Ordering::Relaxed);
         }
-        
-        unsafe { set.get_unchecked(replace_idx) }.insert(arena, hash, key, value, node);
+
+        let victim_idx = if candidates_len > 1 {
+            candidates[hash % candidates_len]
+        } else {
+            candidates[0]
+        };
+
+        // Clock-like decay
+        if min_hits > 0 {
+            for slot in set {
+                let h = slot.hits.load(crate::sync::atomic::Ordering::Relaxed);
+                slot.hits.store(h.saturating_sub(1), crate::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        // Evict the victim
+        let victim_slot = unsafe { set.get_unchecked(victim_idx) };
+        victim_slot.insert(arena, hash, key, value, node);
     }
 }
 
@@ -104,3 +117,42 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> Default for CacheTier<K, V,
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::arena::Arena;
+    use crate::core::qsbr;
+
+    #[test]
+    fn test_cache_tier_eviction() {
+        // CAPACITY=8, WAYS=8 means 1 set, 8 slots.
+        let tier = CacheTier::<u64, u64, 8, 8>::new();
+        let arena = Arena::<u64, u64, 16>::new();
+        let node = qsbr::register_thread();
+        let guard = qsbr::pin(node);
+
+        // Fill all 8 slots
+        for i in 0..8 {
+            tier.insert(&arena, i as usize, i, i * 10, node);
+        }
+
+        // Insert 9th item to trigger eviction
+        tier.insert(&arena, 8, 8, 80, node);
+
+        // One of the first 8 should be evicted. Let's check how many remain.
+        let mut count = 0;
+        for i in 0..9 {
+            if tier.get_slot(&arena, i as usize, &i, &guard).is_some() {
+                count += 1;
+            }
+        }
+        assert_eq!(count, 8); // One was evicted, leaving 8.
+    }
+    #[test]
+    fn test_cache_tier_default() {
+        let tier: CacheTier<u64, u64, 8, 8> = CacheTier::default();
+        let set = tier.get_set(0);
+        assert_eq!(set.len(), 8);
+    }
+}
