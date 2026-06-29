@@ -66,6 +66,7 @@ fn run_workload(
 
     let mut total_hits = 0;
     let mut total_ops = 0;
+    let mut total_reads = 0;
     let mut merged_hist = Histogram::<u64>::new(3).unwrap();
 
     thread::scope(|s| {
@@ -83,6 +84,7 @@ fn run_workload(
                 
                 let mut hist = Histogram::<u64>::new(3).unwrap();
                 let mut hits = 0;
+                let mut reads = 0;
                 let mut local_ops = 0;
                 
                 let shift_offset = if shift_dataset { DATASET_SIZE / 2 } else { 0 };
@@ -112,6 +114,7 @@ fn run_workload(
                     let op_start = if measure_latency { Some(Instant::now()) } else { None };
                     
                     if is_read {
+                        reads += 1;
                         if cache_clone.get(&key, &tls_handle).is_some() {
                             hits += 1;
                         } else {
@@ -129,13 +132,14 @@ fn run_workload(
                     local_ops += 1;
                 }
                 
-                (hits, local_ops, hist)
+                (hits, reads, local_ops, hist)
             }));
         }
 
         for handle in handles {
-            let (hits, ops, hist) = handle.join().unwrap();
+            let (hits, reads_done, ops, hist) = handle.join().unwrap();
             total_hits += hits;
+            total_reads += reads_done;
             total_ops += ops;
             merged_hist.add(hist).unwrap();
         }
@@ -143,7 +147,7 @@ fn run_workload(
 
     let duration = start_time.elapsed();
     let throughput = (total_ops as f64) / duration.as_secs_f64();
-    let hit_rate = (total_hits as f64) / (total_ops as f64) * 100.0;
+    let hit_rate = if total_reads > 0 { (total_hits as f64) / (total_reads as f64) * 100.0 } else { 0.0 };
 
     // Wait for Daemon to gracefully stop (wait a bit so we don't leak immediately)
     // Actually when Arc drops, things die if we implement drop, but for benchmark it's fine
