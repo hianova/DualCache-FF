@@ -74,11 +74,11 @@ where
 
         // 2. Check T1 (Elite Class - 5ns)
         if let Some(slot) = self.t1.get_slot(&self.arena, hash, key, guard) {
-            let hits = slot.record_hit();
+            let (old_hits, new_hits) = slot.record_hit();
             let (_, node_idx) = slot.read(guard);
             if node_idx != super::arena::NULL_INDEX {
                 let node = unsafe { self.arena.get(node_idx as usize) };
-                if hits >= P::T0_THRESHOLD {
+                if old_hits < P::T0_THRESHOLD && new_hits >= P::T0_THRESHOLD {
                     // Internal Promotion to T0
                     self.t0.insert(&self.arena, hash, node.key.clone(), node.value.clone(), guard.node());
                 }
@@ -89,11 +89,11 @@ where
 
         // 3. Check T2 (Middle Class - 15ns)
         if let Some(slot) = self.t2.get_slot(&self.arena, hash, key, guard) {
-            let hits = slot.record_hit();
+            let (old_hits, new_hits) = slot.record_hit();
             let (_, node_idx) = slot.read(guard);
             if node_idx != super::arena::NULL_INDEX {
                 let node = unsafe { self.arena.get(node_idx as usize) };
-                if hits >= P::T1_THRESHOLD {
+                if old_hits < P::T1_THRESHOLD && new_hits >= P::T1_THRESHOLD {
                     // Internal Promotion to T1
                     self.t1.insert(&self.arena, hash, node.key.clone(), node.value.clone(), guard.node());
                 }

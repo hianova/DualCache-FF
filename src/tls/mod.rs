@@ -89,11 +89,12 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
 
         if let Some(node_idx) = found_node_idx {
             let entry = unsafe { self.nodes.get_unchecked_mut(node_idx) }.as_mut().unwrap();
+            let old_hits = entry.hits;
             if entry.hits < 255 {
                 entry.hits += 1;
                 self.count_sum += 1;
             }
-            let promote = entry.hits == self.promote_threshold;
+            let promote = old_hits < self.promote_threshold && entry.hits >= self.promote_threshold;
             let sync = entry.hits > self.promote_threshold && entry.hits.is_multiple_of(16);
             return (Some(&entry.value), promote, sync);
         }
