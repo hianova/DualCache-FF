@@ -74,12 +74,12 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
         let mut found_node_idx = None;
         let mut idx = hash & self.index_mask;
         for _ in 0..16 {
-            let node_idx = self.index[idx];
+            let node_idx = unsafe { *self.index.get_unchecked(idx) };
             if node_idx == usize::MAX {
                 break;
             }
             if node_idx != usize::MAX - 1
-                && let Some(entry) = &self.nodes[node_idx]
+                && let Some(entry) = unsafe { self.nodes.get_unchecked(node_idx) }
                 && entry.hash == hash && entry.key == *key {
                     found_node_idx = Some(node_idx);
                     break;
@@ -88,7 +88,7 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
         }
 
         if let Some(node_idx) = found_node_idx {
-            let entry = self.nodes[node_idx].as_mut().unwrap();
+            let entry = unsafe { self.nodes.get_unchecked_mut(node_idx) }.as_mut().unwrap();
             if entry.hits < 255 {
                 entry.hits += 1;
                 self.count_sum += 1;
@@ -110,16 +110,17 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
             let node_idx = self.cursor;
             self.cursor = (self.cursor + 1) & (self.capacity - 1);
             
-            if let Some(entry) = &mut self.nodes[node_idx] {
+            if let Some(entry) = unsafe { self.nodes.get_unchecked_mut(node_idx) } {
                 if entry.hits <= avg {
                     self.count_sum -= entry.hits as u32;
                     let target_hash = entry.hash;
-                    self.nodes[node_idx] = None;
+                    unsafe { *self.nodes.get_unchecked_mut(node_idx) = None; }
                     
                     let mut i = target_hash & self.index_mask;
                     for _ in 0..16 {
-                        if self.index[i] == node_idx {
-                            self.index[i] = usize::MAX - 1; // Tombstone
+                        let i_ptr = unsafe { self.index.get_unchecked_mut(i) };
+                        if *i_ptr == node_idx {
+                            *i_ptr = usize::MAX - 1; // Tombstone
                             break;
                         }
                         i = (i + 1) & self.index_mask;
@@ -137,9 +138,9 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
     fn index_insert(&mut self, hash: usize, node_idx: usize) {
         let mut idx = hash & self.index_mask;
         for _ in 0..16 {
-            let v = self.index[idx];
+            let v = unsafe { *self.index.get_unchecked(idx) };
             if v == usize::MAX || v == usize::MAX - 1 {
-                self.index[idx] = node_idx;
+                unsafe { *self.index.get_unchecked_mut(idx) = node_idx; }
                 return;
             }
             if v == node_idx {
@@ -153,12 +154,12 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
     pub fn insert(&mut self, hash: usize, key: K, value: V) {
         let mut idx = hash & self.index_mask;
         for _ in 0..16 {
-            let node_idx = self.index[idx];
+            let node_idx = unsafe { *self.index.get_unchecked(idx) };
             if node_idx == usize::MAX {
                 break;
             }
             if node_idx != usize::MAX - 1
-                && let Some(entry) = &mut self.nodes[node_idx]
+                && let Some(entry) = unsafe { self.nodes.get_unchecked_mut(node_idx) }
                 && entry.hash == hash && entry.key == key {
                     entry.value = value;
                     return;
@@ -167,20 +168,22 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
         }
         
         let filter_idx = hash & 4095;
-        for i in 0..4 {
-            self.probation_filter[(self.probation_cursor + i) & 4095] = 0;
+        // Probation filter fast-clear 4 elements using unsafe
+        unsafe {
+            let ptr = self.probation_filter.as_mut_ptr().add(self.probation_cursor);
+            core::ptr::write_bytes(ptr, 0, 4);
         }
         self.probation_cursor = (self.probation_cursor + 4) & 4095;
         
-        let count = self.probation_filter[filter_idx].saturating_add(1);
-        self.probation_filter[filter_idx] = count;
+        let count = unsafe { *self.probation_filter.get_unchecked(filter_idx) }.saturating_add(1);
+        unsafe { *self.probation_filter.get_unchecked_mut(filter_idx) = count; }
         
         if count <= 1 {
             return;
         }
         
         let node_idx = self.alloc_slot();
-        self.nodes[node_idx] = Some(TlsEntry { hash, key, value, hits: 0 });
+        unsafe { *self.nodes.get_unchecked_mut(node_idx) = Some(TlsEntry { hash, key, value, hits: 0 }); }
         self.index_insert(hash, node_idx);
     }
 
@@ -188,12 +191,12 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
     pub fn insert_fast_pass(&mut self, hash: usize, key: K, value: V) {
         let mut idx = hash & self.index_mask;
         for _ in 0..16 {
-            let node_idx = self.index[idx];
+            let node_idx = unsafe { *self.index.get_unchecked(idx) };
             if node_idx == usize::MAX {
                 break;
             }
             if node_idx != usize::MAX - 1
-                && let Some(entry) = &mut self.nodes[node_idx]
+                && let Some(entry) = unsafe { self.nodes.get_unchecked_mut(node_idx) }
                 && entry.hash == hash && entry.key == key {
                     entry.value = value;
                     let old_hits = entry.hits;
@@ -205,7 +208,7 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
         }
         
         let node_idx = self.alloc_slot();
-        self.nodes[node_idx] = Some(TlsEntry { hash, key, value, hits: 255 });
+        unsafe { *self.nodes.get_unchecked_mut(node_idx) = Some(TlsEntry { hash, key, value, hits: 255 }); }
         self.count_sum += 255;
         self.index_insert(hash, node_idx);
     }
@@ -213,12 +216,12 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
     pub fn record_remote_hit(&mut self, hash: usize, weight: u8) {
         let mut idx = hash & self.index_mask;
         for _ in 0..16 {
-            let node_idx = self.index[idx];
+            let node_idx = unsafe { *self.index.get_unchecked(idx) };
             if node_idx == usize::MAX {
                 break;
             }
             if node_idx != usize::MAX - 1
-                && let Some(entry) = &mut self.nodes[node_idx]
+                && let Some(entry) = unsafe { self.nodes.get_unchecked_mut(node_idx) }
                 && entry.hash == hash {
                     let add = (255 - entry.hits).min(weight);
                     entry.hits += add;

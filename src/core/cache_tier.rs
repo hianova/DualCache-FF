@@ -25,7 +25,9 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> CacheTier<K, V, CAPACITY, W
         let num_sets = CAPACITY / WAYS;
         let index = hash % num_sets;
         let start = index * WAYS;
-        &self.slots[start..start + WAYS]
+        unsafe {
+            self.slots.get_unchecked(start..start + WAYS)
+        }
     }
 
     /// Retrieve a slot if the key exists in this tier.

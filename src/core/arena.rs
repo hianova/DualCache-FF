@@ -59,7 +59,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
                 return None; // OOM
             }
             let tag = head >> 16;
-            let next = self.next_free[index as usize].load(Ordering::Relaxed);
+            let next = unsafe { self.next_free.get_unchecked(index as usize) }.load(Ordering::Relaxed);
             let new_head = (tag.wrapping_add(1) << 16) | (next as usize);
             
             match self.free_head.compare_exchange_weak(head, new_head, Ordering::AcqRel, Ordering::Acquire) {
@@ -67,7 +67,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
                     let idx = index as usize;
                     // Initialize the memory
                     unsafe {
-                        (*self.nodes[idx].get()).write(Node { key, value });
+                        (*self.nodes.get_unchecked(idx).get()).write(Node { key, value });
                     }
                     return Some(idx);
                 }
@@ -81,14 +81,14 @@ impl<K, V, const N: usize> Arena<K, V, N> {
     pub unsafe fn free(&self, index: usize) {
         // Drop the inner item
         unsafe {
-            core::ptr::drop_in_place((*self.nodes[index].get()).as_mut_ptr());
+            core::ptr::drop_in_place((*self.nodes.get_unchecked(index).get()).as_mut_ptr());
         }
 
         // Push to free list
         let mut head = self.free_head.load(Ordering::Relaxed);
         loop {
             let old_index = (head & 0xFFFF) as u16;
-            self.next_free[index].store(old_index, Ordering::Relaxed);
+            unsafe { self.next_free.get_unchecked(index) }.store(old_index, Ordering::Relaxed);
             let tag = head >> 16;
             let new_head = (tag.wrapping_add(1) << 16) | index;
             
@@ -104,7 +104,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
     #[inline(always)]
     pub unsafe fn get(&self, index: usize) -> &Node<K, V> {
         unsafe {
-            (*self.nodes[index].get()).assume_init_ref()
+            (*self.nodes.get_unchecked(index).get()).assume_init_ref()
         }
     }
 }
