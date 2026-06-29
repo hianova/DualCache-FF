@@ -6,7 +6,7 @@
 
 By deliberately abandoning heavy API contracts in favor of CPU spatial locality and wait-free semantics, `DualcacheFF` achieves massive throughput under hostile workloads.
 
-## 🧠 Architecture Overview
+## Architecture Overview
 
 ### 1. Wait-Free Read Path & QSBR
 All reads are completely non-blocking and wait-free. Memory reclamation is handled via Quiet State Based Reclamation (QSBR), allowing readers to instantly access cached nodes without locks, mutexes, or atomic reference counting overhead.
@@ -22,7 +22,7 @@ Cache admissions and evictions are handled exclusively by an asynchronous backgr
 ### 4. Avg-based Clock Eviction
 A revolution-shielded circular clock evicts items whose access rank falls below the global average, instantly adapting to shifting workload heat distributions.
 
-## 🚀 Quick Start Examples
+## Quick Start Examples
 
 ### Single-Threaded Basic Usage
 ```rust
@@ -74,7 +74,7 @@ fn main() {
 }
 ```
 
-## 🧪 Testing & Benchmarks
+## Testing & Benchmarks
 
 DualCache-FF comes with an extensive suite of integration tests, property tests, and benchmarks. 
 
@@ -85,22 +85,15 @@ cargo test
 ```
 
 ### Running Benchmarks
-DualCache-FF uses custom `criterion`-based benchmarks for throughput, latency, and memory profiling.
+DualCache-FF uses highly optimized custom benchmark harnesses (with `harness = false`) to accurately measure throughput, latency at the nanosecond scale, and memory profiling.
 
-By default, the benchmark suite only runs `DualCacheFF`:
+To run the full suite of benchmarks:
 ```bash
 cargo bench
 ```
 
-To run a comparative benchmark against other caching libraries (like Moka and TinyUFO), enable the `full_bench` feature:
-```bash
-cargo bench --features full_bench
-```
-
-## 📜 License
+## License
 
 This project is licensed under the [**MIT License**](LICENSE).
 
 ---
-*Project co-developed and optimized with Antigravity.*
- 

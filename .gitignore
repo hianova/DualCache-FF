@@ -1,3 +1,5 @@
 /target
-TODO.md
 *.DS_Store
+flamegraph.svg
+profile.json
+cargo-flamegraph.trace

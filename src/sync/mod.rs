@@ -1,34 +1,43 @@
-#[cfg(feature = "std")]
-mod std_impl;
-#[cfg(feature = "std")]
-pub use std_impl::*;
+//! Synchronization primitives abstraction layer.
+//! This allows seamless switching between native atomics and `loom` atomics for testing.
 
-#[cfg(not(feature = "std"))]
-mod no_std;
-#[cfg(not(feature = "std"))]
-pub use no_std::*;
-
-#[cfg(target_has_atomic = "64")]
-pub mod index_types {
-    pub type AtomicIndex = super::atomic::AtomicU64;
-    pub type IndexType = u64;
-    pub const EMPTY: u64 = 0;
-    pub const TOMBSTONE: u64 = u64::MAX;
-    pub const TAG_SHIFT: usize = 48;
-    pub const INDEX_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-    pub type AtomicTick = super::atomic::AtomicU64;
-    pub type TickType = u64;
+#[cfg(not(loom))]
+pub mod atomic {
+    pub use core::sync::atomic::*;
 }
 
-#[cfg(not(target_has_atomic = "64"))]
-pub mod index_types {
-    pub type AtomicIndex = super::atomic::AtomicU32;
-    pub type IndexType = u32;
-    pub const EMPTY: u32 = 0;
-    pub const TOMBSTONE: u32 = u32::MAX;
-    pub const TAG_SHIFT: usize = 24;
-    pub const INDEX_MASK: u32 = 0x00FF_FFFF;
-    // daemon_tick wraps naturally, u32 is sufficient if u64 atomics are missing.
-    pub type AtomicTick = super::atomic::AtomicU32;
-    pub type TickType = u32;
+#[cfg(loom)]
+pub mod atomic {
+    pub use loom::sync::atomic::*;
+}
+
+#[cfg(not(loom))]
+pub mod arc {
+    pub use alloc::sync::Arc;
+}
+
+#[cfg(loom)]
+pub mod arc {
+    pub use loom::sync::Arc;
+}
+
+#[cfg(not(loom))]
+pub mod mutex {
+    pub use spin::Mutex;
+}
+
+#[cfg(loom)]
+pub mod mutex {
+    pub use loom::sync::Mutex;
+}
+
+#[cfg(not(loom))]
+pub mod thread {
+    #[cfg(feature = "std")]
+    pub use std::thread::{spawn, yield_now, JoinHandle, sleep};
+}
+
+#[cfg(loom)]
+pub mod thread {
+    pub use loom::thread::{spawn, yield_now, JoinHandle};
 }
