@@ -16,68 +16,157 @@ unsafe impl Sync for TlsHandle {}
 
 /// The thread-local cache array structure (L1).
 /// Simple, memory-friendly, and extremely fast because it is exclusively owned by the thread.
+pub struct TlsEntry<K, V> {
+    pub hash: usize,
+    pub key: K,
+    pub value: V,
+    pub hits: u8,
+}
+
 pub struct TlsCache<K, V> {
-    entries: Vec<Option<(usize, K, V, u8)>>, // hash, key, value, hits
-    capacity_mask: usize,
-    pub promote_threshold: u8,
+    index: Vec<usize>,
+    index_mask: usize,
     
-    // Probation Filter (Hash Admission)
+    nodes: Vec<Option<TlsEntry<K, V>>>,
+    capacity: usize,
+    
+    cursor: usize,
+    count_sum: u32,
+    free_list: Vec<usize>,
+    
+    pub promote_threshold: u8,
     probation_filter: alloc::boxed::Box<[u8; 4096]>,
     probation_cursor: usize,
 }
 
 impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
     pub fn new(capacity: usize) -> Self {
-        let mut entries = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            entries.push(None);
-        }
         assert!(capacity.is_power_of_two(), "TlsCache capacity must be a power of two");
+        let index_capacity = capacity * 2;
+        let mut index = Vec::with_capacity(index_capacity);
+        for _ in 0..index_capacity {
+            index.push(usize::MAX);
+        }
+        
+        let mut nodes = Vec::with_capacity(capacity);
+        let mut free_list = Vec::with_capacity(capacity);
+        for i in 0..capacity {
+            nodes.push(None);
+            free_list.push(capacity - 1 - i);
+        }
+        
         Self { 
-            entries, 
-            capacity_mask: capacity - 1, 
-            promote_threshold: 2, // Default promote threshold
+            index, 
+            index_mask: index_capacity - 1, 
+            nodes,
+            capacity,
+            cursor: 0,
+            count_sum: 0,
+            free_list,
+            promote_threshold: 2,
             probation_filter: alloc::boxed::Box::new([0; 4096]),
             probation_cursor: 0,
         }
     }
 
-
-
-    /// Get value from TlsCache.
-    /// Returns (value, should_promote, should_sync_hit)
     #[inline(always)]
     pub fn get(&mut self, hash: usize, key: &K) -> (Option<&V>, bool, bool) {
-        let idx = hash & self.capacity_mask;
-        if let Some((h, k, v, hits)) = &mut self.entries[idx]
-            && *h == hash && k == key {
-                *hits = hits.saturating_add(1);
-                let promote = *hits == self.promote_threshold;
-                let sync = *hits > self.promote_threshold && (*hits % 16 == 0);
-                if *hits == 255 {
-                    *hits = 255 - 16;
-                }
-                return (Some(v), promote, sync);
+        let mut found_node_idx = None;
+        let mut idx = hash & self.index_mask;
+        for _ in 0..16 {
+            let node_idx = self.index[idx];
+            if node_idx == usize::MAX {
+                break;
             }
+            if node_idx != usize::MAX - 1
+                && let Some(entry) = &self.nodes[node_idx]
+                && entry.hash == hash && entry.key == *key {
+                    found_node_idx = Some(node_idx);
+                    break;
+            }
+            idx = (idx + 1) & self.index_mask;
+        }
+
+        if let Some(node_idx) = found_node_idx {
+            let entry = self.nodes[node_idx].as_mut().unwrap();
+            if entry.hits < 255 {
+                entry.hits += 1;
+                self.count_sum += 1;
+            }
+            let promote = entry.hits == self.promote_threshold;
+            let sync = entry.hits > self.promote_threshold && entry.hits.is_multiple_of(16);
+            return (Some(&entry.value), promote, sync);
+        }
         (None, false, false)
     }
 
-    /// Put value into TlsCache. Evicts old item to L3 callback if necessary.
-    #[inline(always)]
-    pub fn insert(&mut self, hash: usize, key: K, value: V) {
-        let idx = hash & self.capacity_mask;
+    fn alloc_slot(&mut self) -> usize {
+        if let Some(idx) = self.free_list.pop() {
+            return idx;
+        }
         
-        // 1. Update Check: If the key is already here, just update it (bypass filter)
-        if let Some((h, k, v, _hits)) = &mut self.entries[idx]
-            && *h == hash && *k == key {
-                *v = value;
+        let avg = (self.count_sum as usize / self.capacity) as u8;
+        loop {
+            let node_idx = self.cursor;
+            self.cursor = (self.cursor + 1) & (self.capacity - 1);
+            
+            if let Some(entry) = &mut self.nodes[node_idx] {
+                if entry.hits <= avg {
+                    self.count_sum -= entry.hits as u32;
+                    let target_hash = entry.hash;
+                    self.nodes[node_idx] = None;
+                    
+                    let mut i = target_hash & self.index_mask;
+                    for _ in 0..16 {
+                        if self.index[i] == node_idx {
+                            self.index[i] = usize::MAX - 1; // Tombstone
+                            break;
+                        }
+                        i = (i + 1) & self.index_mask;
+                    }
+                    
+                    return node_idx;
+                } else {
+                    entry.hits -= avg;
+                    self.count_sum -= avg as u32;
+                }
+            }
+        }
+    }
+
+    fn index_insert(&mut self, hash: usize, node_idx: usize) {
+        let mut idx = hash & self.index_mask;
+        for _ in 0..16 {
+            let v = self.index[idx];
+            if v == usize::MAX || v == usize::MAX - 1 {
+                self.index[idx] = node_idx;
                 return;
             }
+            if v == node_idx {
+                return;
+            }
+            idx = (idx + 1) & self.index_mask;
+        }
+    }
+
+    #[inline(always)]
+    pub fn insert(&mut self, hash: usize, key: K, value: V) {
+        let mut idx = hash & self.index_mask;
+        for _ in 0..16 {
+            let node_idx = self.index[idx];
+            if node_idx == usize::MAX {
+                break;
+            }
+            if node_idx != usize::MAX - 1
+                && let Some(entry) = &mut self.nodes[node_idx]
+                && entry.hash == hash && entry.key == key {
+                    entry.value = value;
+                    return;
+            }
+            idx = (idx + 1) & self.index_mask;
+        }
         
-        // 2. Admission Check (Probation Filter)
         let filter_idx = hash & 4095;
-        
-        // Clock-sweep aging
         for i in 0..4 {
             self.probation_filter[(self.probation_cursor + i) & 4095] = 0;
         }
@@ -87,29 +176,57 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
         self.probation_filter[filter_idx] = count;
         
         if count <= 1 {
-            // First time seen, rejected from TlsCache to prevent thrashing
             return;
         }
         
-        // 3. Admission Passed: Insert into TlsCache, evicting old item if any
-        self.entries[idx] = Some((hash, key, value, 0));
+        let node_idx = self.alloc_slot();
+        self.nodes[node_idx] = Some(TlsEntry { hash, key, value, hits: 0 });
+        self.index_insert(hash, node_idx);
     }
 
-    /// Fast Pass insertion into TlsCache.
-    /// Bypasses probation filter and sets hits to 255 (max) to prevent local eviction.
     #[inline(always)]
     pub fn insert_fast_pass(&mut self, hash: usize, key: K, value: V) {
-        let idx = hash & self.capacity_mask;
-        self.entries[idx] = Some((hash, key, value, 255));
+        let mut idx = hash & self.index_mask;
+        for _ in 0..16 {
+            let node_idx = self.index[idx];
+            if node_idx == usize::MAX {
+                break;
+            }
+            if node_idx != usize::MAX - 1
+                && let Some(entry) = &mut self.nodes[node_idx]
+                && entry.hash == hash && entry.key == key {
+                    entry.value = value;
+                    let old_hits = entry.hits;
+                    entry.hits = 255;
+                    self.count_sum += (255 - old_hits) as u32;
+                    return;
+            }
+            idx = (idx + 1) & self.index_mask;
+        }
+        
+        let node_idx = self.alloc_slot();
+        self.nodes[node_idx] = Some(TlsEntry { hash, key, value, hits: 255 });
+        self.count_sum += 255;
+        self.index_insert(hash, node_idx);
     }
 
-    /// Update hit counts from remote broadcasts. Only updates if the key (Value) is locally present.
     pub fn record_remote_hit(&mut self, hash: usize, weight: u8) {
-        let idx = hash & self.capacity_mask;
-        if let Some((entry_hash, _, _, hits)) = &mut self.entries[idx]
-            && *entry_hash == hash {
-                *hits = hits.saturating_add(weight);
+        let mut idx = hash & self.index_mask;
+        for _ in 0..16 {
+            let node_idx = self.index[idx];
+            if node_idx == usize::MAX {
+                break;
             }
+            if node_idx != usize::MAX - 1
+                && let Some(entry) = &mut self.nodes[node_idx]
+                && entry.hash == hash {
+                    let add = (255 - entry.hits).min(weight);
+                    entry.hits += add;
+                    self.count_sum += add as u32;
+                    return;
+            }
+            idx = (idx + 1) & self.index_mask;
+        }
     }
 }
 
