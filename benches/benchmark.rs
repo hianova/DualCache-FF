@@ -1,24 +1,39 @@
-use std::time::Instant;
+use crossbeam_utils::thread;
+use dualcache_ff::DualCacheFF;
 use hdrhistogram::Histogram;
 use rand::Rng;
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
-use crossbeam_utils::thread;
-use dualcache_ff::DualCacheFF;
 use std::sync::{Arc, Barrier};
+use std::time::Instant;
 
 const THREAD_COUNT: usize = 4;
 const TOTAL_OPS: usize = 10_000_000;
 const OPS_PER_THREAD: usize = TOTAL_OPS / THREAD_COUNT;
 const DATASET_SIZE: u64 = 1_000_000;
-const CACHE_L1_SIZE: usize = 1024; // Per thread
-const CACHE_T0_CAP: usize = 65536;
+const CACHE_T0_CAP: usize = 64;
 const CACHE_T1_CAP: usize = 4096;
 const CACHE_T2_CAP: usize = 262144;
 const TOTAL_CAP: usize = CACHE_T0_CAP + CACHE_T1_CAP + CACHE_T2_CAP;
+const MAX_THREADS: usize = 10;
+const TLS_CAP: usize = 1024;
+const TLS_INDEX_CAP: usize = 2048;
 
-type BenchCache = DualCacheFF<u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, CACHE_T0_CAP, CACHE_T1_CAP, CACHE_T2_CAP, TOTAL_CAP>;
+type BenchCache = DualCacheFF<
+    u64,
+    u64,
+    dualcache_ff::core::config::DefaultExponentialPolicy,
+    CACHE_T0_CAP,
+    CACHE_T1_CAP,
+    CACHE_T2_CAP,
+    TOTAL_CAP,
+    MAX_THREADS,
+    TLS_CAP,
+    TLS_INDEX_CAP,
+>;
+
+static mut GLOBAL_CACHE: BenchCache = DualCacheFF::new();
 
 #[derive(Clone, Copy)]
 enum AccessPattern {
@@ -42,9 +57,13 @@ fn run_workload(
     read_ratio_percent: u8,
     shift_dataset: bool,
 ) -> BenchResult {
-    let mut base_cache = DualCacheFF::new(THREAD_COUNT + 1, CACHE_L1_SIZE);
-    base_cache.set_daemon_mode(true);
-    let cache: Arc<BenchCache> = Arc::new(base_cache);
+    // Reset the cache for a fair benchmark across runs
+    unsafe {
+        dualcache_ff::core::qsbr::reset();
+        GLOBAL_CACHE = DualCacheFF::new();
+    }
+    let cache = unsafe { &*std::ptr::addr_of!(GLOBAL_CACHE) };
+    cache.set_daemon_mode(true);
 
     let mut all_ops_data = Vec::new();
     for thread_id in 0..THREAD_COUNT {
@@ -84,46 +103,48 @@ fn run_workload(
 
     thread::scope(|s| {
         let mut handles = vec![];
-        
+
         for thread_id in 0..THREAD_COUNT {
-            let cache_clone = cache.clone();
             let barrier_clone = barrier.clone();
             let ops_data = all_ops_data[thread_id].clone();
-            
+
             handles.push(s.spawn(move |_| {
-                let tls_handle = cache_clone.register_thread();
-                
+                let tls_handle = cache.register_thread();
+
                 let mut hist = Histogram::<u64>::new(3).unwrap();
                 let mut hits = 0;
                 let mut reads = 0;
                 let mut local_ops = 0;
-                
+
                 barrier_clone.wait(); // Synchronize all threads to start
 
                 for (i, &(key, is_read)) in ops_data.iter().enumerate() {
-                    
                     let measure_latency = i % 100 == 0;
-                    let op_start = if measure_latency { Some(Instant::now()) } else { None };
-                    
+                    let op_start = if measure_latency {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
+
                     if is_read {
                         reads += 1;
-                        if cache_clone.get(&key, &tls_handle).is_some() {
+                        if cache.get(&key, &tls_handle).is_some() {
                             hits += 1;
                         } else {
                             // Insert on read miss (realistic cache behavior)
-                            cache_clone.insert(key, key, &tls_handle);
+                            cache.insert(key, key, &tls_handle);
                         }
                     } else {
-                        cache_clone.insert(key, key, &tls_handle);
+                        cache.insert(key, key, &tls_handle);
                     }
-                    
+
                     if let Some(start) = op_start {
                         let elapsed = start.elapsed().as_nanos() as u64;
                         hist.record(elapsed).unwrap();
                     }
                     local_ops += 1;
                 }
-                
+
                 (hits, reads, local_ops, hist)
             }));
         }
@@ -135,15 +156,20 @@ fn run_workload(
             total_ops += ops;
             merged_hist.add(hist).unwrap();
         }
-    }).unwrap();
+    })
+    .unwrap();
 
     let duration = start_time.elapsed();
     let throughput = (total_ops as f64) / duration.as_secs_f64();
-    let hit_rate = if total_reads > 0 { (total_hits as f64) / (total_reads as f64) * 100.0 } else { 0.0 };
+    let hit_rate = if total_reads > 0 {
+        (total_hits as f64) / (total_reads as f64) * 100.0
+    } else {
+        0.0
+    };
 
     // Wait for Daemon to gracefully stop (wait a bit so we don't leak immediately)
     // Actually when Arc drops, things die if we implement drop, but for benchmark it's fine
-    
+
     BenchResult {
         throughput,
         hit_rate,
@@ -160,9 +186,12 @@ fn main() {
     println!("* **Threads**: {}", THREAD_COUNT);
     println!("* **Dataset Size**: {}", DATASET_SIZE);
     println!("* **Operations per test**: {}", TOTAL_OPS);
-    println!("* **Cache Size**: ~{} (L2) + ~{} (L1 per thread)", TOTAL_CAP, CACHE_L1_SIZE);
+    println!(
+        "* **Cache Size**: ~{} (L2) + ~{} (L1 per thread)",
+        TOTAL_CAP, TLS_CAP
+    );
     println!();
-    
+
     let configs = vec![
         (AccessPattern::Zipf, 99, false, "Zipf (99:1)"),
         (AccessPattern::Zipf, 90, false, "Zipf (90:10)"),
@@ -173,8 +202,12 @@ fn main() {
         (AccessPattern::Zipf, 90, true, "Zipf Data Shift (90:10)"),
     ];
 
-    println!("| Pattern | R/W Ratio | Throughput (ops/s) | Hit Rate (%) | P50 (ns) | P90 (ns) | P99 (ns) | P99.9 (ns) | P99.99 (ns) |");
-    println!("|---------|-----------|-------------------|-------------|----------|----------|----------|------------|-------------|");
+    println!(
+        "| Pattern | R/W Ratio | Throughput (ops/s) | Hit Rate (%) | P50 (ns) | P90 (ns) | P99 (ns) | P99.9 (ns) | P99.99 (ns) |"
+    );
+    println!(
+        "|---------|-----------|-------------------|-------------|----------|----------|----------|------------|-------------|"
+    );
 
     std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
         for (pattern, read_ratio, shift, name) in configs {

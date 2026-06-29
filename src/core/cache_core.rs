@@ -41,13 +41,13 @@ where
     K: Clone + Eq + Hash,
     V: Clone,
 {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             arena: Arena::new(),
             t0: CacheTier::new(),
             t1: CacheTier::new(),
             t2: CacheTier::new(),
-            hash_builder: RandomState::new(),
+            hash_builder: ahash::RandomState::with_seeds(1, 2, 3, 4),
             _marker: core::marker::PhantomData,
         }
     }
@@ -139,11 +139,12 @@ where
         self.t2.insert(&self.arena, hash, key, value, node);
     }
 
-    /// Try to reclaim retired nodes and push them back to the Arena's free list.
     pub fn try_reclaim(&self, node: *mut super::qsbr::ThreadStateNode) {
         super::qsbr::try_reclaim(node, |idx| unsafe {
             let local_free = &mut *(*node).local_free.get();
-            local_free.push(idx as u32);
+            if !local_free.push(idx as u32) {
+                self.arena.free(idx as usize);
+            }
         });
     }
 
@@ -200,7 +201,11 @@ mod tests {
     fn test_comprehensive_cache_flow() {
         // T0=8, T1=8, T2=8
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = qsbr::register_thread();
+        let thread_node = {
+            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
+            qsbr::register_node(node);
+            node
+        };
         let guard = qsbr::pin(thread_node);
 
         assert_eq!(core.get(&100, &guard), None);
@@ -221,7 +226,11 @@ mod tests {
     #[test]
     fn test_cache_miss_and_eviction() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = qsbr::register_thread();
+        let thread_node = {
+            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
+            qsbr::register_node(node);
+            node
+        };
         let guard = qsbr::pin(thread_node);
 
         // Force evictions in T2 by filling the set
@@ -238,7 +247,11 @@ mod tests {
     #[test]
     fn test_put_t0_and_record_remote_hit() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = qsbr::register_thread();
+        let thread_node = {
+            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
+            qsbr::register_node(node);
+            node
+        };
         let guard = qsbr::pin(thread_node);
 
         core.put_t0(300, 400, thread_node);
@@ -254,7 +267,11 @@ mod tests {
     #[test]
     fn test_cache_core_t1_t0_hits() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = qsbr::register_thread();
+        let thread_node = {
+            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
+            qsbr::register_node(node);
+            node
+        };
         let guard = qsbr::pin(thread_node);
 
         // Insert directly into T1

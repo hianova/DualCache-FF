@@ -51,7 +51,7 @@ impl Daemon {
 
     /// Spawn the daemon thread. Returns the Daemon handle.
     pub fn spawn<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>(
-        core: Arc<crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>>, 
+        core: &'static crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>, 
         rx: Receiver<DaemonMessage<K, V>>,
         broadcast_txs: alloc::vec::Vec<crossbeam_channel::Sender<(usize, u8)>>,
         daemon_node: *mut crate::core::qsbr::ThreadStateNode

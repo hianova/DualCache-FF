@@ -1,19 +1,15 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::missing_safety_doc)]
 use crate::sync::atomic::{AtomicPtr, AtomicUsize, AtomicBool, Ordering};
-use alloc::boxed::Box;
 use core::ptr;
 
-#[cfg(not(loom))]
-lazy_static::lazy_static! {
-    static ref GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
-    static ref THREAD_STATES: AtomicPtr<ThreadStateNode> = AtomicPtr::new(ptr::null_mut());
-}
+static GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
+static THREAD_STATES: AtomicPtr<ThreadStateNode> = AtomicPtr::new(ptr::null_mut());
 
-#[cfg(loom)]
-loom::lazy_static! {
-    static ref GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
-    static ref THREAD_STATES: AtomicPtr<ThreadStateNode> = AtomicPtr::new(ptr::null_mut());
+#[doc(hidden)]
+pub unsafe fn reset() {
+    GLOBAL_EPOCH.store(1, Ordering::SeqCst);
+    THREAD_STATES.store(ptr::null_mut(), Ordering::SeqCst);
 }
 
 #[derive(Copy, Clone)]
@@ -33,11 +29,40 @@ pub struct GarbageQueue {
 }
 
 impl GarbageQueue {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             items: [RetiredNode { index: 0, epoch: 0 }; GARBAGE_CAP],
             head: 0,
             tail: 0,
+        }
+    }
+}
+
+pub struct LocalFreeQueue {
+    items: [u32; 256],
+    len: usize,
+}
+
+impl LocalFreeQueue {
+    pub const fn new() -> Self {
+        Self { items: [0; 256], len: 0 }
+    }
+    pub fn pop(&mut self) -> Option<u32> {
+        if self.len > 0 {
+            self.len -= 1;
+            Some(self.items[self.len])
+        } else {
+            None
+        }
+    }
+    #[must_use]
+    pub fn push(&mut self, val: u32) -> bool {
+        if self.len < 256 {
+            self.items[self.len] = val;
+            self.len += 1;
+            true
+        } else {
+            false
         }
     }
 }
@@ -48,27 +73,24 @@ pub struct ThreadStateNode {
     pub epoch: AtomicUsize,
     pub next: *mut ThreadStateNode,
     pub garbage_queue: GarbageQueue,
-    pub local_free: core::cell::UnsafeCell<Vec<u32>>,
+    pub local_free: core::cell::UnsafeCell<LocalFreeQueue>,
 }
 
 impl ThreadStateNode {
-    pub(crate) fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             active: AtomicBool::new(false),
             epoch: AtomicUsize::new(0),
             next: ptr::null_mut(),
             garbage_queue: GarbageQueue::new(),
-            local_free: core::cell::UnsafeCell::new(Vec::with_capacity(256)),
+            local_free: core::cell::UnsafeCell::new(LocalFreeQueue::new()),
         }
     }
 }
 
-// GarbageNode is removed since we use GarageQueue.
-
-/// Register a new thread state node. The caller should store this pointer locally
-/// (e.g., using `thread_local!` in the `std` daemon) and pass it to `Guard::new()`.
-pub fn register_thread() -> *mut ThreadStateNode {
-    let node = Box::into_raw(Box::new(ThreadStateNode::new()));
+/// Register a pre-allocated thread state node. The caller should allocate this node
+/// locally or in the static TLS blocks.
+pub fn register_node(node: *mut ThreadStateNode) {
     let mut head = THREAD_STATES.load(Ordering::Acquire);
     loop {
         unsafe { (*node).next = head };
@@ -83,7 +105,7 @@ pub fn register_thread() -> *mut ThreadStateNode {
             Ordering::Release,
             Ordering::Relaxed,
         ) {
-            Ok(_) => break node,
+            Ok(_) => break,
             Err(new_head) => {
                 head = new_head;
                 crate::sync::hint::spin_loop();

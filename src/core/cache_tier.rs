@@ -10,13 +10,13 @@ pub struct CacheTier<K, V, const CAPACITY: usize, const WAYS: usize> {
 impl<K, V, const CAPACITY: usize, const WAYS: usize> CacheTier<K, V, CAPACITY, WAYS> {
     /// Create a new `CacheTier`.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         assert!(CAPACITY > 0, "CAPACITY must be greater than 0");
-        assert!(CAPACITY.is_multiple_of(WAYS), "CAPACITY must be a multiple of WAYS");
+        assert!(CAPACITY % WAYS == 0, "CAPACITY must be a multiple of WAYS");
 
-        let slots = core::array::from_fn(|_| Slot::new());
-
-        Self { slots }
+        Self { 
+            slots: [const { Slot::new() }; CAPACITY] 
+        }
     }
 
     /// Retrieve the set of slots for a given hash.
@@ -129,7 +129,11 @@ mod tests {
         // CAPACITY=8, WAYS=8 means 1 set, 8 slots.
         let tier = CacheTier::<u64, u64, 8, 8>::new();
         let arena = Arena::<u64, u64, 16>::new();
-        let node = qsbr::register_thread();
+        let node = {
+            let node = std::boxed::Box::into_raw(std::boxed::Box::new(crate::core::qsbr::ThreadStateNode::new()));
+            crate::core::qsbr::register_node(node);
+            node
+        };
         let guard = qsbr::pin(node);
 
         // Fill all 8 slots

@@ -23,48 +23,43 @@ pub struct TlsEntry<K, V> {
     pub hits: u8,
 }
 
-pub struct TlsCache<K, V> {
-    index: Vec<usize>,
+pub struct TlsCache<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
+    index: [usize; TLS_INDEX_CAP],
     index_mask: usize,
     
-    nodes: Vec<Option<TlsEntry<K, V>>>,
+    nodes: [Option<TlsEntry<K, V>>; TLS_CAP],
     capacity: usize,
     
     cursor: usize,
     count_sum: u32,
-    free_list: Vec<usize>,
+    free_list: [usize; TLS_CAP],
+    free_list_len: usize,
     
     pub promote_threshold: u8,
-    probation_filter: alloc::boxed::Box<[u8; 4096]>,
+    probation_filter: [u8; 4096],
     probation_cursor: usize,
 }
 
-impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
-    pub fn new(capacity: usize) -> Self {
-        assert!(capacity.is_power_of_two(), "TlsCache capacity must be a power of two");
-        let index_capacity = capacity * 2;
-        let mut index = Vec::with_capacity(index_capacity);
-        for _ in 0..index_capacity {
-            index.push(usize::MAX);
-        }
-        
-        let mut nodes = Vec::with_capacity(capacity);
-        let mut free_list = Vec::with_capacity(capacity);
-        for i in 0..capacity {
-            nodes.push(None);
-            free_list.push(capacity - 1 - i);
+impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP> {
+    pub const fn new() -> Self {
+        let mut free_list = [0; TLS_CAP];
+        let mut i = 0;
+        while i < TLS_CAP {
+            free_list[i] = TLS_CAP - 1 - i;
+            i += 1;
         }
         
         Self { 
-            index, 
-            index_mask: index_capacity - 1, 
-            nodes,
-            capacity,
+            index: [usize::MAX; TLS_INDEX_CAP], 
+            index_mask: TLS_INDEX_CAP - 1, 
+            nodes: [const { None }; TLS_CAP],
+            capacity: TLS_CAP,
             cursor: 0,
             count_sum: 0,
             free_list,
+            free_list_len: TLS_CAP,
             promote_threshold: 2,
-            probation_filter: alloc::boxed::Box::new([0; 4096]),
+            probation_filter: [0; 4096],
             probation_cursor: 0,
         }
     }
@@ -102,8 +97,9 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
     }
 
     fn alloc_slot(&mut self) -> usize {
-        if let Some(idx) = self.free_list.pop() {
-            return idx;
+        if self.free_list_len > 0 {
+            self.free_list_len -= 1;
+            return self.free_list[self.free_list_len];
         }
         
         let avg = (self.count_sum as usize / self.capacity) as u8;
@@ -232,8 +228,9 @@ impl<K: Clone + Eq, V: Clone> TlsCache<K, V> {
 }
 
 /// A block of TLS data representing the state for a single thread.
-pub struct TlsBlock<K, V> {
-    pub cache: TlsCache<K, V>,
+/// A block of TLS data representing the state for a single thread.
+pub struct TlsBlock<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
+    pub cache: TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>,
     #[cfg(feature = "std")]
     pub tx: Option<crossbeam_channel::Sender<DaemonMessage<K, V>>>,
     #[cfg(feature = "std")]
@@ -242,12 +239,13 @@ pub struct TlsBlock<K, V> {
     pub hit_batch: [(usize, u8); 32],
     pub hit_batch_len: u8,
     pub warmup_state: u8,
+    pub qsbr_node: crate::core::qsbr::ThreadStateNode,
 }
 
-impl<K: Clone + Eq, V: Clone> TlsBlock<K, V> {
-    pub fn new(capacity: usize) -> Self {
+impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP> {
+    pub const fn new() -> Self {
         Self {
-            cache: TlsCache::new(capacity),
+            cache: TlsCache::new(),
             #[cfg(feature = "std")]
             tx: None,
             #[cfg(feature = "std")]
@@ -256,44 +254,43 @@ impl<K: Clone + Eq, V: Clone> TlsBlock<K, V> {
             hit_batch: [(0, 0); 32],
             hit_batch_len: 0,
             warmup_state: 0,
+            qsbr_node: crate::core::qsbr::ThreadStateNode::new(),
         }
     }
 }
 
 /// Registry for managing Thread-Local Caches dynamically without OS TLS.
-pub struct TlsRegistry<K, V> {
-    blocks: alloc::vec::Vec<UnsafeCell<TlsBlock<K, V>>>,
+pub struct TlsRegistry<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
+    blocks: [UnsafeCell<TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>>; MAX_THREADS],
     next_id: AtomicUsize,
 }
 
 // We manually implement Sync because we guarantee that each UnsafeCell
 // is only accessed by the thread holding the corresponding TlsHandle.
-unsafe impl<K, V> Sync for TlsRegistry<K, V> {}
+unsafe impl<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync for TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {}
 
-impl<K: Clone + Eq, V: Clone> TlsRegistry<K, V> {
-    pub fn new(max_threads: usize, local_cache_size: usize) -> Self {
-        let mut blocks = Vec::with_capacity(max_threads);
-        for _ in 0..max_threads {
-            blocks.push(UnsafeCell::new(TlsBlock::new(local_cache_size)));
-        }
+impl<K: Clone + Eq, V: Clone, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {
+    pub const fn new() -> Self {
         Self {
-            blocks,
+            blocks: [const { UnsafeCell::new(TlsBlock::new()) }; MAX_THREADS],
             next_id: AtomicUsize::new(0),
         }
     }
 
     /// Returns the maximum number of threads that can be registered
     pub fn max_threads(&self) -> usize {
-        self.blocks.len()
+        MAX_THREADS
     }
 
     /// Register a thread dynamically, allocating a handle and a QSBR node.
     pub fn register_thread(&self) -> TlsHandle {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        if id >= self.blocks.len() {
+        if id >= MAX_THREADS {
             panic!("Exceeded max thread capacity in TlsRegistry");
         }
-        let qsbr_node = qsbr::register_thread();
+        let block = unsafe { &mut *self.blocks[id].get() };
+        let qsbr_node = &mut block.qsbr_node as *mut _;
+        crate::core::qsbr::register_node(qsbr_node);
         TlsHandle { id, qsbr_node }
     }
 
@@ -301,7 +298,7 @@ impl<K: Clone + Eq, V: Clone> TlsRegistry<K, V> {
     /// This is safe because each thread gets a unique ID and exclusively owns its block.
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub fn get_block_mut(&self, handle: &TlsHandle) -> &mut TlsBlock<K, V> {
+    pub fn get_block_mut(&self, handle: &TlsHandle) -> &mut TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP> {
         let block_ptr = self.blocks[handle.id].get();
         unsafe { &mut *block_ptr }
     }
@@ -313,7 +310,7 @@ mod tests {
 
     #[test]
     fn test_tls_registry() {
-        let registry = TlsRegistry::<u64, u64>::new(2, 64);
+        let registry = std::boxed::Box::leak(std::boxed::Box::new(TlsRegistry::<u64, u64, 2, 64, 128>::new()));
         let handle1 = registry.register_thread();
         let handle2 = registry.register_thread();
         assert_eq!(handle1.id, 0);
@@ -328,14 +325,14 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_tls_registry_exceeds_capacity() {
-        let registry = TlsRegistry::<u64, u64>::new(1, 64);
+        let registry = std::boxed::Box::leak(std::boxed::Box::new(TlsRegistry::<u64, u64, 1, 64, 128>::new()));
         let _handle1 = registry.register_thread();
         let _handle2 = registry.register_thread();
     }
 
     #[test]
     fn test_tls_cache_basic() {
-        let mut cache = TlsCache::<u64, u64>::new(16);
+        let mut cache = TlsCache::<u64, u64, 16, 32>::new();
         let (val, promote, sync) = cache.get(100, &10);
         assert_eq!(val, None);
         assert_eq!(promote, false);
@@ -350,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_tls_cache_promote() {
-        let mut cache = TlsCache::<u64, u64>::new(16);
+        let mut cache = TlsCache::<u64, u64, 16, 32>::new();
         cache.insert(100, 10, 20);
         
         // Hit a few times to trigger promotion
@@ -366,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_tls_cache_fast_pass() {
-        let mut cache = TlsCache::<u64, u64>::new(16);
+        let mut cache = TlsCache::<u64, u64, 16, 32>::new();
         cache.insert_fast_pass(200, 20, 30);
         
         // The hits should be initialized to max (4), meaning it doesn't need immediate promotion
@@ -377,7 +374,7 @@ mod tests {
 
     #[test]
     fn test_tls_cache_evict() {
-        let mut cache = TlsCache::<u64, u64>::new(16);
+        let mut cache = TlsCache::<u64, u64, 16, 32>::new();
         for i in 0..20 { // More than capacity
             cache.insert(i, i as u64, (i * 20) as u64);
         }
@@ -393,7 +390,7 @@ mod tests {
     }
     #[test]
     fn test_tls_cache_overwrite_and_record_hit() {
-        let mut cache = TlsCache::<u64, u64>::new(16);
+        let mut cache = TlsCache::<u64, u64, 16, 32>::new();
         cache.insert(100, 10, 20);
         
         // Overwrite

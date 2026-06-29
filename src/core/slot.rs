@@ -12,7 +12,7 @@ pub struct Slot<K, V> {
 
 impl<K, V> Slot<K, V> {
     #[inline(always)]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             hash: core::sync::atomic::AtomicUsize::new(0),
             hits: core::sync::atomic::AtomicU16::new(0),
@@ -65,7 +65,11 @@ mod tests {
     #[test]
     fn test_slot_default() {
         let slot: Slot<u64, u64> = Slot::default();
-        let node = crate::core::qsbr::register_thread();
+        let node = {
+            let n = std::boxed::Box::into_raw(std::boxed::Box::new(crate::core::qsbr::ThreadStateNode::new()));
+            crate::core::qsbr::register_node(n);
+            n
+        };
         let guard = crate::core::qsbr::pin(node);
         assert_eq!(slot.read(&guard), (0, super::super::arena::NULL_INDEX));
     }
@@ -73,7 +77,11 @@ mod tests {
     fn test_slot_insert_replace() {
         let arena = crate::core::arena::Arena::<u64, u64, 4>::new();
         let slot = Slot::<u64, u64>::default();
-        let node = crate::core::qsbr::register_thread();
+        let node = {
+            let n = std::boxed::Box::into_raw(std::boxed::Box::new(crate::core::qsbr::ThreadStateNode::new()));
+            crate::core::qsbr::register_node(n);
+            n
+        };
         let guard = crate::core::qsbr::pin(node);
         
         slot.insert(&arena, 100, 10, 20, node);
