@@ -49,8 +49,14 @@ fn run_workload(
     let warmup_handle = cache.register_thread();
     let mut rng = rand::thread_rng();
     let uniform = Uniform::new(0, DATASET_SIZE);
+    let zipf = Zipf::new(DATASET_SIZE, 1.5).unwrap();
+    
     for _ in 0..100_000 {
-        let key = uniform.sample(&mut rng);
+        let key = match pattern {
+            AccessPattern::Uniform => uniform.sample(&mut rng),
+            AccessPattern::Zipf => zipf.sample(&mut rng) as u64,
+            AccessPattern::Scan => uniform.sample(&mut rng), // Warmup uniform for scan
+        };
         cache.insert(key, key, &warmup_handle);
     }
 
@@ -73,7 +79,7 @@ fn run_workload(
                 let tls_handle = cache_clone.register_thread();
                 let mut rng = rand::thread_rng();
                 let uniform_dist = Uniform::new(0, DATASET_SIZE);
-                let zipf_dist = Zipf::new(DATASET_SIZE, 0.99).unwrap();
+                let zipf_dist = Zipf::new(DATASET_SIZE, 1.5).unwrap();
                 
                 let mut hist = Histogram::<u64>::new(3).unwrap();
                 let mut hits = 0;
@@ -108,6 +114,9 @@ fn run_workload(
                     if is_read {
                         if cache_clone.get(&key, &tls_handle).is_some() {
                             hits += 1;
+                        } else {
+                            // Insert on read miss (realistic cache behavior)
+                            cache_clone.insert(key, key, &tls_handle);
                         }
                     } else {
                         cache_clone.insert(key, key, &tls_handle);

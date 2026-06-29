@@ -78,7 +78,7 @@ where
             let (_, node_idx) = slot.read(guard);
             if node_idx != super::arena::NULL_INDEX {
                 let node = unsafe { self.arena.get(node_idx as usize) };
-                if hits == P::T0_THRESHOLD {
+                if hits >= P::T0_THRESHOLD {
                     // Internal Promotion to T0
                     self.t0.insert(&self.arena, hash, node.key.clone(), node.value.clone(), guard.node());
                 }
@@ -93,7 +93,7 @@ where
             let (_, node_idx) = slot.read(guard);
             if node_idx != super::arena::NULL_INDEX {
                 let node = unsafe { self.arena.get(node_idx as usize) };
-                if hits == P::T1_THRESHOLD {
+                if hits >= P::T1_THRESHOLD {
                     // Internal Promotion to T1
                     self.t1.insert(&self.arena, hash, node.key.clone(), node.value.clone(), guard.node());
                 }

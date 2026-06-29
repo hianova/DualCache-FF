@@ -84,6 +84,11 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> CacheTier<K, V, CAPACITY, W
             if hits < min_hits {
                 min_hits = hits;
                 replace_idx = i;
+            } else if hits == min_hits {
+                // Break ties using the hash to prevent degrading to 1-Way Set Associative
+                if (hash >> (i as u32)) & 1 == 1 {
+                    replace_idx = i;
+                }
             }
             // Ring Clock Decay: Shift count right (decay by half)
             slot.hits.store(hits >> 1, crate::sync::atomic::Ordering::Relaxed);
