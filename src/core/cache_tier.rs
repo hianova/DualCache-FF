@@ -73,9 +73,23 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> CacheTier<K, V, CAPACITY, W
             }
         }
         
-        // Use a simple lossy replace for now: replace the first one in the set
-        let replace_idx = 0;
-        set[replace_idx].insert(arena, hash, key, value, node);
+        // If no matching key or empty slot was found, perform Ring Clock + Pseudo-LFU Eviction
+        let mut min_hits = u16::MAX;
+        let mut replace_idx = 0;
+        
+        for i in 0..WAYS {
+            let slot = unsafe { set.get_unchecked(i) };
+            let hits = slot.hits.load(crate::sync::atomic::Ordering::Relaxed);
+            
+            if hits < min_hits {
+                min_hits = hits;
+                replace_idx = i;
+            }
+            // Ring Clock Decay: Shift count right (decay by half)
+            slot.hits.store(hits >> 1, crate::sync::atomic::Ordering::Relaxed);
+        }
+        
+        unsafe { set.get_unchecked(replace_idx) }.insert(arena, hash, key, value, node);
     }
 }
 

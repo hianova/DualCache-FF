@@ -33,9 +33,11 @@ impl<K, V> Slot<K, V> {
     /// Record a cache hit atomically and return the new hit count.
     #[inline(always)]
     pub fn record_hit(&self) -> u16 {
-        let hits = self.hits.load(Ordering::Relaxed).wrapping_add(1);
-        self.hits.store(hits, Ordering::Relaxed);
-        hits
+        let current = self.hits.load(Ordering::Relaxed);
+        let bonus = 3u16.saturating_add(current >> 4);
+        let new_hits = current.saturating_add(bonus);
+        self.hits.store(new_hits, Ordering::Relaxed);
+        new_hits
     }
 
     /// Insert a new node into the slot, retiring the old one safely using QSBR.
