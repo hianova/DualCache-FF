@@ -108,7 +108,17 @@ where
 
         let hash = self.core.hash_key(key);
         
-        // 1. Check TLS cache (L1)
+        // 1. Check Wait-Free Core (Globally Hot Data - T0/T1/T2)
+        let guard = crate::core::qsbr::pin(handle.qsbr_node);
+        if let Some((val, tier)) = self.core.get(key, &guard) {
+            let cloned_val = val.clone();
+            if tier == 0 {
+                block.warmup_state = block.warmup_state.saturating_add(10); // T0 Hit: fully warmed up!
+            }
+            return Some(cloned_val);
+        }
+        
+        // 2. Check TLS cache (Thread-Local Fallback - Replaces L3)
         let (val_opt, promote, sync) = block.cache.get(hash, key);
         
         #[cfg(feature = "std")]
@@ -141,19 +151,6 @@ where
         if let Some(val) = val_opt {
             block.warmup_state = block.warmup_state.saturating_sub(10); // TLS Hit: decrease score (needs Fast Pass)
             return Some(val.clone());
-        }
-
-        // 2. Check Wait-Free Core (L2)
-        let guard = crate::core::qsbr::pin(handle.qsbr_node);
-        if let Some((val, tier)) = self.core.get(key, &guard) {
-            let cloned_val = val.clone();
-            println!("core.get tier: {}", tier);
-            if tier == 0 {
-                block.warmup_state = block.warmup_state.saturating_add(10); // T0 Hit: fully warmed up!
-            }
-            
-            block.cache.insert(hash, key.clone(), cloned_val.clone());
-            return Some(cloned_val);
         }
 
         // Total Miss
@@ -353,4 +350,3 @@ mod tests {
         cache.core.try_reclaim(handle.qsbr_node);
     }
 }
-
