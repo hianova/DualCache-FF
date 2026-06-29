@@ -1,11 +1,11 @@
-use std::time::{Instant, Duration};
+use std::time::Instant;
 use hdrhistogram::Histogram;
 use rand::Rng;
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
 use crossbeam_utils::thread;
-use dualcache_ff::DualCacheFf;
+use dualcache_ff::DualCacheFF;
 use std::sync::{Arc, Barrier};
 
 const THREAD_COUNT: usize = 4;
@@ -18,7 +18,7 @@ const CACHE_T1_CAP: usize = 4096;
 const CACHE_T2_CAP: usize = 131072;
 const TOTAL_CAP: usize = CACHE_T0_CAP + CACHE_T1_CAP + CACHE_T2_CAP;
 
-type BenchCache = DualCacheFf<u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, CACHE_T0_CAP, CACHE_T1_CAP, CACHE_T2_CAP, TOTAL_CAP>;
+type BenchCache = DualCacheFF<u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, CACHE_T0_CAP, CACHE_T1_CAP, CACHE_T2_CAP, TOTAL_CAP>;
 
 #[derive(Clone, Copy)]
 enum AccessPattern {
@@ -42,7 +42,7 @@ fn run_workload(
     read_ratio_percent: u8,
     shift_dataset: bool,
 ) -> BenchResult {
-    let mut base_cache = DualCacheFf::new(THREAD_COUNT + 1, CACHE_L1_SIZE);
+    let mut base_cache = DualCacheFF::new(THREAD_COUNT + 1, CACHE_L1_SIZE);
     base_cache.set_daemon_mode(true);
     let cache: Arc<BenchCache> = Arc::new(base_cache);
 
@@ -51,7 +51,7 @@ fn run_workload(
     let uniform = Uniform::new(0, DATASET_SIZE);
     for _ in 0..100_000 {
         let key = uniform.sample(&mut rng);
-        cache.put(key, key, &warmup_handle);
+        cache.insert(key, key, &warmup_handle);
     }
 
     let barrier = Arc::new(Barrier::new(THREAD_COUNT));
@@ -73,7 +73,7 @@ fn run_workload(
                 let tls_handle = cache_clone.register_thread();
                 let mut rng = rand::thread_rng();
                 let uniform_dist = Uniform::new(0, DATASET_SIZE);
-                let zipf_dist = Zipf::new(DATASET_SIZE as u64, 0.99).unwrap();
+                let zipf_dist = Zipf::new(DATASET_SIZE, 0.99).unwrap();
                 
                 let mut hist = Histogram::<u64>::new(3).unwrap();
                 let mut hits = 0;
@@ -100,8 +100,7 @@ fn run_workload(
 
                 barrier_clone.wait(); // Synchronize all threads to start
 
-                for i in 0..OPS_PER_THREAD {
-                    let (key, is_read) = ops_data[i];
+                for (i, &(key, is_read)) in ops_data.iter().enumerate() {
                     
                     let measure_latency = i % 100 == 0;
                     let op_start = if measure_latency { Some(Instant::now()) } else { None };
@@ -111,7 +110,7 @@ fn run_workload(
                             hits += 1;
                         }
                     } else {
-                        cache_clone.put(key, key, &tls_handle);
+                        cache_clone.insert(key, key, &tls_handle);
                     }
                     
                     if let Some(start) = op_start {

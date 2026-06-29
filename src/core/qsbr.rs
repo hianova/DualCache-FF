@@ -1,7 +1,8 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::missing_safety_doc)]
 use crate::sync::atomic::{AtomicPtr, AtomicUsize, AtomicBool, Ordering};
 use alloc::boxed::Box;
 use core::ptr;
-use core::cell::UnsafeCell;
 
 lazy_static::lazy_static! {
     static ref GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);

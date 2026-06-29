@@ -1,3 +1,4 @@
+#![allow(clippy::missing_safety_doc)]
 use crate::sync::atomic::{AtomicUsize, AtomicU16, Ordering};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -18,6 +19,12 @@ unsafe impl<K: Sync, V: Sync, const N: usize> Sync for Arena<K, V, N> {}
 pub struct Node<K, V> {
     pub key: K,
     pub value: V,
+}
+
+impl<K, V, const N: usize> Default for Arena<K, V, N> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<K, V, const N: usize> Arena<K, V, N> {
@@ -83,7 +90,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
             let old_index = (head & 0xFFFF) as u16;
             self.next_free[index].store(old_index, Ordering::Relaxed);
             let tag = head >> 16;
-            let new_head = (tag.wrapping_add(1) << 16) | (index as usize);
+            let new_head = (tag.wrapping_add(1) << 16) | index;
             
             match self.free_head.compare_exchange_weak(head, new_head, Ordering::Release, Ordering::Relaxed) {
                 Ok(_) => break,
@@ -98,6 +105,42 @@ impl<K, V, const N: usize> Arena<K, V, N> {
     pub unsafe fn get(&self, index: usize) -> &Node<K, V> {
         unsafe {
             (*self.nodes[index].get()).assume_init_ref()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn test_arena_default() {
+        let arena: Arena<u64, u64, 16> = Arena::default();
+        assert!(arena.alloc(1, 10).is_some());
+    }
+
+    #[test]
+    fn test_arena_cas_retries() {
+        let arena = Arc::new(Arena::<u64, u64, 1024>::new());
+        let mut handles = vec![];
+        for _ in 0..8 {
+            let arena_clone = arena.clone();
+            handles.push(thread::spawn(move || {
+                let mut idxs = vec![];
+                for i in 0..100 {
+                    if let Some(idx) = arena_clone.alloc(i, i * 10) {
+                        idxs.push(idx);
+                    }
+                }
+                for idx in idxs {
+                    unsafe { arena_clone.free(idx); }
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
         }
     }
 }

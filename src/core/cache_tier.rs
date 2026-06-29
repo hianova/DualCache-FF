@@ -1,8 +1,6 @@
-use super::alignment::CacheAligned;
 use super::slot::Slot;
 use super::qsbr;
 use super::arena::{self, Arena};
-use crate::sync::atomic::Ordering;
 
 /// Represents a single cache tier (e.g., T0, T1, T2) using Set-Associative Lock-Free arrays.
 pub struct CacheTier<K, V, const CAPACITY: usize, const WAYS: usize> {
@@ -14,7 +12,7 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> CacheTier<K, V, CAPACITY, W
     #[must_use]
     pub fn new() -> Self {
         assert!(CAPACITY > 0, "CAPACITY must be greater than 0");
-        assert!(CAPACITY % WAYS == 0, "CAPACITY must be a multiple of WAYS");
+        assert!(CAPACITY.is_multiple_of(WAYS), "CAPACITY must be a multiple of WAYS");
 
         let slots = core::array::from_fn(|_| Slot::new());
 

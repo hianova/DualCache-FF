@@ -51,7 +51,8 @@ where
 
     /// Retrieve a value from the core, cascading through T0 -> T1 -> T2.
     /// Performs internal promotion synchronously if thresholds are reached.
-    pub fn get<'g>(&self, key: &K, guard: &'g Guard) -> Option<&'g V> 
+    #[allow(path_statements)]
+    pub fn get<'g>(&self, key: &K, guard: &'g Guard) -> Option<(&'g V, u8)> 
     where
         K: PartialEq + core::hash::Hash + Clone,
         V: Clone,
@@ -61,13 +62,13 @@ where
         // 1. Check T0 (Royal Class - 1ns)
         if let Some(slot) = self.t0.get_slot(&self.arena, hash, key, guard) {
             slot.record_hit();
-            let _ = P::_ASSERT_POWER_OF_TWO; // Ensure compile-time checks
+            P::_ASSERT_POWER_OF_TWO; // Ensure compile-time checks
 
             let (_, node_idx) = slot.read(guard);
             if node_idx != super::arena::NULL_INDEX {
                 let node = unsafe { self.arena.get(node_idx as usize) };
                 let val_ptr = &node.value as *const V;
-                return Some(unsafe { &*val_ptr });
+                return Some((unsafe { &*val_ptr }, 0));
             }
         }
 
@@ -82,7 +83,7 @@ where
                     self.t0.insert(&self.arena, hash, node.key.clone(), node.value.clone(), guard.node());
                 }
                 let val_ptr = &node.value as *const V;
-                return Some(unsafe { &*val_ptr });
+                return Some((unsafe { &*val_ptr }, 1));
             }
         }
 
@@ -97,12 +98,18 @@ where
                     self.t1.insert(&self.arena, hash, node.key.clone(), node.value.clone(), guard.node());
                 }
                 let val_ptr = &node.value as *const V;
-                return Some(unsafe { &*val_ptr });
+                return Some((unsafe { &*val_ptr }, 2));
             }
         }
 
         // Missed in all core tiers.
         None
+    }
+
+    /// Put directly into T0 (Fast Pass)
+    pub fn put_t0(&self, key: K, value: V, node: *mut super::qsbr::ThreadStateNode) {
+        let hash = self.hash_key(&key);
+        self.t0.insert(&self.arena, hash, key, value, node);
     }
 
     /// Put a key-value pair directly into T2.
@@ -162,14 +169,14 @@ mod tests {
         core.put(100, 200, thread_node);
 
         // Hit 1: Should be in T2
-        assert_eq!(core.get(&100, &guard), Some(&200));
+        assert_eq!(core.get(&100, &guard), Some((&200, 2)));
 
         // Hit 2, 3: Should still be in T2
-        assert_eq!(core.get(&100, &guard), Some(&200));
-        assert_eq!(core.get(&100, &guard), Some(&200));
+        assert_eq!(core.get(&100, &guard), Some((&200, 2)));
+        assert_eq!(core.get(&100, &guard), Some((&200, 2)));
 
         // Hit 4: T1_THRESHOLD is 4, triggers T2 -> T1
-        assert_eq!(core.get(&100, &guard), Some(&200));
+        assert_eq!(core.get(&100, &guard), Some((&200, 2)));
 
         // Let's verify it promoted to T1
         let hash = core.hash_key(&100);
@@ -180,11 +187,11 @@ mod tests {
         // Wait, when inserted into T1, its hit count starts at 0!
         // T0_THRESHOLD is 8, so it needs 8 more hits in T1.
         for _ in 0..7 {
-            assert_eq!(core.get(&100, &guard), Some(&200));
+            assert_eq!(core.get(&100, &guard), Some((&200, 1)));
         }
 
         // 8th hit in T1 triggers T1 -> T0 promotion
-        assert_eq!(core.get(&100, &guard), Some(&200));
+        assert_eq!(core.get(&100, &guard), Some((&200, 1)));
 
         let t0_slot = core.t0.get_slot(&core.arena, hash, &100, &guard);
         assert!(t0_slot.is_some());

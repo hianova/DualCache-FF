@@ -1,5 +1,4 @@
 use crate::sync::atomic::{AtomicUsize, AtomicU16, Ordering};
-use core::ptr;
 use super::qsbr;
 use super::arena::{self, Arena};
 
@@ -25,7 +24,7 @@ impl<K, V> Slot<K, V> {
     /// Read the slot. The caller MUST be holding a QSBR Guard.
     /// Returns the hash and the node index.
     #[inline(always)]
-    pub fn read<'g>(&self, _guard: &'g qsbr::Guard) -> (usize, u16) {
+    pub fn read(&self, _guard: &qsbr::Guard) -> (usize, u16) {
         let hash = self.hash.load(Ordering::Relaxed);
         let idx = self.node_idx.load(Ordering::Acquire);
         (hash, idx)
@@ -58,3 +57,16 @@ impl<K, V> Default for Slot<K, V> {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slot_default() {
+        let slot: Slot<u64, u64> = Slot::default();
+        let node = crate::core::qsbr::register_thread();
+        let guard = crate::core::qsbr::pin(node);
+        assert_eq!(slot.read(&guard), (0, super::super::arena::NULL_INDEX));
+    }
+}

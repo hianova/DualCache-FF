@@ -1,3 +1,3 @@
 fn main() {
-    let (tx, rx) = loom::sync::mpsc::channel::<i32>();
+    let (_tx, _rx) = loom::sync::mpsc::channel::<i32>();
 }

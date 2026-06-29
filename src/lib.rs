@@ -9,18 +9,17 @@ pub mod tls;
 #[cfg(feature = "std")]
 pub mod daemon;
 
-use crate::core::BottomUpCache;
 use crate::sync::arc::Arc;
 use crate::sync::atomic::{AtomicBool, Ordering};
 use crate::tls::{TlsRegistry, TlsHandle};
 
 #[cfg(feature = "std")]
-use crate::daemon::{Daemon, DaemonMessage};
+use crate::daemon::DaemonMessage;
 #[cfg(feature = "std")]
-use crossbeam_channel::{bounded, Sender};
+use crossbeam_channel::Sender;
 
-/// DualCacheFf is the global API entry point.
-pub struct DualCacheFf<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize> 
+/// DualCacheFF is the global API entry point.
+pub struct DualCacheFF<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize> 
 where 
     P: crate::core::config::CachePolicy + Send + Sync,
 {
@@ -31,7 +30,7 @@ where
     global_tx: Option<Sender<DaemonMessage<K, V>>>,
 }
 
-impl<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize> DualCacheFf<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP> 
+impl<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize> DualCacheFF<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP> 
 where 
     K: Clone + Eq + ::core::hash::Hash + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
@@ -100,13 +99,12 @@ where
         // Drain broadcasts periodically (every 64 ops) to reduce channel contention overhead
         block.op_count = block.op_count.wrapping_add(1);
         #[cfg(feature = "std")]
-        if block.op_count % 64 == 0 {
-            if let Some(ref hit_rx) = block.hit_rx {
+        if block.op_count.is_multiple_of(64)
+            && let Some(ref hit_rx) = block.hit_rx {
                 while let Ok((msg_hash, weight)) = hit_rx.try_recv() {
                     block.cache.record_remote_hit(msg_hash, weight);
                 }
             }
-        }
 
         let hash = self.core.hash_key(key);
         
@@ -117,13 +115,13 @@ where
         if promote {
             if let Some(val) = val_opt {
                 if let Some(ref tx) = block.tx {
-                    let _ = tx.try_send(crate::daemon::DaemonMessage::Promote(hash, key.clone(), val.clone()));
+                    let _ = tx.try_send(crate::daemon::DaemonMessage::Promote(hash, key.clone(), val.clone(), 2));
                 } else {
                     self.core.put(key.clone(), val.clone(), handle.qsbr_node);
                 }
             }
-        } else if sync {
-            if let Some(ref tx) = block.tx {
+        } else if sync
+            && let Some(ref tx) = block.tx {
                 block.hit_batch[block.hit_batch_len as usize] = (hash, 1);
                 block.hit_batch_len += 1;
                 if block.hit_batch_len == 32 {
@@ -131,7 +129,6 @@ where
                     block.hit_batch_len = 0;
                 }
             }
-        }
         
         #[cfg(not(feature = "std"))]
         if promote {
@@ -142,37 +139,62 @@ where
         }
 
         if let Some(val) = val_opt {
+            block.warmup_state = block.warmup_state.saturating_sub(10); // TLS Hit: decrease score (needs Fast Pass)
             return Some(val.clone());
         }
 
         // 2. Check Wait-Free Core (L2)
         let guard = crate::core::qsbr::pin(handle.qsbr_node);
-        if let Some(val) = self.core.get(key, &guard) {
+        if let Some((val, tier)) = self.core.get(key, &guard) {
             let cloned_val = val.clone();
-            block.cache.put(hash, key.clone(), cloned_val.clone());
+            println!("core.get tier: {}", tier);
+            if tier == 0 {
+                block.warmup_state = block.warmup_state.saturating_add(10); // T0 Hit: fully warmed up!
+            }
+            
+            block.cache.insert(hash, key.clone(), cloned_val.clone());
             return Some(cloned_val);
         }
 
+        // Total Miss
+        block.warmup_state = block.warmup_state.saturating_sub(10);
         None
     }
 
     /// Explicitly put a value into the TLS cache (L1).
     /// The value will be promoted to the Core (L2) later when it reaches the promote_threshold.
-    pub fn put(&self, key: K, value: V, handle: &TlsHandle) {
+    pub fn insert(&self, key: K, value: V, handle: &TlsHandle) {
         let block = self.tls_registry.get_block_mut(handle);
         
         block.op_count = block.op_count.wrapping_add(1);
         #[cfg(feature = "std")]
-        if block.op_count % 64 == 0 {
-            if let Some(ref hit_rx) = block.hit_rx {
+        if block.op_count.is_multiple_of(64)
+            && let Some(ref hit_rx) = block.hit_rx {
                 while let Ok((msg_hash, weight)) = hit_rx.try_recv() {
                     block.cache.record_remote_hit(msg_hash, weight);
                 }
             }
-        }
 
         let hash = self.core.hash_key(&key);
-        block.cache.put(hash, key, value);
+        
+        let is_fast_pass = block.warmup_state < 100;
+        
+        if is_fast_pass {
+            block.cache.insert_fast_pass(hash, key.clone(), value.clone());
+            #[cfg(feature = "std")]
+            if let Some(ref tx) = block.tx {
+                let _ = tx.try_send(crate::daemon::DaemonMessage::Promote(hash, key, value, 0));
+            } else {
+                self.core.put_t0(key, value, handle.qsbr_node);
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                self.core.put_t0(key, value, handle.qsbr_node);
+                self.core.try_reclaim(handle.qsbr_node);
+            }
+        } else {
+            block.cache.insert(hash, key, value);
+        }
     }
 }
 
@@ -183,17 +205,17 @@ mod tests {
 
     #[test]
     fn test_daemon_off_sync() {
-        let cache: DualCacheFf<u64, u64, crate::core::config::DefaultExponentialPolicy, 4, 16, 64, 84> = DualCacheFf::new(10, 16);
+        let cache: DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 256, 1024, 2048, 4096> = DualCacheFF::new(10, 16);
         let handle = cache.register_thread();
 
         // Put twice to pass admission filter
-        cache.put(1, 100, &handle);
-        cache.put(1, 100, &handle);
+        cache.insert(1, 100, &handle);
+        cache.insert(1, 100, &handle);
         assert_eq!(cache.get(&1, &handle), Some(100));
         
         // Put twice, verify isolation
-        cache.put(2, 200, &handle);
-        cache.put(2, 200, &handle);
+        cache.insert(2, 200, &handle);
+        cache.insert(2, 200, &handle);
         assert_eq!(cache.get(&2, &handle), Some(200));
     }
 
@@ -202,7 +224,7 @@ mod tests {
     fn test_daemon_on_async() {
         use std::time::Duration;
         
-        let mut cache: DualCacheFf<u64, u64, crate::core::config::DefaultExponentialPolicy, 4, 16, 64, 84> = DualCacheFf::new(10, 16);
+        let mut cache: DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 4, 16, 64, 84> = DualCacheFF::new(10, 16);
         
         // Turn ON Daemon (automatically spawns daemon)
         cache.set_daemon_mode(true);
@@ -210,8 +232,8 @@ mod tests {
         let handle = cache.register_thread();
 
         // Put twice to pass admission filter
-        cache.put(10, 1000, &handle);
-        cache.put(10, 1000, &handle);
+        cache.insert(10, 1000, &handle);
+        cache.insert(10, 1000, &handle);
         
         // Get multiple times to reach promote threshold
         for _ in 0..5 {
@@ -230,13 +252,13 @@ mod tests {
     fn test_extensive_coverage() {
         use std::time::Duration;
         
-        let mut cache: DualCacheFf<u64, u64, crate::core::config::DefaultExponentialPolicy, 4, 16, 64, 84> = DualCacheFf::new(10, 2);
+        let mut cache: DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 256, 1024, 2048, 4096> = DualCacheFF::new(10, 2);
         let handle = cache.register_thread();
 
         // Sync mode: insert many items to trigger evictions
         for i in 0..100 {
-            cache.put(i, i * 10, &handle);
-            cache.put(i, i * 10, &handle); // Admitted
+            cache.insert(i, i * 10, &handle);
+            cache.insert(i, i * 10, &handle); // Admitted
             cache.get(&i, &handle);
         }
 
@@ -250,13 +272,29 @@ mod tests {
 
         // Async mode: insert many items
         for i in 100..200 {
-            cache.put(i, i * 10, &handle);
-            cache.put(i, i * 10, &handle); // Admitted
-            // Get multiple times to trigger promote messages
-            for _ in 0..5 {
+            cache.insert(i, i * 10, &handle);
+            cache.insert(i, i * 10, &handle); // Admitted
+            // Get multiple times to trigger promote messages and hit batches
+            for _ in 0..100 {
                 cache.get(&i, &handle);
             }
         }
+        // Wait for daemon to process
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Test manual Promote to T0 and T2 via global_tx
+        if let Some(tx) = cache.global_tx.clone() {
+            let _ = tx.send(crate::daemon::DaemonMessage::Promote(999, 999, 9990, 0));
+            let _ = tx.send(crate::daemon::DaemonMessage::Promote(888, 888, 8880, 2));
+            
+            // Test HitBatch manual injection
+            let mut arr = [(0usize, 0u8); 32];
+            arr[0] = (123, 10);
+            arr[1] = (123, 5); // Duplicate hash to trigger `found = true`
+            arr[2] = (456, 1);
+            let _ = tx.send(crate::daemon::DaemonMessage::HitBatch(arr, 3));
+        }
+        std::thread::sleep(Duration::from_millis(50));
 
         let handle2 = cache.register_thread();
         for i in 100..200 {
@@ -264,9 +302,26 @@ mod tests {
             cache.get(&i, &handle2);
         }
 
-        // Hit item 100 many times via handle2 to promote it through T2 -> T1 -> T0 in the core
-        for _ in 0..300 {
-            cache.get(&100, &handle2);
+        // Insert many items via handle
+        for i in 1000..2000 {
+            cache.insert(i, i * 10, &handle);
+        }
+
+        // Get them via handle2. Since handle2 TLS is empty, they will miss TLS and hit Core.
+        // Each hit increments warmup_state by 10.
+        // Since there are 1000 items, all blocks will easily reach warmup_state > 100.
+        for i in 1000..2000 {
+            cache.get(&i, &handle2);
+        }
+        
+        let warmup = cache.tls_registry.get_block_mut(&handle2).warmup_state;
+        println!("Warmup state for handle2 after 1000 gets: {}", warmup);
+        
+        // Now warmup_state of all blocks is > 100.
+        // Insert will hit normal insert branch (not fast pass).
+        for i in 2000..3000 {
+            cache.insert(i, i * 10, &handle2);
+            cache.insert(i, i * 10, &handle2); // second time to pass probation filter
         }
 
         // Test over-capacity registration panic
@@ -281,7 +336,7 @@ mod tests {
 
         // Send a Promote message to Daemon directly
         if let Some(tx) = cache.global_tx.clone() {
-            let _ = tx.send(crate::daemon::DaemonMessage::Promote(123, 123, 123));
+            let _ = tx.send(crate::daemon::DaemonMessage::Promote(123, 123, 123, 0));
         }
 
         // Wait for daemon to process

@@ -6,10 +6,11 @@ use ::core::hash::Hash;
 
 use crossbeam_channel::Receiver;
 
+#[allow(clippy::large_enum_variant)]
 pub enum DaemonMessage<K, V> {
     Hit(usize, u8),           // hash, weight
     HitBatch([(usize, u8); 32], u8), // batch of hits
-    Promote(usize, K, V),     // hash, key, value
+    Promote(usize, K, V, u8), // hash, key, value, tier (0=T0, 2=T2)
 }
 
 /// The Daemon manages background tasks like TLS-to-Core promotion
@@ -22,28 +23,28 @@ impl Daemon {
     fn compress_and_push<K, V>(batch: &mut alloc::vec::Vec<DaemonMessage<K, V>>, msg: DaemonMessage<K, V>) {
         match msg {
             DaemonMessage::Hit(hash, weight) => {
-                if let Some(DaemonMessage::Hit(last_hash, last_weight)) = batch.last_mut() {
-                    if *last_hash == hash {
+                if let Some(DaemonMessage::Hit(last_hash, last_weight)) = batch.last_mut()
+                    && *last_hash == hash {
                         *last_weight = last_weight.saturating_add(weight);
                         return;
                     }
-                }
                 batch.push(DaemonMessage::Hit(hash, weight));
             }
             DaemonMessage::HitBatch(arr, len) => {
-                for i in 0..(len as usize) {
-                    let (hash, weight) = arr[i];
-                    if let Some(DaemonMessage::Hit(last_hash, last_weight)) = batch.last_mut() {
-                        if *last_hash == hash {
+                for &(hash, weight) in arr[..(len as usize)].iter() {
+                    let mut found = false;
+                    if let Some(DaemonMessage::Hit(last_hash, last_weight)) = batch.last_mut()
+                        && *last_hash == hash {
                             *last_weight = last_weight.saturating_add(weight);
-                            continue;
+                            found = true;
                         }
+                    if !found {
+                        batch.push(DaemonMessage::Hit(hash, weight));
                     }
-                    batch.push(DaemonMessage::Hit(hash, weight));
                 }
             }
-            DaemonMessage::Promote(hash, key, val) => {
-                batch.push(DaemonMessage::Promote(hash, key, val));
+            DaemonMessage::Promote(hash, key, val, tier) => {
+                batch.push(DaemonMessage::Promote(hash, key, val, tier));
             }
         }
     }
@@ -103,8 +104,12 @@ impl Daemon {
                             }
                         }
                         DaemonMessage::HitBatch(_, _) => unreachable!(),
-                        DaemonMessage::Promote(_hash, key, value) => {
-                            core.put(key, value, daemon_node);
+                        DaemonMessage::Promote(_hash, key, value, tier) => {
+                            if tier == 0 {
+                                core.put_t0(key, value, daemon_node);
+                            } else {
+                                core.put(key, value, daemon_node);
+                            }
                         }
                     }
                 }
@@ -118,5 +123,23 @@ impl Daemon {
             }
         });
         Self { _handle: handle }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_daemon_compress_and_push() {
+        let mut batch: alloc::vec::Vec<DaemonMessage<u64, u64>> = alloc::vec::Vec::new();
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 10));
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 5));
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(2, 5));
+        
+        let mut arr = [(0usize, 0u8); 32];
+        arr[0] = (2, 5);
+        arr[1] = (3, 10);
+        Daemon::compress_and_push(&mut batch, DaemonMessage::HitBatch(arr, 2));
     }
 }

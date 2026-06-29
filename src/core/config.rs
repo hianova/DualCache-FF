@@ -1,5 +1,5 @@
-/// Static Configuration Policy for DualCacheCore
-/// Uses a Trait-based Static Config pattern for maximum extensibility and zero runtime overhead.
+//! Static Configuration Policy for DualCacheCore
+//! Uses a Trait-based Static Config pattern for maximum extensibility and zero runtime overhead.
 
 pub trait CachePolicy {
     /// Hit count threshold to promote from Local TLS Cache to T2 Core Cache.
