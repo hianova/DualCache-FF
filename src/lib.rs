@@ -9,7 +9,6 @@ pub mod tls;
 #[cfg(feature = "std")]
 pub mod daemon;
 
-use crate::sync::arc::Arc;
 use crate::sync::atomic::{AtomicBool, Ordering};
 use crate::tls::{TlsRegistry, TlsHandle};
 
@@ -39,6 +38,28 @@ where
     tls_registry: TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP>,
     #[cfg(feature = "std")]
     global_tx: std::sync::RwLock<Option<Sender<DaemonMessage<K, V>>>>,
+}
+
+impl<
+    K, 
+    V, 
+    P, 
+    const CAP2: usize, 
+    const CAP1: usize, 
+    const CAP0: usize, 
+    const TOTAL_CAP: usize,
+    const MAX_THREADS: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+> Default for DualCacheFF<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP>
+where 
+    K: Clone + Eq + ::core::hash::Hash + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+ {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<
@@ -115,12 +136,11 @@ where
         let handle = self.tls_registry.register_thread();
         
         #[cfg(feature = "std")]
-        if let Ok(gtx) = self.global_tx.read() {
-            if let Some(ref global_tx) = *gtx {
+        if let Ok(gtx) = self.global_tx.read()
+            && let Some(ref global_tx) = *gtx {
                 let block = self.tls_registry.get_block_mut(&handle);
                 block.tx = Some(global_tx.clone());
             }
-        }
         
         handle
     }

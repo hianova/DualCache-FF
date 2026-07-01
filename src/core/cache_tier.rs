@@ -12,7 +12,7 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> CacheTier<K, V, CAPACITY, W
     #[must_use]
     pub const fn new() -> Self {
         assert!(CAPACITY > 0, "CAPACITY must be greater than 0");
-        assert!(CAPACITY % WAYS == 0, "CAPACITY must be a multiple of WAYS");
+        assert!(CAPACITY.is_multiple_of(WAYS), "CAPACITY must be a multiple of WAYS");
 
         Self { 
             slots: [const { Slot::new() }; CAPACITY] 

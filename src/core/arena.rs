@@ -67,7 +67,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
                 return None; // OOM
             }
             let tag = head >> 32;
-            let next = self.next_free[index as usize].load(Ordering::Relaxed) as u32;
+            let next = self.next_free[index as usize].load(Ordering::Relaxed);
             let new_head = (tag.wrapping_add(1) << 32) | (next as usize);
             
             match self.free_head.compare_exchange_weak(head, new_head, Ordering::AcqRel, Ordering::Acquire) {

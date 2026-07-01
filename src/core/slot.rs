@@ -16,7 +16,7 @@ impl<K, V> Slot<K, V> {
         Self {
             hash: core::sync::atomic::AtomicUsize::new(0),
             hits: core::sync::atomic::AtomicU16::new(0),
-            node_idx: core::sync::atomic::AtomicU32::new(arena::NULL_INDEX as u32),
+            node_idx: core::sync::atomic::AtomicU32::new(arena::NULL_INDEX),
             _marker: core::marker::PhantomData,
         }
     }
@@ -45,7 +45,7 @@ impl<K, V> Slot<K, V> {
         self.hash.store(hash, Ordering::Relaxed);
         self.hits.store(8, Ordering::Relaxed);
         let old_idx = self.node_idx.swap(new_idx as u32, Ordering::Release);
-        if old_idx != arena::NULL_INDEX as u32 {
+        if old_idx != arena::NULL_INDEX {
             crate::core::qsbr::retire(old_idx as usize, node);
         }
     }

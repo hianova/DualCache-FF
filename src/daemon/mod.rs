@@ -1,4 +1,3 @@
-use crate::sync::arc::Arc;
 use crate::sync::thread::{self, JoinHandle};
 #[cfg(not(loom))]
 use std::time::Duration;

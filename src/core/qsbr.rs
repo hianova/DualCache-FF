@@ -43,6 +43,12 @@ pub struct LocalFreeQueue {
     len: usize,
 }
 
+impl Default for LocalFreeQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalFreeQueue {
     pub const fn new() -> Self {
         Self { items: [0; 256], len: 0 }
@@ -74,6 +80,12 @@ pub struct ThreadStateNode {
     pub next: *mut ThreadStateNode,
     pub garbage_queue: GarbageQueue,
     pub local_free: core::cell::UnsafeCell<LocalFreeQueue>,
+}
+
+impl Default for ThreadStateNode {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ThreadStateNode {

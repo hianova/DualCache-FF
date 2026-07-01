@@ -142,7 +142,7 @@ where
     pub fn try_reclaim(&self, node: *mut super::qsbr::ThreadStateNode) {
         super::qsbr::try_reclaim(node, |idx| unsafe {
             let local_free = &mut *(*node).local_free.get();
-            if !local_free.push(idx as u32) {
+            if !local_free.push(idx) {
                 self.arena.free(idx as usize);
             }
         });

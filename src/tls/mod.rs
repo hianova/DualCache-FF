@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
 #[cfg(feature = "std")]
@@ -38,6 +37,12 @@ pub struct TlsCache<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     pub promote_threshold: u8,
     probation_filter: [u8; 4096],
     probation_cursor: usize,
+}
+
+impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default for TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP> {
@@ -242,6 +247,12 @@ pub struct TlsBlock<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     pub qsbr_node: crate::core::qsbr::ThreadStateNode,
 }
 
+impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default for TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP> {
     pub const fn new() -> Self {
         Self {
@@ -268,6 +279,12 @@ pub struct TlsRegistry<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, con
 // We manually implement Sync because we guarantee that each UnsafeCell
 // is only accessed by the thread holding the corresponding TlsHandle.
 unsafe impl<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync for TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {}
+
+impl<K: Clone + Eq, V: Clone, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default for TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<K: Clone + Eq, V: Clone, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {
     pub const fn new() -> Self {
