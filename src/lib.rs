@@ -190,6 +190,7 @@ where
 
         // 1. T0 (Royal Class)
         if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
+            block.warmup_state = block.warmup_state.saturating_add(10);
             return Some(val.clone());
         }
 
@@ -200,6 +201,7 @@ where
 
         // 3. T2 (Middle Class)
         if let Some(val) = self.core.get_t2(hash, key, &guard, op_count) {
+            block.warmup_state = block.warmup_state.saturating_sub(10);
             // Note: In a complete implementation we'd cache back to TLS if it were enabled
             // block.cache.insert(hash, key.clone(), val.clone());
             return Some(val.0.clone());
