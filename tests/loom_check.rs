@@ -84,7 +84,7 @@ fn test_qsbr_reclaim_micro() {
         let t1 = loom::thread::spawn(move || {
             let node = qsbr::register_thread();
             let _guard = qsbr::pin(node);
-            qsbr::retire(100, node);
+            qsbr::retire(100, node, |_| {});
         });
 
         let t2 = loom::thread::spawn(move || {

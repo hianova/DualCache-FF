@@ -1,0 +1,8 @@
+[[targets]]
+test = "test_core_insert"
+expected = "O1"
+n_values = "1000,5000,10000"
+target_file = "src/core/engine.rs"
+target_line = 139
+require_cache_padding = true
+require_branch_hints = true

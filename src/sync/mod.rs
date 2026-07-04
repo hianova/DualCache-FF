@@ -51,3 +51,23 @@ pub mod hint {
 pub mod hint {
     pub use loom::hint::spin_loop;
 }
+
+#[inline(always)]
+#[cold]
+fn cold() {}
+
+#[inline(always)]
+pub fn likely(b: bool) -> bool {
+    if !b {
+        cold();
+    }
+    b
+}
+
+#[inline(always)]
+pub fn unlikely(b: bool) -> bool {
+    if b {
+        cold();
+    }
+    b
+}

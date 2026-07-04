@@ -1,5 +1,6 @@
 use crossbeam_utils::thread;
 use dualcache_ff::DualCacheFF;
+use dualcache_ff::core::static_cache::StaticBottomUpCache;
 use hdrhistogram::Histogram;
 use rand::Rng;
 use rand::distributions::Uniform;
@@ -15,7 +16,7 @@ const DATASET_SIZE: u64 = 1_000_000;
 const CACHE_T0_CAP: usize = 64;
 const CACHE_T1_CAP: usize = 4096;
 const CACHE_T2_CAP: usize = 262144;
-const TOTAL_CAP: usize = CACHE_T0_CAP + CACHE_T1_CAP + CACHE_T2_CAP;
+const TOTAL_CAP: usize = CACHE_T0_CAP + CACHE_T1_CAP + CACHE_T2_CAP + (MAX_THREADS * 2048);
 const MAX_THREADS: usize = 10;
 const TLS_CAP: usize = 1024;
 const TLS_INDEX_CAP: usize = 2048;
@@ -23,7 +24,7 @@ const TLS_INDEX_CAP: usize = 2048;
 type BenchCache = DualCacheFF<
     u64,
     u64,
-    dualcache_ff::core::config::DefaultExponentialPolicy,
+    dualcache_ff::componant::config::DefaultExponentialPolicy,
     CACHE_T0_CAP,
     CACHE_T1_CAP,
     CACHE_T2_CAP,
@@ -34,12 +35,19 @@ type BenchCache = DualCacheFF<
 >;
 
 static mut GLOBAL_CACHE: BenchCache = DualCacheFF::new();
+static mut GLOBAL_STATIC_CACHE: StaticBottomUpCache<u64, u64> = StaticBottomUpCache::new();
 
 #[derive(Clone, Copy)]
 enum AccessPattern {
     Uniform,
     Zipf,
     Scan,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CacheMode {
+    WaitFreeDaemon,
+    SpinLockStatic,
 }
 
 struct BenchResult {
@@ -56,14 +64,20 @@ fn run_workload(
     pattern: AccessPattern,
     read_ratio_percent: u8,
     shift_dataset: bool,
+    mode: CacheMode,
 ) -> BenchResult {
-    // Reset the cache for a fair benchmark across runs
+    // Reset caches for fair benchmarks
     unsafe {
-        dualcache_ff::core::qsbr::reset();
+        dualcache_ff::componant::qsbr::reset();
         GLOBAL_CACHE = DualCacheFF::new();
+        GLOBAL_STATIC_CACHE = StaticBottomUpCache::new();
     }
     let cache = unsafe { &*std::ptr::addr_of!(GLOBAL_CACHE) };
-    cache.set_daemon_mode(true);
+    let static_cache = unsafe { &*std::ptr::addr_of!(GLOBAL_STATIC_CACHE) };
+    
+    if mode == CacheMode::WaitFreeDaemon {
+        cache.set_daemon_mode(true);
+    }
 
     let mut all_ops_data = Vec::new();
     for thread_id in 0..THREAD_COUNT {
@@ -86,14 +100,18 @@ fn run_workload(
         all_ops_data.push(ops_data);
     }
 
-    let warmup_handle = cache.register_thread();
-    // Warmup using the actual pattern
-    for &(key, _) in all_ops_data[0].iter().take(10_000) {
-        cache.insert(key, key, &warmup_handle);
+    if mode == CacheMode::WaitFreeDaemon {
+        let warmup_handle = cache.register_thread();
+        for &(key, _) in all_ops_data[0].iter().take(10_000) {
+            cache.insert(key, key, &warmup_handle);
+        }
+    } else {
+        for &(key, _) in all_ops_data[0].iter().take(10_000) {
+            static_cache.put(key, key);
+        }
     }
 
     let barrier = Arc::new(Barrier::new(THREAD_COUNT));
-
     let start_time = Instant::now();
 
     let mut total_hits = 0;
@@ -109,12 +127,17 @@ fn run_workload(
             let ops_data = all_ops_data[thread_id].clone();
 
             handles.push(s.spawn(move |_| {
-                let tls_handle = cache.register_thread();
-
                 let mut hist = Histogram::<u64>::new(3).unwrap();
                 let mut hits = 0;
                 let mut reads = 0;
                 let mut local_ops = 0;
+
+                // Only needed for WaitFreeDaemon
+                let tls_handle = if mode == CacheMode::WaitFreeDaemon {
+                    Some(cache.register_thread())
+                } else {
+                    None
+                };
 
                 barrier_clone.wait(); // Synchronize all threads to start
 
@@ -128,14 +151,25 @@ fn run_workload(
 
                     if is_read {
                         reads += 1;
-                        if cache.get(&key, &tls_handle).is_some() {
-                            hits += 1;
+                        if mode == CacheMode::WaitFreeDaemon {
+                            if cache.get(&key, tls_handle.as_ref().unwrap()).is_some() {
+                                hits += 1;
+                            } else {
+                                cache.insert(key, key, tls_handle.as_ref().unwrap());
+                            }
                         } else {
-                            // Insert on read miss (realistic cache behavior)
-                            cache.insert(key, key, &tls_handle);
+                            if static_cache.get(&key).is_some() {
+                                hits += 1;
+                            } else {
+                                static_cache.put(key, key);
+                            }
                         }
                     } else {
-                        cache.insert(key, key, &tls_handle);
+                        if mode == CacheMode::WaitFreeDaemon {
+                            cache.insert(key, key, tls_handle.as_ref().unwrap());
+                        } else {
+                            static_cache.put(key, key);
+                        }
                     }
 
                     if let Some(start) = op_start {
@@ -167,8 +201,9 @@ fn run_workload(
         0.0
     };
 
-    // Wait for Daemon to gracefully stop (wait a bit so we don't leak immediately)
-    // Actually when Arc drops, things die if we implement drop, but for benchmark it's fine
+    if mode == CacheMode::WaitFreeDaemon {
+        cache.set_daemon_mode(false);
+    }
 
     BenchResult {
         throughput,
@@ -181,8 +216,34 @@ fn run_workload(
     }
 }
 
+fn print_markdown_table(mode_name: &str, results: &[(AccessPattern, u8, bool, &str, CacheMode)]) {
+    println!("\n### Mode: {}", mode_name);
+    println!(
+        "| Pattern | R/W Ratio | Throughput (ops/s) | Hit Rate (%) | P50 (ns) | P90 (ns) | P99 (ns) | P99.9 (ns) | P99.99 (ns) |"
+    );
+    println!(
+        "|---------|-----------|-------------------|-------------|----------|----------|----------|------------|-------------|"
+    );
+    for (pattern, read_ratio, shift, name, mode) in results {
+        let result = run_workload(*pattern, *read_ratio, *shift, *mode);
+        println!(
+            "| {:<23} | {:>2}:{:>2} | {:>17.0} | {:>11.2}% | {:>8} | {:>8} | {:>8} | {:>10} | {:>11} |",
+            name,
+            read_ratio,
+            100 - read_ratio,
+            result.throughput,
+            result.hit_rate,
+            result.p50,
+            result.p90,
+            result.p99,
+            result.p99_9,
+            result.p99_99
+        );
+    }
+}
+
 fn main() {
-    println!("# DualCache-FF Benchmarking Results");
+    println!("# DualCache-FF Refactored v1.0.0 Benchmarking Results");
     println!("* **Threads**: {}", THREAD_COUNT);
     println!("* **Dataset Size**: {}", DATASET_SIZE);
     println!("* **Operations per test**: {}", TOTAL_OPS);
@@ -192,39 +253,23 @@ fn main() {
     );
     println!();
 
-    let configs = vec![
-        (AccessPattern::Zipf, 99, false, "Zipf (99:1)"),
-        (AccessPattern::Zipf, 90, false, "Zipf (90:10)"),
-        (AccessPattern::Zipf, 50, false, "Zipf (50:50)"),
-        (AccessPattern::Zipf, 10, false, "Zipf (10:90)"),
-        (AccessPattern::Uniform, 99, false, "Uniform (99:1)"),
-        (AccessPattern::Scan, 99, false, "Scan (99:1)"),
-        (AccessPattern::Zipf, 90, true, "Zipf Data Shift (90:10)"),
-    ];
-
-    println!(
-        "| Pattern | R/W Ratio | Throughput (ops/s) | Hit Rate (%) | P50 (ns) | P90 (ns) | P99 (ns) | P99.9 (ns) | P99.99 (ns) |"
-    );
-    println!(
-        "|---------|-----------|-------------------|-------------|----------|----------|----------|------------|-------------|"
-    );
-
     std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
-        for (pattern, read_ratio, shift, name) in configs {
-            let result = run_workload(pattern, read_ratio, shift);
-            println!(
-                "| {:<23} | {:>2}:{:>2} | {:>17.0} | {:>11.2}% | {:>8} | {:>8} | {:>8} | {:>10} | {:>11} |",
-                name,
-                read_ratio,
-                100 - read_ratio,
-                result.throughput,
-                result.hit_rate,
-                result.p50,
-                result.p90,
-                result.p99,
-                result.p99_9,
-                result.p99_99
-            );
-        }
+        let wait_free_configs = vec![
+            (AccessPattern::Zipf, 99, false, "Zipf (99:1)", CacheMode::WaitFreeDaemon),
+            (AccessPattern::Zipf, 90, false, "Zipf (90:10)", CacheMode::WaitFreeDaemon),
+            (AccessPattern::Zipf, 50, false, "Zipf (50:50)", CacheMode::WaitFreeDaemon),
+            (AccessPattern::Uniform, 99, false, "Uniform (99:1)", CacheMode::WaitFreeDaemon),
+        ];
+
+        let static_configs = vec![
+            (AccessPattern::Zipf, 99, false, "Zipf (99:1)", CacheMode::SpinLockStatic),
+            (AccessPattern::Zipf, 90, false, "Zipf (90:10)", CacheMode::SpinLockStatic),
+            (AccessPattern::Zipf, 50, false, "Zipf (50:50)", CacheMode::SpinLockStatic),
+            (AccessPattern::Uniform, 99, false, "Uniform (99:1)", CacheMode::SpinLockStatic),
+        ];
+
+        print_markdown_table("DualCacheFF (Wait-Free + Daemon)", &wait_free_configs);
+        print_markdown_table("StaticDualCache (no_std Spin-Lock)", &static_configs);
+        
     }).unwrap().join().unwrap();
 }
