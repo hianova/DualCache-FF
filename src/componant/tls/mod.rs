@@ -7,6 +7,20 @@ pub struct TlsHandle {
     pub qsbr_node: *mut crate::componant::qsbr::ThreadStateNode,
 }
 
+unsafe impl Send for TlsHandle {}
+unsafe impl Sync for TlsHandle {}
+
+impl Drop for TlsHandle {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if !self.qsbr_node.is_null() {
+            unsafe {
+                (*self.qsbr_node).active.store(false, Ordering::Release);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TlsEntry<K, V> {
     pub hash: usize,
@@ -94,7 +108,8 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     #[inline(always)]
     pub fn insert_fast_pass(&mut self, hash: usize, key: K, value: V) {
         let idx = hash & (self.capacity - 1);
-        unsafe { *self.slots.get_unchecked_mut(idx) = Some(TlsEntry { hash, key, value, hits: 255 }); }
+        let hits = self.promote_threshold;
+        unsafe { *self.slots.get_unchecked_mut(idx) = Some(TlsEntry { hash, key, value, hits }); }
     }
 
     pub fn record_remote_hit(&mut self, hash: usize, weight: u8) {

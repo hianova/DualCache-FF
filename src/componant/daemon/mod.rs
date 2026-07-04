@@ -138,6 +138,8 @@ impl Daemon {
                 let _guard = crate::componant::qsbr::pin(daemon_node);
 
                 if disconnected {
+                    let node_ref = unsafe { &*daemon_node };
+                    node_ref.active.store(false, Ordering::Release);
                     break;
                 }
 

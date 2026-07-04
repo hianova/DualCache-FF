@@ -168,12 +168,12 @@ where
         let (val_opt, promote, sync) = block.cache.get(hash, key);
         if let Some(val) = val_opt {
             if promote {
-                self.core.put(key.clone(), val.clone(), handle.qsbr_node);
+                self.core.put_t0(key.clone(), val.clone(), handle.qsbr_node);
             }
             #[cfg(feature = "std")]
             if sync > 0 {
                 if block.hit_batch_len < 32 {
-                    block.hit_batch[block.hit_batch_len as usize] = (hash, 2);
+                    block.hit_batch[block.hit_batch_len as usize] = (hash, sync);
                     block.hit_batch_len += 1;
                 }
                 if block.hit_batch_len == 32 {
@@ -202,8 +202,6 @@ where
         // 3. T2 (Middle Class)
         if let Some(val) = self.core.get_t2(hash, key, &guard, op_count) {
             block.warmup_state = block.warmup_state.saturating_sub(10);
-            // Note: In a complete implementation we'd cache back to TLS if it were enabled
-            // block.cache.insert(hash, key.clone(), val.clone());
             return Some(val.0.clone());
         }
         None

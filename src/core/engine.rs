@@ -146,7 +146,8 @@ where
         for i in 0..8 {
             let slot = unsafe { set.get_unchecked(i) };
             if slot.hash.load(::core::sync::atomic::Ordering::Relaxed) == hash {
-                let new_hits = 8;
+                let old_hits = slot.hits.load(::core::sync::atomic::Ordering::Relaxed);
+                let new_hits = old_hits.saturating_add(_weight as u16);
                 slot.hits
                     .store(new_hits, ::core::sync::atomic::Ordering::Relaxed);
                 break;
