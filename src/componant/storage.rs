@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::sync::atomic::{AtomicU64, AtomicPtr, Ordering};
+use ::core::sync::atomic::{AtomicU64, AtomicPtr, Ordering};
 use core::ptr;
 
 /// A single cached entry. Stored in the Arena node pool.

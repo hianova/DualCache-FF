@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use ::core::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct TlsHandle {
     pub id: usize,
@@ -19,7 +19,7 @@ pub struct TlsCache<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     slots: [Option<TlsEntry<K, V>>; TLS_CAP],
     capacity: usize,
     pub promote_threshold: u8,
-    probation_filter: [u8; 4096],
+    probation_filter: [u8; 65536],
     probation_cursor: usize,
 }
 
@@ -35,7 +35,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
             slots: [const { None }; TLS_CAP],
             capacity: TLS_CAP,
             promote_threshold: 4,
-            probation_filter: [0; 4096],
+            probation_filter: [0; 65536],
             probation_cursor: 0,
         }
     }
@@ -113,9 +113,9 @@ use crate::componant::daemon::DaemonMessage;
 pub struct TlsBlock<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     pub cache: TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>,
     #[cfg(feature = "std")]
-    pub tx: Option<crossbeam_channel::Sender<DaemonMessage<K, V>>>,
+    pub tx: Option<::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>>,
     #[cfg(feature = "std")]
-    pub hit_rx: Option<crossbeam_channel::Receiver<(usize, u8)>>,
+    pub hit_rx: Option<::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
     pub op_count: u64,
     #[cfg(feature = "std")]
     pub hit_batch: [(usize, u8); 32],

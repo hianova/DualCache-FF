@@ -139,13 +139,13 @@ mod tests {
 /// It uses exactly 1 atomic load for maximum throughput.
 #[repr(C, align(64))]
 pub struct FastTier<const CAPACITY: usize> {
-    slots: [core::sync::atomic::AtomicU32; CAPACITY],
+    slots: [::core::sync::atomic::AtomicU32; CAPACITY],
 }
 
 impl<const CAPACITY: usize> FastTier<CAPACITY> {
     pub const fn new() -> Self {
         assert!(CAPACITY > 0 && CAPACITY.is_power_of_two(), "CAPACITY must be a power of two");
-        let mut slots = [const { core::sync::atomic::AtomicU32::new(super::arena::NULL_INDEX) }; CAPACITY];
+        let mut slots = [const { ::core::sync::atomic::AtomicU32::new(super::arena::NULL_INDEX) }; CAPACITY];
         Self { slots }
     }
 
@@ -153,14 +153,14 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
     pub fn get_slot_idx(&self, hash: usize) -> u32 {
         let mask = CAPACITY - 1;
         let idx = hash & mask;
-        self.slots[idx].load(core::sync::atomic::Ordering::Acquire)
+        self.slots[idx].load(::core::sync::atomic::Ordering::Acquire)
     }
 
     #[inline(always)]
     pub fn insert_idx(&self, hash: usize, node_idx: u32) -> u32 {
         let mask = CAPACITY - 1;
         let idx = hash & mask;
-        self.slots[idx].swap(node_idx, core::sync::atomic::Ordering::Release)
+        self.slots[idx].swap(node_idx, ::core::sync::atomic::Ordering::Release)
     }
 
     pub fn insert_promote<K, V, const N: usize>(&self, arena: &super::arena::Arena<K, V, N>, hash: usize, key: K, value: V, node: *mut super::qsbr::ThreadStateNode) {
@@ -179,7 +179,7 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
     
     pub fn clear(&self) {
         for slot in self.slots.iter() {
-            slot.store(super::arena::NULL_INDEX, core::sync::atomic::Ordering::Relaxed);
+            slot.store(super::arena::NULL_INDEX, ::core::sync::atomic::Ordering::Relaxed);
         }
     }
 }

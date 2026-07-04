@@ -3,3 +3,5 @@
 flamegraph.svg
 profile.json
 cargo-flamegraph.trace
+.covopt/
+.agents/

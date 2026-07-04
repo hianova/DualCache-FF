@@ -1,13 +1,13 @@
-use crate::sync::atomic::Ordering;
+use ::core::sync::atomic::Ordering;
 use super::qsbr;
 use super::arena::{self, Arena};
 
 /// A Slot in the CacheTier.
 #[repr(align(64))]
 pub struct Slot<K, V> {
-    pub hash: core::sync::atomic::AtomicUsize,
-    pub hits: core::sync::atomic::AtomicU16,
-    pub node_idx: core::sync::atomic::AtomicU32,
+    pub hash: ::core::sync::atomic::AtomicUsize,
+    pub hits: ::core::sync::atomic::AtomicU16,
+    pub node_idx: ::core::sync::atomic::AtomicU32,
     _marker: core::marker::PhantomData<(K, V)>,
 }
 
@@ -15,9 +15,9 @@ impl<K, V> Slot<K, V> {
     #[inline(always)]
     pub const fn new() -> Self {
         Self {
-            hash: core::sync::atomic::AtomicUsize::new(0),
-            hits: core::sync::atomic::AtomicU16::new(0),
-            node_idx: core::sync::atomic::AtomicU32::new(arena::NULL_INDEX),
+            hash: ::core::sync::atomic::AtomicUsize::new(0),
+            hits: ::core::sync::atomic::AtomicU16::new(0),
+            node_idx: ::core::sync::atomic::AtomicU32::new(arena::NULL_INDEX),
             _marker: core::marker::PhantomData,
         }
     }

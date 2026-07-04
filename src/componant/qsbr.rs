@@ -1,6 +1,6 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::missing_safety_doc)]
-use crate::sync::atomic::{AtomicPtr, AtomicUsize, AtomicBool, Ordering};
+use ::core::sync::atomic::{AtomicPtr, AtomicUsize, AtomicBool, Ordering};
 use core::ptr;
 
 static GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
@@ -18,10 +18,7 @@ struct RetiredNode {
     epoch: u64,
 }
 
-#[cfg(not(loom))]
 const GARBAGE_CAP: usize = 1024;
-#[cfg(loom)]
-const GARBAGE_CAP: usize = 16;
 pub struct GarbageQueue {
     items: [RetiredNode; GARBAGE_CAP],
     head: usize,
@@ -114,7 +111,7 @@ pub fn register_node(node: *mut ThreadStateNode) {
         
         // Yield to encourage a CAS collision for coverage
         #[cfg(test)]
-        crate::sync::thread::yield_now();
+        std::thread::yield_now();
 
         match THREAD_STATES.compare_exchange_weak(
             head,
@@ -125,7 +122,7 @@ pub fn register_node(node: *mut ThreadStateNode) {
             Ok(_) => break,
             Err(new_head) => {
                 head = new_head;
-                crate::sync::hint::spin_loop();
+                ::core::hint::spin_loop();
             }
         }
     }
@@ -200,7 +197,7 @@ pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut free_
         while q.head - q.tail >= GARBAGE_CAP {
             try_reclaim(node, &mut free_fn);
             if q.head - q.tail >= GARBAGE_CAP {
-                crate::sync::thread::yield_now();
+                std::thread::yield_now();
             }
         }
         

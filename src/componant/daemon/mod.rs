@@ -1,9 +1,8 @@
-use crate::sync::thread::{self, JoinHandle};
-#[cfg(not(loom))]
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use ::core::hash::Hash;
 
-use crossbeam_channel::Receiver;
+
 
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonMessage<K, V> {
@@ -66,8 +65,8 @@ impl Daemon {
     /// Spawn the daemon thread. Returns the Daemon handle.
     pub fn spawn<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>(
         core: &'static crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>, 
-        rx: Receiver<DaemonMessage<K, V>>,
-        broadcast_txs: alloc::vec::Vec<crossbeam_channel::Sender<(usize, u8)>>,
+        rx: ::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>,
+        broadcast_txs: alloc::vec::Vec<::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
         daemon_node: *mut crate::componant::qsbr::ThreadStateNode
     ) -> Self
     where
@@ -78,36 +77,32 @@ impl Daemon {
         let daemon_node_ptr = daemon_node as usize;
         let handle = thread::spawn(move || {
             let daemon_node = daemon_node_ptr as *mut crate::componant::qsbr::ThreadStateNode;
-            let mut batch = alloc::vec::Vec::with_capacity(1024);
+            let mut batch = alloc::vec::Vec::with_capacity(65536);
             let mut poll_ms = 10;
             loop {
                 let mut disconnected = false;
 
                 // 1. Log Compaction (High Fidelity Compression)
-                #[cfg(not(loom))]
-                let recv_res = rx.recv_timeout(Duration::from_millis(poll_ms));
-                #[cfg(loom)]
-                let recv_res = {
-                    thread::yield_now();
-                    rx.try_recv().map_err(|e| match e {
-                        crossbeam_channel::TryRecvError::Empty => crossbeam_channel::RecvTimeoutError::Timeout,
-                        crossbeam_channel::TryRecvError::Disconnected => crossbeam_channel::RecvTimeoutError::Disconnected,
-                    })
-                };
-
-                match recv_res {
-                    Ok(msg) => {
+                let msg_opt = rx.pop();
+                
+                match msg_opt {
+                    Some(msg) => {
                         Self::compress_and_push(&mut batch, msg);
-                        while batch.len() < 1024 {
-                            if let Ok(next_msg) = rx.try_recv() {
+                        while batch.len() < 65536 {
+                            if let Some(next_msg) = rx.pop() {
                                 Self::compress_and_push(&mut batch, next_msg);
                             } else {
                                 break;
                             }
                         }
                     }
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => disconnected = true,
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {},
+                    None => {
+                        if ::alloc::sync::Arc::strong_count(&rx) == 1 {
+                            disconnected = true;
+                        } else {
+                            thread::sleep(Duration::from_millis(poll_ms));
+                        }
+                    }
                 }
 
                 // 2. Process batch and Broadcast
@@ -116,7 +111,7 @@ impl Daemon {
                         DaemonMessage::Hit(hash, weight) => {
                             core.record_remote_hit(hash, weight);
                             for tx in &broadcast_txs {
-                                let _ = tx.try_send((hash, weight));
+                                let _ = tx.push((hash, weight));
                             }
                         }
                         DaemonMessage::HitBatch(_, _) => unreachable!(),
@@ -138,6 +133,9 @@ impl Daemon {
                         }
                     }
                 }
+
+                // Pin daemon node so it updates its QSBR epoch and participates in GC
+                let _guard = crate::componant::qsbr::pin(daemon_node);
 
                 if disconnected {
                     break;
@@ -170,7 +168,7 @@ mod tests {
 }
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::sync::arc::Arc;
+use ::alloc::sync::Arc;
 
 pub struct OneshotAck {
     ready: AtomicBool,

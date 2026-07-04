@@ -82,11 +82,11 @@ where
     }
 
     #[inline(always)]
-    pub fn get_t2<'g>(&self, hash: usize, key: &K, guard: &'g Guard, _op_count: u32) -> Option<&'g V> {
+    pub fn get_t2<'g>(&self, hash: usize, key: &K, guard: &'g Guard, op_count: u32) -> Option<(&'g V, u16, u16)> {
         if let Some(slot) = self.t2.get_slot(&self.arena, hash, key, guard) {
-            let hits = slot.hits.fetch_add(1, crate::sync::atomic::Ordering::Relaxed) + 1;
+            let (old_hits, new_hits) = slot.record_hit(op_count);
             let node = unsafe { self.arena.get(slot.read(guard).1 as usize) };
-            return Some(unsafe { &*(&node.value as *const V) });
+            return Some((unsafe { &*(&node.value as *const V) }, old_hits, new_hits));
         }
         None
     }
@@ -102,7 +102,7 @@ where
             return Some((v, 1));
         }
 
-        if let Some(v) = self.get_t2(hash, key, guard, op_count) {
+        if let Some((v, _old, _new)) = self.get_t2(hash, key, guard, op_count) {
             return Some((v, 2));
         }
 
@@ -110,14 +110,21 @@ where
     }
 
     pub fn put_t0(&self, key: K, value: V, node: *mut crate::componant::qsbr::ThreadStateNode) {
-        if crate::sync::likely(true) {
+        if crate::utils::likely(true) {
             let hash = self.hash_key(&key);
             self.t0.insert_promote(&self.arena, hash, key, value, node);
         }
     }
 
+    pub fn put_t1(&self, key: K, value: V, node: *mut crate::componant::qsbr::ThreadStateNode) {
+        if crate::utils::likely(true) {
+            let hash = self.hash_key(&key);
+            self.t1.insert_promote(&self.arena, hash, key, value, node);
+        }
+    }
+
     pub fn put(&self, key: K, value: V, node: *mut crate::componant::qsbr::ThreadStateNode) {
-        if crate::sync::likely(true) {
+        if crate::utils::likely(true) {
             let hash = self.hash_key(&key);
             self.t2.insert(&self.arena, hash, key, value, node);
         }
@@ -138,10 +145,10 @@ where
         let set = self.t2.get_set(hash);
         for i in 0..8 {
             let slot = unsafe { set.get_unchecked(i) };
-            if slot.hash.load(crate::sync::atomic::Ordering::Relaxed) == hash {
+            if slot.hash.load(::core::sync::atomic::Ordering::Relaxed) == hash {
                 let new_hits = 8;
                 slot.hits
-                    .store(new_hits, crate::sync::atomic::Ordering::Relaxed);
+                    .store(new_hits, ::core::sync::atomic::Ordering::Relaxed);
                 break;
             }
         }

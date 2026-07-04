@@ -1,5 +1,5 @@
 #![allow(clippy::missing_safety_doc)]
-use crate::sync::atomic::{AtomicUsize, Ordering};
+use ::core::sync::atomic::{AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 
@@ -8,7 +8,7 @@ pub const NULL_INDEX: u32 = u32::MAX;
 /// A lock-free static memory pool for Nodes using tagged indices to prevent ABA.
 pub struct Arena<K, V, const N: usize> {
     nodes: [UnsafeCell<MaybeUninit<Node<K, V>>>; N],
-    next_free: [core::sync::atomic::AtomicU32; N],
+    next_free: [::core::sync::atomic::AtomicU32; N],
     free_head: AtomicUsize, // Packed: (tag << 32) | index
 }
 
@@ -29,13 +29,13 @@ impl<K, V, const N: usize> Default for Arena<K, V, N> {
 
 impl<K, V, const N: usize> Arena<K, V, N> {
     pub const fn new() -> Self {
-        let mut next_free = [const { core::sync::atomic::AtomicU32::new(0) }; N];
+        let mut next_free = [const { ::core::sync::atomic::AtomicU32::new(0) }; N];
         let mut i = 0;
         while i < N - 1 {
-            next_free[i] = core::sync::atomic::AtomicU32::new((i + 1) as u32);
+            next_free[i] = ::core::sync::atomic::AtomicU32::new((i + 1) as u32);
             i += 1;
         }
-        next_free[N - 1] = core::sync::atomic::AtomicU32::new(NULL_INDEX);
+        next_free[N - 1] = ::core::sync::atomic::AtomicU32::new(NULL_INDEX);
 
         // Nodes array initialization
         let nodes: [UnsafeCell<MaybeUninit<Node<K, V>>>; N] = unsafe {
@@ -81,7 +81,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
                 }
                 Err(h) => {
                     head = h;
-                    crate::sync::hint::spin_loop();
+                    ::core::hint::spin_loop();
                 }
             }
         }
@@ -107,7 +107,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
                 Ok(_) => break,
                 Err(h) => {
                     head = h;
-                    crate::sync::hint::spin_loop();
+                    ::core::hint::spin_loop();
                 }
             }
         }

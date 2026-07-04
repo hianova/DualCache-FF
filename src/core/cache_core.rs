@@ -155,10 +155,10 @@ where
         for i in 0..8 {
             // WAYS is 8
             let slot = unsafe { set.get_unchecked(i) };
-            if slot.hash.load(crate::sync::atomic::Ordering::Relaxed) == hash {
+            if slot.hash.load(::core::sync::atomic::Ordering::Relaxed) == hash {
                 let new_hits = 8;
                 slot.hits
-                    .store(new_hits, crate::sync::atomic::Ordering::Relaxed);
+                    .store(new_hits, ::core::sync::atomic::Ordering::Relaxed);
                 break;
             }
         }

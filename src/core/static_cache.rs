@@ -3,12 +3,10 @@ use crate::componant::qsbr::{ThreadStateNode, pin};
 use crate::componant::config::CachePolicy;
 use core::hash::Hash;
 use no_std_tool::sync::SpinMutex;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use ::core::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct StaticDualCache<K, V, P: CachePolicy, const T0_CAP: usize, const T1_CAP: usize, const T2_CAP: usize, const TOTAL_CAP: usize> {
-    engine: SpinMutex<DualCacheCore<K, V, P, T0_CAP, T1_CAP, T2_CAP, TOTAL_CAP>>,
-    // Dedicated QSBR node protected by the mutex for synchronous inline operations
-    qsbr_node: SpinMutex<ThreadStateNode>,
+    inner: SpinMutex<(DualCacheCore<K, V, P, T0_CAP, T1_CAP, T2_CAP, TOTAL_CAP>, ThreadStateNode)>,
     insert_count: AtomicUsize,
 }
 
@@ -19,18 +17,17 @@ where
 {
     pub const fn new() -> Self {
         Self {
-            engine: SpinMutex::new(DualCacheCore::new()),
-            qsbr_node: SpinMutex::new(ThreadStateNode::new()),
+            inner: SpinMutex::new((DualCacheCore::new(), ThreadStateNode::new())),
             insert_count: AtomicUsize::new(0),
         }
     }
 
     /// Retrieve a value from the cache synchronously.
     pub fn get(&self, key: &K) -> Option<V> {
-        let engine = self.engine.lock();
-        let mut qsbr_node = self.qsbr_node.lock();
+        let mut inner = self.inner.lock().unwrap();
+        let (engine, qsbr_node) = &mut *inner;
         
-        let guard = pin(&mut *qsbr_node as *mut ThreadStateNode);
+        let guard = pin(qsbr_node as *mut ThreadStateNode);
         
         // Map the reference to an owned value to allow releasing the lock safely
         // Pass 16 to force record_hit for static cache which doesn't have a thread local op_count
@@ -39,9 +36,9 @@ where
 
     /// Insert a key-value pair into the cache. Handles inline reclamation synchronously.
     pub fn put(&self, key: K, value: V) {
-        let engine = self.engine.lock();
-        let mut qsbr_node = self.qsbr_node.lock();
-        let node_ptr = &mut *qsbr_node as *mut ThreadStateNode;
+        let mut inner = self.inner.lock().unwrap();
+        let (engine, qsbr_node) = &mut *inner;
+        let node_ptr = qsbr_node as *mut ThreadStateNode;
         
         engine.put(key, value, node_ptr);
         
