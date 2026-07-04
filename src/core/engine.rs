@@ -91,6 +91,7 @@ where
         None
     }
 
+    #[inline(never)]
     pub fn get<'g>(&self, key: &K, guard: &'g Guard, op_count: u32) -> Option<(&'g V, u8)> {
         let hash = self.hash_key(key);
 
@@ -201,8 +202,13 @@ mod tests {
         assert_eq!(core.get(&100, &guard, 0), None);
 
         core.put(100, 200, thread_node);
-
         assert_eq!(core.get(&100, &guard, 0), Some((&200, 2)));
+
+        core.put_t1(300, 400, thread_node);
+        assert_eq!(core.get(&300, &guard, 0), Some((&400, 1)));
+
+        core.put_t0(500, 600, thread_node);
+        assert_eq!(core.get(&500, &guard, 0), Some((&600, 0)));
     }
 
     #[test]

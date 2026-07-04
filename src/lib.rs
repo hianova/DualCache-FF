@@ -191,17 +191,20 @@ where
         // 1. T0 (Royal Class)
         if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
             block.warmup_state = block.warmup_state.saturating_add(10);
+            block.cache.insert_fast_pass(hash, key.clone(), val.clone());
             return Some(val.clone());
         }
 
         // 2. T1 (Elite Class) - FastTier
         if let Some(val) = self.core.get_t1(hash, key, &guard, op_count) {
+            block.cache.insert(hash, key.clone(), val.clone());
             return Some(val.clone());
         }
 
         // 3. T2 (Middle Class)
         if let Some(val) = self.core.get_t2(hash, key, &guard, op_count) {
             block.warmup_state = block.warmup_state.saturating_sub(10);
+            block.cache.insert(hash, key.clone(), val.0.clone());
             return Some(val.0.clone());
         }
         None
@@ -215,8 +218,15 @@ where
         }
 
         let hash = self.core.hash_key(&key);
-        if block.cache.insert(hash, key.clone(), value.clone()) {
-            self.core.put(key, value, handle.qsbr_node);
+
+        if block.warmup_state > 50 {
+            block.cache.insert_fast_pass(hash, key.clone(), value.clone());
+            self.core.put_t0(key, value, handle.qsbr_node);
+            block.warmup_state = block.warmup_state.saturating_sub(20);
+        } else {
+            if block.cache.insert(hash, key.clone(), value.clone()) {
+                self.core.put(key, value, handle.qsbr_node);
+            }
         }
     }
 
