@@ -10,7 +10,6 @@ use crate::componant::tls::{TlsRegistry, TlsHandle};
 
 #[cfg(feature = "std")]
 use crate::componant::daemon::DaemonMessage;
-#[cfg(feature = "std")]
 
 
 /// `DualCacheFF` is the main entry point for the cache, providing standard API operations and managing the 

@@ -122,6 +122,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     }
 }
 
+#[cfg(feature = "std")]
 use crate::componant::daemon::DaemonMessage;
 
 /// A block of TLS data representing the state for a single thread.

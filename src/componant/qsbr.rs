@@ -197,7 +197,7 @@ pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut free_
         while q.head - q.tail >= GARBAGE_CAP {
             try_reclaim(node, &mut free_fn);
             if q.head - q.tail >= GARBAGE_CAP {
-                std::thread::yield_now();
+                ::core::hint::spin_loop();
             }
         }
         
