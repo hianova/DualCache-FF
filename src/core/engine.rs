@@ -7,6 +7,7 @@ use core::hash::{BuildHasher, Hash};
 
 /// The independent orchestrator that glues T0, T1, and T2 together.
 /// Designed for `no_std` environments.
+#[repr(align(64))]
 pub struct DualCacheCore<
     K,
     V,
@@ -93,17 +94,31 @@ where
 
     #[inline(never)]
     pub fn get<'g>(&self, key: &K, guard: &'g Guard, op_count: u32) -> Option<(&'g V, u8)> {
+        #[repr(align(64))]
+        struct CachePadded;
+        let _pad = CachePadded;
+
+        mod core {
+            pub mod intrinsics {
+                pub use crate::utils::likely;
+            }
+        }
+
         let hash = self.hash_key(key);
 
-        if let Some(v) = self.get_t0(hash, key, guard, op_count) {
-            return Some((v, 0));
+        let t0_res = self.get_t0(hash, key, guard, op_count);
+        if core::intrinsics::likely(t0_res.is_some()) {
+            return Some((t0_res.unwrap(), 0));
         }
 
-        if let Some(v) = self.get_t1(hash, key, guard, op_count) {
-            return Some((v, 1));
+        let t1_res = self.get_t1(hash, key, guard, op_count);
+        if core::intrinsics::likely(t1_res.is_some()) {
+            return Some((t1_res.unwrap(), 1));
         }
 
-        if let Some((v, _old, _new)) = self.get_t2(hash, key, guard, op_count) {
+        let t2_res = self.get_t2(hash, key, guard, op_count);
+        if core::intrinsics::likely(t2_res.is_some()) {
+            let (v, _, _) = t2_res.unwrap();
             return Some((v, 2));
         }
 

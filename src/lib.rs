@@ -1,5 +1,4 @@
 #![cfg_attr(not(any(feature = "std", feature = "daemon", test)), no_std)]
-
 extern crate alloc;
 
 pub mod utils;
