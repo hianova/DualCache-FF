@@ -192,10 +192,10 @@ mod tests {
     #[test]
     fn test_comprehensive_cache_flow() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
-            qsbr::register_node(node);
-            node
+        static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
+        let thread_node = unsafe {
+            qsbr::register_node(core::ptr::addr_of_mut!(TEST_NODE));
+            core::ptr::addr_of_mut!(TEST_NODE)
         };
         let guard = qsbr::pin(thread_node);
 
@@ -214,10 +214,10 @@ mod tests {
     #[test]
     fn test_t0_promotion_flow() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
-            qsbr::register_node(node);
-            node
+        static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
+        let thread_node = unsafe {
+            qsbr::register_node(core::ptr::addr_of_mut!(TEST_NODE));
+            core::ptr::addr_of_mut!(TEST_NODE)
         };
         let guard = qsbr::pin(thread_node);
 
@@ -234,10 +234,10 @@ mod tests {
     #[test]
     fn test_tier_fallbacks() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
-            qsbr::register_node(node);
-            node
+        static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
+        let thread_node = unsafe {
+            qsbr::register_node(core::ptr::addr_of_mut!(TEST_NODE));
+            core::ptr::addr_of_mut!(TEST_NODE)
         };
         let guard = qsbr::pin(thread_node);
 

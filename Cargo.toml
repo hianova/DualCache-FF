@@ -10,7 +10,8 @@ documentation = "https://docs.rs/dualcache-ff"
 readme = "ReadMe.md"
 keywords = ["cache", "concurrent", "wait-free", "lock-free", "performance"]
 categories = ["caching", "concurrency", "data-structures"]
-exclude = ["*.DS_Store", "/target"]
+exclude = ["*.DS_Store", "/target", ".covopt/", ".agents/"]
+
 
 [features]
 default = ["std"]
