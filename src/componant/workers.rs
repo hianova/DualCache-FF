@@ -1,5 +1,5 @@
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;

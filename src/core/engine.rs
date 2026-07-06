@@ -21,6 +21,7 @@ pub struct DualCacheCore<
     pub t0: FastTier<T0_CAP>,
     pub t1: FastTier<T1_CAP>,
     pub t2: CacheTier<K, V, crate::componant::policy::DefaultEvictionPolicy, T2_CAP, 8>,
+    pub blackjack: crate::core::blackjack::PackedBlackjack,
     hash_builder: RandomState,
     _marker: core::marker::PhantomData<P>,
 }
@@ -48,7 +49,18 @@ where
             t0: FastTier::new(),
             t1: FastTier::new(),
             t2: CacheTier::new(crate::componant::policy::DefaultEvictionPolicy),
-            hash_builder: ahash::RandomState::with_seeds(1, 2, 3, 4),
+            blackjack: crate::core::blackjack::PackedBlackjack::new(
+                P::T0_THRESHOLD,
+                P::T1_THRESHOLD,
+                P::T2_THRESHOLD,
+                256,
+            ),
+            hash_builder: ahash::RandomState::with_seeds(
+                0x1234567890ABCDEF,
+                0xFEDCBA0987654321,
+                0x13579BDF02468ACE,
+                0xECA86420FDB97531,
+            ),
             _marker: core::marker::PhantomData,
         }
     }
@@ -83,17 +95,45 @@ where
     }
 
     #[inline(always)]
-    pub fn get_t2<'g>(&self, hash: usize, key: &K, guard: &'g Guard, op_count: u32) -> Option<(&'g V, u16, u16)> {
+    pub fn get_t2<'g>(&'g self, hash: usize, key: &K, guard: &'g crate::componant::qsbr::Guard, op_count: u32) -> Option<(&'g V, u8, Option<(K, V)>)> {
+        let (t0_thresh, t1_thresh, _, _) = self.blackjack.load_params();
+
+        // T0
+        if let Some(val) = self.get_t0(hash, key, guard, op_count) {
+            return Some((val, 0, None));
+        }
+
+        // T1
+        let t1_idx = self.t1.get_slot_idx(hash);
+        if t1_idx != crate::componant::arena::NULL_INDEX {
+            let node = unsafe { self.arena.get(t1_idx as usize) };
+            if node.key == *key {
+                return Some((unsafe { &*(&node.value as *const V) }, 1, None));
+            }
+        }
+
+        // T2
         if let Some(slot) = self.t2.get_slot(&self.arena, hash, key, guard) {
             let (old_hits, new_hits) = slot.record_hit(op_count);
+            let hint = slot.prefetch_hint.load(::core::sync::atomic::Ordering::Relaxed);
+            let hint_kv = if hint != 0 {
+                self.t2.fetch_hint(hint, &self.arena, guard)
+            } else {
+                None
+            };
+            
             let node = unsafe { self.arena.get(slot.read(guard).1 as usize) };
-            return Some((unsafe { &*(&node.value as *const V) }, old_hits, new_hits));
+            if old_hits < t1_thresh as u16 && new_hits >= t1_thresh as u16 {
+                // Promote to T1
+                self.t1.insert_promote(&self.arena, hash, key.clone(), node.value.clone(), guard.node());
+            }
+            return Some((unsafe { &*(&node.value as *const V) }, 2, hint_kv));
         }
         None
     }
 
     #[inline(never)]
-    pub fn get<'g>(&self, key: &K, guard: &'g Guard, op_count: u32) -> Option<(&'g V, u8)> {
+    pub fn get<'g>(&'g self, key: &K, guard: &'g Guard, op_count: u32) -> Option<(&'g V, u8, Option<(K, V)>)> {
         #[repr(align(64))]
         struct CachePadded;
         let _pad = CachePadded;
@@ -101,27 +141,16 @@ where
         mod core {
             pub mod intrinsics {
                 pub use crate::utils::likely;
+                pub use crate::utils::unlikely;
             }
         }
 
         let hash = self.hash_key(key);
-
-        let t0_res = self.get_t0(hash, key, guard, op_count);
-        if core::intrinsics::likely(t0_res.is_some()) {
-            return Some((t0_res.unwrap(), 0));
+        let res = self.get_t2(hash, key, guard, op_count);
+        
+        if core::intrinsics::likely(res.is_some()) {
+            return res;
         }
-
-        let t1_res = self.get_t1(hash, key, guard, op_count);
-        if core::intrinsics::likely(t1_res.is_some()) {
-            return Some((t1_res.unwrap(), 1));
-        }
-
-        let t2_res = self.get_t2(hash, key, guard, op_count);
-        if core::intrinsics::likely(t2_res.is_some()) {
-            let (v, _, _) = t2_res.unwrap();
-            return Some((v, 2));
-        }
-
         None
     }
 
@@ -146,13 +175,8 @@ where
         }
     }
 
-    pub fn try_reclaim(&self, node: *mut crate::componant::qsbr::ThreadStateNode) {
-        crate::componant::qsbr::try_reclaim(node, |idx| unsafe {
-            let local_free = &mut *(*node).local_free.get();
-            if !local_free.push(idx) {
-                self.arena.free(idx as usize);
-            }
-        });
+    pub fn try_reclaim(&self, _node: *mut crate::componant::qsbr::ThreadStateNode) {
+        // Reclamation is now handled exclusively by the Daemon using daemon_reclaim closure
     }
 
     /// Record a remote hit for an item based on its hash.
@@ -166,6 +190,17 @@ where
                 let new_hits = old_hits.saturating_add(_weight as u16);
                 slot.hits
                     .store(new_hits, ::core::sync::atomic::Ordering::Relaxed);
+                break;
+            }
+        }
+    }
+
+    pub fn set_prefetch_hint(&self, hash: usize, next_hash: usize) {
+        let set = self.t2.get_set(hash);
+        for i in 0..8 {
+            let slot = unsafe { set.get_unchecked(i) };
+            if slot.hash.load(::core::sync::atomic::Ordering::Relaxed) == hash {
+                slot.prefetch_hint.store(next_hash, ::core::sync::atomic::Ordering::Relaxed);
                 break;
             }
         }
@@ -217,13 +252,13 @@ mod tests {
         assert_eq!(core.get(&100, &guard, 0), None);
 
         core.put(100, 200, thread_node);
-        assert_eq!(core.get(&100, &guard, 0), Some((&200, 2)));
+        assert_eq!(core.get(&100, &guard, 0), Some((&200, 2, None)));
 
         core.put_t1(300, 400, thread_node);
-        assert_eq!(core.get(&300, &guard, 0), Some((&400, 1)));
+        assert_eq!(core.get(&300, &guard, 0), Some((&400, 1, None)));
 
         core.put_t0(500, 600, thread_node);
-        assert_eq!(core.get(&500, &guard, 0), Some((&600, 0)));
+        assert_eq!(core.get(&500, &guard, 0), Some((&600, 0, None)));
     }
 
     #[test]
@@ -240,10 +275,10 @@ mod tests {
 
         core.put(300, 400, thread_node);
         core.record_remote_hit(core.hash_key(&300), 10);
-        assert_eq!(core.get(&300, &guard, 0), Some((&400, 2)));
+        assert_eq!(core.get(&300, &guard, 0), Some((&400, 2, None)));
 
         core.put_t0(500, 600, thread_node);
-        assert_eq!(core.get(&500, &guard, 0), Some((&600, 0)));
+        assert_eq!(core.get(&500, &guard, 0), Some((&600, 0, None)));
     }
 
     #[test]
@@ -258,11 +293,11 @@ mod tests {
 
         let hash1 = core.hash_key(&1000);
         core.t1.insert_promote(&core.arena, hash1, 1000, 2000, thread_node);
-        assert_eq!(core.get(&1000, &guard, 0), Some((&2000, 1)));
+        assert_eq!(core.get(&1000, &guard, 0), Some((&2000, 1, None)));
 
         let hash0 = core.hash_key(&3000);
         core.t0.insert_promote(&core.arena, hash0, 3000, 4000, thread_node);
-        assert_eq!(core.get(&3000, &guard, 0), Some((&4000, 0)));
+        assert_eq!(core.get(&3000, &guard, 0), Some((&4000, 0, None)));
 
         let idx = core.t1.get_slot_idx(hash1);
         assert_ne!(idx, crate::componant::arena::NULL_INDEX);

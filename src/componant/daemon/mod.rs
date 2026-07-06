@@ -12,7 +12,7 @@ pub enum DaemonMessage<K, V> {
     /// Dynamically adjust Daemon poll interval (Power-Saving Mode) - missing from v0.5.0
     SetPollInterval(u64),
     /// Zero-cost callbacks / blocking maintenance flush - missing from v0.5.0
-    Sync(alloc::sync::Arc<OneshotAck>),
+    Sync(std::sync::Arc<OneshotAck>),
     /// Graceful shutdown - missing from v0.5.0
     Shutdown,
 }
@@ -24,7 +24,7 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    fn compress_and_push<K, V>(batch: &mut alloc::vec::Vec<DaemonMessage<K, V>>, msg: DaemonMessage<K, V>) {
+    fn compress_and_push<K, V>(batch: &mut std::vec::Vec<DaemonMessage<K, V>>, msg: DaemonMessage<K, V>) {
         match msg {
             DaemonMessage::Hit(hash, weight) => {
                 if let Some(DaemonMessage::Hit(last_hash, last_weight)) = batch.last_mut()
@@ -65,8 +65,8 @@ impl Daemon {
     /// Spawn the daemon thread. Returns the Daemon handle.
     pub fn spawn<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>(
         core: &'static crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>, 
-        rx: ::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>,
-        broadcast_txs: alloc::vec::Vec<::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
+        rx: std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>,
+        broadcast_txs: std::vec::Vec<std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
         daemon_node: *mut crate::componant::qsbr::ThreadStateNode
     ) -> Self
     where
@@ -77,7 +77,7 @@ impl Daemon {
         let daemon_node_ptr = daemon_node as usize;
         let handle = thread::spawn(move || {
             let daemon_node = daemon_node_ptr as *mut crate::componant::qsbr::ThreadStateNode;
-            let mut batch = alloc::vec::Vec::with_capacity(65536);
+            let mut batch = std::vec::Vec::with_capacity(65536);
             let mut poll_ms = 10;
             loop {
                 let mut disconnected = false;
@@ -97,19 +97,24 @@ impl Daemon {
                         }
                     }
                     None => {
-                        if ::alloc::sync::Arc::strong_count(&rx) == 1 {
+                        if std::sync::Arc::strong_count(&rx) == 1 {
                             disconnected = true;
                         } else {
-                            thread::sleep(Duration::from_millis(poll_ms));
+                            // If we didn't receive anything, we just continue to GC!
                         }
                     }
                 }
 
                 // 2. Process batch and Broadcast
+                let mut last_hash: Option<usize> = None;
                 for msg in batch.drain(..) {
                     match msg {
                         DaemonMessage::Hit(hash, weight) => {
                             core.record_remote_hit(hash, weight);
+                            if let Some(prev) = last_hash {
+                                core.set_prefetch_hint(prev, hash);
+                            }
+                            last_hash = Some(hash);
                             for tx in &broadcast_txs {
                                 let _ = tx.push((hash, weight));
                             }
@@ -136,15 +141,27 @@ impl Daemon {
 
                 // Pin daemon node so it updates its QSBR epoch and participates in GC
                 let _guard = crate::componant::qsbr::pin(daemon_node);
+                
+                // GC: Move safe nodes from thread-local garbage queues to the Arena directly
+                crate::componant::qsbr::daemon_reclaim(|batch| {
+                    if batch.is_empty() { return; }
+                    unsafe {
+                        for i in 0..batch.len() {
+                            let idx = batch[i];
+                            core.arena.drop_node(idx as usize);
+                            if i < batch.len() - 1 {
+                                core.arena.set_next_free(idx, batch[i + 1]);
+                            }
+                        }
+                        core.arena.free_batch(batch[0], batch[batch.len() - 1]);
+                    }
+                });
 
                 if disconnected {
                     let node_ref = unsafe { &*daemon_node };
                     node_ref.active.store(false, Ordering::Release);
                     break;
                 }
-
-                // 3. Perform background QSBR reclamation to free old memory
-                core.try_reclaim(daemon_node);
             }
         });
         Self { _handle: handle }
@@ -157,7 +174,7 @@ mod tests {
 
     #[test]
     fn test_daemon_compress_and_push() {
-        let mut batch: alloc::vec::Vec<DaemonMessage<u64, u64>> = alloc::vec::Vec::new();
+        let mut batch: std::vec::Vec<DaemonMessage<u64, u64>> = std::vec::Vec::new();
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 10));
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 5));
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(2, 5));
@@ -170,7 +187,7 @@ mod tests {
 }
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use ::alloc::sync::Arc;
+use std::sync::Arc;
 
 pub struct OneshotAck {
     ready: AtomicBool,

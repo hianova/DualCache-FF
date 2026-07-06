@@ -1,5 +1,5 @@
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, vec::Vec};
+use std::{boxed::Box, vec::Vec};
 
 use ::core::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr;

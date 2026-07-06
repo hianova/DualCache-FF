@@ -60,24 +60,46 @@ impl<K, V, const N: usize> Arena<K, V, N> {
             return Some(idx as usize);
         }
 
+
+
+        // Batch pop from free_head to amortize CAS contention
         let mut head = self.free_head.load(Ordering::Acquire);
         loop {
             let index = (head & 0xFFFFFFFF) as u32;
             if index == NULL_INDEX {
                 return None; // OOM
             }
+
+            // Find the 64th node to batch
+            let mut curr = index;
+            let mut count = 1;
+            while count < 64 {
+                let next = self.next_free[curr as usize].load(Ordering::Relaxed);
+                if next == NULL_INDEX {
+                    break;
+                }
+                curr = next;
+                count += 1;
+            }
+
+            let next_after_batch = self.next_free[curr as usize].load(Ordering::Relaxed);
             let tag = head >> 32;
-            let next = self.next_free[index as usize].load(Ordering::Relaxed);
-            let new_head = (tag.wrapping_add(1) << 32) | (next as usize);
-            
+            let new_head = (tag.wrapping_add(1) << 32) | (next_after_batch as usize);
+
             match self.free_head.compare_exchange_weak(head, new_head, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => {
-                    let idx = index as usize;
-                    // Initialize the memory
-                    unsafe {
-                        (*self.nodes[idx].get()).write(Node { key, value });
+                    // Success! Grabbed a batch of `count` items.
+                    // Put the first one into our return, and the rest into local_free
+                    let mut p = self.next_free[index as usize].load(Ordering::Relaxed);
+                    for _ in 1..count {
+                        local_free.push(p);
+                        p = self.next_free[p as usize].load(Ordering::Relaxed);
                     }
-                    return Some(idx);
+                    
+                    unsafe {
+                        (*self.nodes[index as usize].get()).write(Node { key, value });
+                    }
+                    return Some(index as usize);
                 }
                 Err(h) => {
                     head = h;
@@ -90,27 +112,42 @@ impl<K, V, const N: usize> Arena<K, V, N> {
     /// Safely frees a node, running its drop logic, and returning it to the free list.
     /// MUST only be called when no threads are reading the node (e.g., via QSBR).
     pub unsafe fn free(&self, index: usize) {
-        // Drop the inner item
+        self.drop_node(index);
+        self.free_raw(index);
+    }
+
+    /// Drops the inner item without pushing it to the free list.
+    pub unsafe fn drop_node(&self, index: usize) {
         unsafe {
             core::ptr::drop_in_place((*self.nodes[index].get()).as_mut_ptr());
         }
+    }
+    
+    pub fn set_next_free(&self, index: u32, next: u32) {
+        self.next_free[index as usize].store(next, Ordering::Relaxed);
+    }
 
-        // Push to free list
+    /// Pushes a batch of nodes to the global free list without dropping it.
+    pub unsafe fn free_batch(&self, head_idx: u32, tail_idx: u32) {
         let mut head = self.free_head.load(Ordering::Relaxed);
         loop {
             let next = (head & 0xFFFFFFFF) as u32;
-            self.next_free[index].store(next, Ordering::Relaxed);
-            let tag = (head >> 32).wrapping_add(1);
-            let new_head = (tag << 32) | index;
+            self.next_free[tail_idx as usize].store(next, Ordering::Relaxed);
+            let tag = head >> 32;
+            let new_head = (tag.wrapping_add(1) << 32) | (head_idx as usize);
             
-            match self.free_head.compare_exchange_weak(head, new_head, Ordering::Release, Ordering::Relaxed) {
-                Ok(_) => break,
-                Err(h) => {
-                    head = h;
-                    ::core::hint::spin_loop();
-                }
+            if self.free_head.compare_exchange_weak(head, new_head, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return;
+            } else {
+                head = self.free_head.load(Ordering::Relaxed);
+                ::core::hint::spin_loop();
             }
         }
+    }
+
+    /// Pushes a node index to the global free list without dropping it.
+    pub unsafe fn free_raw(&self, index: usize) {
+        self.free_batch(index as u32, index as u32);
     }
 
     /// Get a reference to a node.

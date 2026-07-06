@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use std::vec::Vec;
 use core::cell::UnsafeCell;
 use ::core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -129,15 +129,16 @@ use crate::componant::daemon::DaemonMessage;
 pub struct TlsBlock<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     pub cache: TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>,
     #[cfg(feature = "std")]
-    pub tx: Option<::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>>,
+    pub tx: Option<std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>>,
     #[cfg(feature = "std")]
-    pub hit_rx: Option<::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
+    pub hit_rx: Option<std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
     pub op_count: u64,
+    pub hit_count: u64,
     #[cfg(feature = "std")]
     pub hit_batch: [(usize, u8); 32],
     #[cfg(feature = "std")]
     pub hit_batch_len: u8,
-    pub warmup_state: u8,
+    pub warmup_state: u16,
     pub qsbr_node: crate::componant::qsbr::ThreadStateNode,
 }
 
@@ -156,6 +157,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
             #[cfg(feature = "std")]
             hit_rx: None,
             op_count: 0,
+            hit_count: 0,
             #[cfg(feature = "std")]
             hit_batch: [(0, 0); 32],
             #[cfg(feature = "std")]
@@ -191,6 +193,18 @@ impl<K: Clone + Eq, V: Clone, const MAX_THREADS: usize, const TLS_CAP: usize, co
 
     pub fn max_threads(&self) -> usize {
         MAX_THREADS
+    }
+
+    pub fn get_metrics(&self) -> (u64, u64) {
+        let mut total_ops = 0;
+        let mut total_hits = 0;
+        let active = self.next_id.load(Ordering::Relaxed);
+        for i in 0..active {
+            let block = unsafe { &*self.blocks[i].get() };
+            total_ops += block.value.op_count;
+            total_hits += block.value.hit_count;
+        }
+        (total_ops, total_hits)
     }
 
     pub fn register_thread(&self) -> TlsHandle {

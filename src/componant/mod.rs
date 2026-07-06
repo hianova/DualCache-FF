@@ -3,6 +3,7 @@ pub mod cache_tier;
 pub mod qsbr;
 pub mod slot;
 pub mod tls;
+#[cfg(feature = "std")]
 pub mod config;
 pub mod policy;
 
@@ -16,6 +17,6 @@ pub mod daemon;
 
 pub use arena::Node;
 pub use cache_tier::CacheTier;
-pub use qsbr::{pin, try_reclaim, Guard};
+pub use qsbr::{pin, Guard};
 pub use slot::Slot;
 pub use config::{CachePolicy, DefaultExponentialPolicy};

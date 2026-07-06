@@ -18,25 +18,76 @@ struct RetiredNode {
     epoch: u64,
 }
 
-const GARBAGE_CAP: usize = 1024;
+const GARBAGE_CAP: usize = 16384;
 pub struct GarbageQueue {
     items: [RetiredNode; GARBAGE_CAP],
-    head: usize,
-    tail: usize,
+    head: AtomicUsize,
+    tail: AtomicUsize,
 }
 
 impl GarbageQueue {
     const fn new() -> Self {
         Self {
             items: [RetiredNode { index: 0, epoch: 0 }; GARBAGE_CAP],
-            head: 0,
-            tail: 0,
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
         }
     }
 }
 
+pub struct MpmcQueue<const N: usize> {
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    buffer: [::core::sync::atomic::AtomicU32; N],
+}
+
+impl<const N: usize> MpmcQueue<N> {
+    pub const fn new() -> Self {
+        Self {
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            buffer: [const { ::core::sync::atomic::AtomicU32::new(u32::MAX) }; N],
+        }
+    }
+    pub fn push(&self, val: u32) -> bool {
+        let mut tail = self.tail.load(Ordering::Relaxed);
+        loop {
+            if tail.wrapping_sub(self.head.load(Ordering::Acquire)) >= N {
+                return false;
+            }
+            if self.tail.compare_exchange_weak(tail, tail + 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+                while self.buffer[tail % N].load(Ordering::Acquire) != u32::MAX {
+                    ::core::hint::spin_loop();
+                }
+                self.buffer[tail % N].store(val, Ordering::Release);
+                return true;
+            }
+            tail = self.tail.load(Ordering::Relaxed);
+        }
+    }
+    pub fn pop(&self) -> Option<u32> {
+        let mut head = self.head.load(Ordering::Relaxed);
+        loop {
+            if head == self.tail.load(Ordering::Acquire) {
+                return None;
+            }
+            let val = self.buffer[head % N].load(Ordering::Acquire);
+            if val != u32::MAX {
+                if self.head.compare_exchange_weak(head, head + 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+                    self.buffer[head % N].store(u32::MAX, Ordering::Release);
+                    return Some(val);
+                }
+            } else {
+                return None;
+            }
+            head = self.head.load(Ordering::Relaxed);
+        }
+    }
+}
+
+
 pub struct LocalFreeQueue {
-    items: [u32; 256],
+    items: [u32; 16384],
     len: usize,
 }
 
@@ -48,7 +99,7 @@ impl Default for LocalFreeQueue {
 
 impl LocalFreeQueue {
     pub const fn new() -> Self {
-        Self { items: [0; 256], len: 0 }
+        Self { items: [0; 16384], len: 0 }
     }
     pub fn pop(&mut self) -> Option<u32> {
         if self.len > 0 {
@@ -60,7 +111,7 @@ impl LocalFreeQueue {
     }
     #[must_use]
     pub fn push(&mut self, val: u32) -> bool {
-        if self.len < 256 {
+        if self.len < 16384 {
             self.items[self.len] = val;
             self.len += 1;
             true
@@ -189,56 +240,69 @@ pub fn pin(node: *mut ThreadStateNode) -> Guard {
 
 /// Retire a node index into the thread-local garbage queue safely using QSBR.
 /// This prevents ABA by ensuring the index is not freed to the Arena until all threads observing it have advanced.
-pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut free_fn: F) {
+pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut _free_fn: F) {
     let epoch = GLOBAL_EPOCH.load(Ordering::Acquire) as u64;
     unsafe {
         let q = &mut (*node).garbage_queue;
         
-        while q.head - q.tail >= GARBAGE_CAP {
-            try_reclaim(node, &mut free_fn);
-            if q.head - q.tail >= GARBAGE_CAP {
-                ::core::hint::spin_loop();
-            }
+        // Wait until there's space (Daemon is slow, but we shouldn't drop)
+        let mut head = q.head.load(Ordering::Relaxed);
+        while head.wrapping_sub(q.tail.load(Ordering::Acquire)) >= GARBAGE_CAP {
+            // UPDATE EPOCH WHILE WAITING so daemon can advance min_epoch!
+            let cur_epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
+            (*node).epoch.store(cur_epoch, Ordering::Release);
+            ::core::hint::spin_loop();
+            head = q.head.load(Ordering::Relaxed);
         }
         
-        let idx = q.head % GARBAGE_CAP;
+        let idx = head % GARBAGE_CAP;
         q.items[idx] = RetiredNode {
             index: index as u32,
             epoch,
         };
-        q.head += 1;
+        q.head.store(head.wrapping_add(1), Ordering::Release);
     }
 }
 
-/// Try to reclaim memory from the thread-local garbage queue. 
-/// Calls the provided closure for each reclaimed node index.
-pub fn try_reclaim<F: FnMut(u32)>(node: *mut ThreadStateNode, mut f: F) {
-    // Advance the global epoch. Threads that pin() after this will read the new epoch.
-    // This allows previously retired nodes to eventually be reclaimed once older active epochs clear out.
+/// The Daemon calls this globally to move safe nodes from GarbageQueues to Arena.
+pub fn daemon_reclaim<F: FnMut(&[u32])>(mut free_batch_fn: F) {
     GLOBAL_EPOCH.fetch_add(1, Ordering::Relaxed);
-
     let min_epoch = get_min_epoch();
-    
-    unsafe {
-        let q = &mut (*node).garbage_queue;
-        
-        // Debug check to ensure we aren't leaking and overwriting memory in the ring buffer
-        debug_assert!(q.head - q.tail <= GARBAGE_CAP, "QSBR garbage queue overflow! Memory leaked.");
-        
-        while q.tail < q.head {
-            let idx = q.tail % GARBAGE_CAP;
-            let retired = q.items[idx];
+
+    let mut batch = [0u32; 128];
+    let mut batch_len = 0;
+
+    let mut node = THREAD_STATES.load(Ordering::Acquire);
+    while !node.is_null() {
+        unsafe {
+            let q = &mut (*node).garbage_queue;
+            let mut tail = q.tail.load(Ordering::Relaxed);
+            let head = q.head.load(Ordering::Acquire);
             
-            // If the retired epoch is strictly less than the minimum active epoch across all threads,
-            // no thread can possibly have a reference to this node anymore.
-            if retired.epoch < min_epoch as u64 {
-                f(retired.index);
-                q.tail += 1;
-            } else {
-                // Epochs are monotonically increasing. If this one isn't safe, neither are the rest.
-                break;
+            while tail < head {
+                let idx = tail % GARBAGE_CAP;
+                let retired = q.items[idx];
+                
+                if retired.epoch < min_epoch as u64 {
+                    batch[batch_len] = retired.index;
+                    batch_len += 1;
+                    tail += 1;
+                    
+                    if batch_len == 128 {
+                        free_batch_fn(&batch[..batch_len]);
+                        batch_len = 0;
+                    }
+                } else {
+                    break;
+                }
             }
+            q.tail.store(tail, Ordering::Release);
+            
+            node = (*node).next;
         }
+    }
+    if batch_len > 0 {
+        free_batch_fn(&batch[..batch_len]);
     }
 }
 

@@ -34,6 +34,24 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize> CacheTie
         }
     }
 
+    /// Touch a slot by hash to prevent it from being evicted (Prefetch hint)
+    #[inline(always)]
+    pub fn fetch_hint<const N: usize>(&self, hash: usize, arena: &super::arena::Arena<K, V, N>, guard: &super::qsbr::Guard) -> Option<(K, V)>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        let set = self.get_set(hash);
+        for slot in set {
+            let (slot_hash, idx) = slot.read(guard);
+            if slot_hash == hash && idx != super::arena::NULL_INDEX {
+                let node = unsafe { arena.get(idx as usize) };
+                return Some((node.key.clone(), node.value.clone()));
+            }
+        }
+        None
+    }
+
     /// Retrieve a slot if the key exists in this tier.
     #[inline(always)]
     pub fn get_slot<const N: usize>(&self, arena: &Arena<K, V, N>, hash: usize, key: &K, guard: &qsbr::Guard) -> Option<&Slot<K, V>>

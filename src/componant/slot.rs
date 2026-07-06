@@ -8,6 +8,7 @@ pub struct Slot<K, V> {
     pub hash: ::core::sync::atomic::AtomicUsize,
     pub hits: ::core::sync::atomic::AtomicU16,
     pub node_idx: ::core::sync::atomic::AtomicU32,
+    pub prefetch_hint: ::core::sync::atomic::AtomicUsize,
     _marker: core::marker::PhantomData<(K, V)>,
 }
 
@@ -18,6 +19,7 @@ impl<K, V> Slot<K, V> {
             hash: ::core::sync::atomic::AtomicUsize::new(0),
             hits: ::core::sync::atomic::AtomicU16::new(0),
             node_idx: ::core::sync::atomic::AtomicU32::new(arena::NULL_INDEX),
+            prefetch_hint: ::core::sync::atomic::AtomicUsize::new(0),
             _marker: core::marker::PhantomData,
         }
     }

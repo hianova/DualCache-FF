@@ -31,7 +31,7 @@ where
         
         // Map the reference to an owned value to allow releasing the lock safely
         // Pass 16 to force record_hit for static cache which doesn't have a thread local op_count
-        engine.get(key, &guard, 16).map(|(v_ref, _tier)| v_ref.clone())
+        engine.get(key, &guard, 16).map(|(v_ref, _tier, _hint)| v_ref.clone())
     }
 
     /// Insert a key-value pair into the cache. Handles inline reclamation synchronously.
