@@ -11,7 +11,12 @@ use crate::componant::tls::{TlsRegistry, TlsHandle};
 #[cfg(feature = "std")]
 use crate::componant::daemon::DaemonMessage;
 
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadCount {
+    Pool(usize),
+    Pin(usize),
+    Mixed(usize, usize),
+}
 /// `DualCacheFF` is the main entry point for the cache, providing standard API operations and managing the 
 /// background daemon for garbage collection and memory reclamation.
 #[repr(C, align(64))]
