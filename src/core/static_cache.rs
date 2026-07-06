@@ -1,4 +1,4 @@
-use crate::core::engine::{DualCacheCore, BottomUpCache};
+use crate::core::engine::DualCacheCore;
 use crate::componant::qsbr::{ThreadStateNode, pin};
 use crate::componant::config::CachePolicy;
 use core::hash::Hash;

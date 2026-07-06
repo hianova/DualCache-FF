@@ -3,7 +3,7 @@ use crate::componant::cache_tier::{CacheTier, FastTier};
 use crate::componant::config::{CachePolicy, DefaultExponentialPolicy};
 use crate::componant::qsbr::Guard;
 use ahash::RandomState;
-use core::hash::{BuildHasher, Hash};
+use core::hash::Hash;
 
 /// The independent orchestrator that glues T0, T1, and T2 together.
 /// Designed for `no_std` environments.
@@ -95,8 +95,9 @@ where
     }
 
     #[inline(always)]
+    #[allow(clippy::type_complexity)]
     pub fn get_t2<'g>(&'g self, hash: usize, key: &K, guard: &'g crate::componant::qsbr::Guard, op_count: u32) -> Option<(&'g V, u8, Option<(K, V)>)> {
-        let (t0_thresh, t1_thresh, _, _) = self.blackjack.load_params();
+        let (_t0_thresh, t1_thresh, _, _) = self.blackjack.load_params();
 
         // T0
         if let Some(val) = self.get_t0(hash, key, guard, op_count) {
@@ -123,9 +124,11 @@ where
             };
             
             let node = unsafe { self.arena.get(slot.read(guard).1 as usize) };
-            if old_hits < t1_thresh as u16 && new_hits >= t1_thresh as u16 {
+            if old_hits < t1_thresh && new_hits >= t1_thresh {
                 // Promote to T1
-                self.t1.insert_promote(&self.arena, hash, key.clone(), node.value.clone(), guard.node());
+                unsafe {
+                    self.t1.insert_promote(&self.arena, hash, key.clone(), node.value.clone(), guard.node());
+                }
             }
             return Some((unsafe { &*(&node.value as *const V) }, 2, hint_kv));
         }
@@ -133,6 +136,7 @@ where
     }
 
     #[inline(never)]
+    #[allow(clippy::type_complexity)]
     pub fn get<'g>(&'g self, key: &K, guard: &'g Guard, op_count: u32) -> Option<(&'g V, u8, Option<(K, V)>)> {
         #[repr(align(64))]
         struct CachePadded;
@@ -141,7 +145,7 @@ where
         mod core {
             pub mod intrinsics {
                 pub use crate::utils::likely;
-                pub use crate::utils::unlikely;
+                
             }
         }
 
@@ -154,17 +158,23 @@ where
         None
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn put_t0(&self, key: K, value: V, node: *mut crate::componant::qsbr::ThreadStateNode) {
         if crate::utils::likely(true) {
             let hash = self.hash_key(&key);
-            self.t0.insert_promote(&self.arena, hash, key, value, node);
+            unsafe {
+                self.t0.insert_promote(&self.arena, hash, key, value, node);
+            }
         }
     }
 
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn put_t1(&self, key: K, value: V, node: *mut crate::componant::qsbr::ThreadStateNode) {
         if crate::utils::likely(true) {
             let hash = self.hash_key(&key);
-            self.t1.insert_promote(&self.arena, hash, key, value, node);
+            unsafe {
+                self.t1.insert_promote(&self.arena, hash, key, value, node);
+            }
         }
     }
 
@@ -243,9 +253,10 @@ mod tests {
     fn test_comprehensive_cache_flow() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
-        let thread_node = unsafe {
-            qsbr::register_node(core::ptr::addr_of_mut!(TEST_NODE));
-            core::ptr::addr_of_mut!(TEST_NODE)
+        let thread_node = {
+            let node = &raw mut TEST_NODE as *mut _;
+            qsbr::register_node(node);
+            node
         };
         let guard = qsbr::pin(thread_node);
 
@@ -265,9 +276,10 @@ mod tests {
     fn test_t0_promotion_flow() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
-        let thread_node = unsafe {
-            qsbr::register_node(core::ptr::addr_of_mut!(TEST_NODE));
-            core::ptr::addr_of_mut!(TEST_NODE)
+        let thread_node = {
+            let node = &raw mut TEST_NODE as *mut _;
+            qsbr::register_node(node);
+            node
         };
         let guard = qsbr::pin(thread_node);
 
@@ -285,18 +297,23 @@ mod tests {
     fn test_tier_fallbacks() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
-        let thread_node = unsafe {
-            qsbr::register_node(core::ptr::addr_of_mut!(TEST_NODE));
-            core::ptr::addr_of_mut!(TEST_NODE)
+        let thread_node = {
+            let node = &raw mut TEST_NODE as *mut _;
+            qsbr::register_node(node);
+            node
         };
         let guard = qsbr::pin(thread_node);
 
         let hash1 = core.hash_key(&1000);
-        core.t1.insert_promote(&core.arena, hash1, 1000, 2000, thread_node);
+        unsafe {
+            core.t1.insert_promote(&core.arena, hash1, 1000, 2000, thread_node);
+        }
         assert_eq!(core.get(&1000, &guard, 0), Some((&2000, 1, None)));
 
         let hash0 = core.hash_key(&3000);
-        core.t0.insert_promote(&core.arena, hash0, 3000, 4000, thread_node);
+        unsafe {
+            core.t0.insert_promote(&core.arena, hash0, 3000, 4000, thread_node);
+        }
         assert_eq!(core.get(&3000, &guard, 0), Some((&4000, 0, None)));
 
         let idx = core.t1.get_slot_idx(hash1);

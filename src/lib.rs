@@ -1,22 +1,25 @@
 #![cfg_attr(not(any(feature = "std", feature = "daemon", test)), no_std)]
-extern crate alloc;
 
 pub mod utils;
 pub mod componant;
 pub mod core;
 
+#[cfg(feature = "std")]
 use ::core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "std")]
 use crate::componant::tls::{TlsRegistry, TlsHandle};
-
 #[cfg(feature = "std")]
 use crate::componant::daemon::DaemonMessage;
 
+#[cfg(feature = "std")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadCount {
     Pool(usize),
     Pin(usize),
     Mixed(usize, usize),
 }
+
+#[cfg(feature = "std")]
 /// `DualCacheFF` is the main entry point for the cache, providing standard API operations and managing the 
 /// background daemon for garbage collection and memory reclamation.
 #[repr(C, align(64))]
@@ -36,12 +39,16 @@ where
     P: crate::componant::config::CachePolicy + Send + Sync,
 {
     core: crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>,
-    daemon_mode: AtomicBool,
-    tls_registry: TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP>,
+    pub daemon_mode: AtomicBool,
     #[cfg(feature = "std")]
-    global_tx: std::sync::RwLock<Option<::alloc::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>>>,
+    pub cata_mode: AtomicBool,
+    pub tls_registry: TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP>,
+    #[cfg(feature = "std")]
+    #[allow(clippy::type_complexity)]
+    pub global_tx: std::sync::RwLock<Option<::std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>>>,
 }
 
+#[cfg(feature = "std")]
 impl<
     K, 
     V, 
@@ -64,6 +71,7 @@ where
     }
 }
 
+#[cfg(feature = "std")]
 impl<
     K, 
     V, 
@@ -85,9 +93,21 @@ where
         Self {
             core: crate::core::DualCacheCore::new(),
             daemon_mode: AtomicBool::new(false),
+            #[cfg(feature = "std")]
+            cata_mode: AtomicBool::new(false),
             tls_registry: TlsRegistry::new(),
             #[cfg(feature = "std")]
             global_tx: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Start the CATA-DC Demiurge tuning engine in the background
+    #[cfg(feature = "std")]
+    pub fn set_cata_tuning(&'static self, on: bool) {
+        if on && !self.cata_mode.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            crate::componant::cata::spawn_demiurge(self);
+        } else if !on {
+            self.cata_mode.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -98,16 +118,16 @@ where
         self.daemon_mode.store(on, Ordering::SeqCst);
         
         if on {
-            let tx = unsafe { ::alloc::sync::Arc::<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>::new_zeroed().assume_init() };
+            let tx = unsafe { ::std::sync::Arc::<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>::new_zeroed().assume_init() };
             let rx = tx.clone();
-            let mut broadcast_txs = alloc::vec::Vec::with_capacity(self.tls_registry.max_threads());
+            let mut broadcast_txs = std::vec::Vec::with_capacity(self.tls_registry.max_threads());
             
             for i in 0..self.tls_registry.max_threads() {
                 let dummy_handle = TlsHandle { id: i, qsbr_node: ::core::ptr::null_mut() };
                 let block = self.tls_registry.get_block_mut(&dummy_handle);
                 block.tx = Some(tx.clone());
                 
-                let hit_queue = unsafe { ::alloc::sync::Arc::<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>::new_zeroed().assume_init() };
+                let hit_queue = unsafe { ::std::sync::Arc::<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>::new_zeroed().assume_init() };
                 block.hit_rx = Some(hit_queue.clone());
                 broadcast_txs.push(hit_queue);
             }
@@ -167,16 +187,29 @@ where
         let guard = ::core::mem::ManuallyDrop::new(unsafe { crate::componant::qsbr::Guard::unpinned(handle.qsbr_node) });
         let hash = self.core.hash_key(key);
         
-        // 1. TLS (Thread Local)
-        let (val_opt, promote, sync) = block.cache.get(hash, key);
+        // 1. T0 (Royal Class)
+        if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
+            block.warmup_state = block.warmup_state.saturating_add(10);
+            block.cache.insert_fast_pass(hash, key.clone(), val.clone());
+            return Some(val.clone());
+        }
+
+        // 2. T1 (Elite Class) - FastTier
+        if let Some(val) = self.core.get_t1(hash, key, &guard, op_count) {
+            block.cache.insert(hash, key.clone(), val.clone());
+            return Some(val.clone());
+        }
+
+        // 3. TLS (Thread Local)
+        let (val_opt, promote, _sync) = block.cache.get(hash, key);
         if let Some(val) = val_opt {
             if promote {
                 self.core.put_t0(key.clone(), val.clone(), handle.qsbr_node);
             }
             #[cfg(feature = "std")]
-            if sync > 0 {
+            if _sync > 0 {
                 if block.hit_batch_len < 32 {
-                    block.hit_batch[block.hit_batch_len as usize] = (hash, sync);
+                    block.hit_batch[block.hit_batch_len as usize] = (hash, _sync);
                     block.hit_batch_len += 1;
                 }
                 if block.hit_batch_len == 32 {
@@ -188,19 +221,6 @@ where
                     block.hit_batch_len = 0;
                 }
             }
-            return Some(val.clone());
-        }
-
-        // 1. T0 (Royal Class)
-        if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
-            block.warmup_state = block.warmup_state.saturating_add(10);
-            block.cache.insert_fast_pass(hash, key.clone(), val.clone());
-            return Some(val.clone());
-        }
-
-        // 2. T1 (Elite Class) - FastTier
-        if let Some(val) = self.core.get_t1(hash, key, &guard, op_count) {
-            block.cache.insert(hash, key.clone(), val.clone());
             return Some(val.clone());
         }
 
@@ -249,6 +269,7 @@ where
     }
 }
 
+#[cfg(feature = "std")]
 unsafe impl<
     K, 
     V, 
@@ -265,6 +286,7 @@ where
     P: crate::componant::config::CachePolicy + Send + Sync,
 {}
 
+#[cfg(feature = "std")]
 unsafe impl<
     K, 
     V, 
@@ -281,6 +303,22 @@ where
     P: crate::componant::config::CachePolicy + Send + Sync,
 {}
 
+
+#[cfg(feature = "std")]
+impl<
+    K, V, P, 
+    const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize,
+    const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize
+> DualCacheFF<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP>
+where 
+    K: Clone + Eq,
+    V: Clone,
+    P: crate::componant::config::CachePolicy + Send + Sync,
+{
+    pub fn get_metrics(&self) -> (u64, u64) {
+        self.tls_registry.get_metrics()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,18 +413,18 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
 
         // Test manual Promote to T0 and T2 via global_tx
-        if let Ok(gtx) = CACHE.global_tx.read() {
-            if let Some(ref tx) = *gtx {
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(999, 999, 9990, 0));
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(888, 888, 8880, 2));
+        if let Ok(gtx) = CACHE.global_tx.read()
+            && let Some(ref tx) = *gtx
+        {
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(999, 999, 9990, 0));
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(888, 888, 8880, 2));
             
             // Test HitBatch manual injection
             let mut arr = [(0usize, 0u8); 32];
             arr[0] = (123, 10);
             arr[1] = (123, 5); // Duplicate hash to trigger `found = true`
             arr[2] = (456, 1);
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::HitBatch(arr, 3));
-            }
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::HitBatch(arr, 3));
         }
         std::thread::sleep(Duration::from_millis(50));
 
@@ -429,10 +467,10 @@ mod tests {
         assert!(res.is_err());
 
         // Send a Promote message to Daemon directly
-        if let Ok(gtx) = CACHE.global_tx.read() {
-            if let Some(ref tx) = *gtx {
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(123, 123, 123, 0));
-            }
+        if let Ok(gtx) = CACHE.global_tx.read()
+            && let Some(ref tx) = *gtx
+        {
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(123, 123, 123, 0));
         }
 
         // Wait for daemon to process

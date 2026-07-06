@@ -1,4 +1,3 @@
-#[cfg(not(feature = "std"))]
 use std::vec::Vec;
 
 use core::cell::UnsafeCell;
@@ -22,7 +21,15 @@ impl<K, V> BatchBuf<K, V> {
             len: 0,
         }
     }
+}
 
+impl<K, V> Default for BatchBuf<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> BatchBuf<K, V> {
     /// Returns `true` when the buffer is full (32 items) and should be flushed.
     #[inline(always)]
     pub fn push(&mut self, item: (K, V, u64)) -> bool {
@@ -80,13 +87,22 @@ impl<K, V> WorkerSlot<K, V> {
             inner: UnsafeCell::new(BatchBuf::new()),
         }
     }
+}
 
+impl<K, V> Default for WorkerSlot<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> WorkerSlot<K, V> {
     /// Provides exclusive access to the underlying buffer.
     ///
     /// # Safety
     /// The caller must guarantee that only one thread accesses this slot at a time.
     /// In DualCache-FF this is enforced by the WORKER_ID TLS invariant.
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut_unchecked(&self) -> &mut BatchBuf<K, V> {
         unsafe { &mut *self.inner.get() }
     }

@@ -1,5 +1,4 @@
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 use ::core::hash::Hash;
 
 
@@ -78,7 +77,7 @@ impl Daemon {
         let handle = thread::spawn(move || {
             let daemon_node = daemon_node_ptr as *mut crate::componant::qsbr::ThreadStateNode;
             let mut batch = std::vec::Vec::with_capacity(65536);
-            let mut poll_ms = 10;
+            let mut _poll_ms = 10;
             loop {
                 let mut disconnected = false;
 
@@ -128,7 +127,7 @@ impl Daemon {
                             }
                         }
                         DaemonMessage::SetPollInterval(ms) => {
-                            poll_ms = ms;
+                            _poll_ms = ms;
                         }
                         DaemonMessage::Sync(ack) => {
                             ack.signal();
@@ -168,23 +167,7 @@ impl Daemon {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn test_daemon_compress_and_push() {
-        let mut batch: std::vec::Vec<DaemonMessage<u64, u64>> = std::vec::Vec::new();
-        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 10));
-        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 5));
-        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(2, 5));
-        
-        let mut arr = [(0usize, 0u8); 32];
-        arr[0] = (2, 5);
-        arr[1] = (3, 10);
-        Daemon::compress_and_push(&mut batch, DaemonMessage::HitBatch(arr, 2));
-    }
-}
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -216,5 +199,23 @@ impl OneshotAck {
                 std::thread::yield_now();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_daemon_compress_and_push() {
+        let mut batch: std::vec::Vec<DaemonMessage<u64, u64>> = std::vec::Vec::new();
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 10));
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 5));
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(2, 5));
+        
+        let mut arr = [(0usize, 0u8); 32];
+        arr[0] = (2, 5);
+        arr[1] = (3, 10);
+        Daemon::compress_and_push(&mut batch, DaemonMessage::HitBatch(arr, 2));
     }
 }

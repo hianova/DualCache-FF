@@ -38,7 +38,7 @@ impl<K, V> Slot<K, V> {
     pub fn record_hit(&self, op_count: u32) -> (u16, u16) {
         let old_hits = self.hits.load(Ordering::Relaxed);
         const PROB_N: u32 = 100;
-        if op_count % PROB_N != 0 {
+        if !op_count.is_multiple_of(PROB_N) {
             return (old_hits, old_hits);
         }
         let new_hits = old_hits.saturating_add(PROB_N as u16);
@@ -73,7 +73,8 @@ mod tests {
     fn test_slot_default() {
         let slot: Slot<u64, u64> = Slot::default();
         let node = {
-            let n = std::boxed::Box::into_raw(std::boxed::Box::new(crate::componant::qsbr::ThreadStateNode::new()));
+            static mut TEST_NODE: crate::componant::qsbr::ThreadStateNode = crate::componant::qsbr::ThreadStateNode::new();
+            let n = &raw mut TEST_NODE as *mut _;
             crate::componant::qsbr::register_node(n);
             n
         };
@@ -85,7 +86,8 @@ mod tests {
         let arena = crate::componant::arena::Arena::<u64, u64, 4>::new();
         let slot = Slot::<u64, u64>::default();
         let node = {
-            let n = std::boxed::Box::into_raw(std::boxed::Box::new(crate::componant::qsbr::ThreadStateNode::new()));
+            static mut TEST_NODE: crate::componant::qsbr::ThreadStateNode = crate::componant::qsbr::ThreadStateNode::new();
+            let n = &raw mut TEST_NODE as *mut _;
             crate::componant::qsbr::register_node(n);
             n
         };

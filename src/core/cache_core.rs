@@ -201,8 +201,9 @@ mod tests {
     fn test_comprehensive_cache_flow() {
         // T0=8, T1=8, T2=8
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
+        let thread_node = unsafe {
+            static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
+            let node = &raw mut TEST_NODE as *mut _;
             qsbr::register_node(node);
             node
         };
@@ -226,8 +227,9 @@ mod tests {
     #[test]
     fn test_cache_miss_and_eviction() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
+        let thread_node = unsafe {
+            static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
+            let node = &raw mut TEST_NODE as *mut _;
             qsbr::register_node(node);
             node
         };
@@ -247,8 +249,9 @@ mod tests {
     #[test]
     fn test_put_t0_and_record_remote_hit() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
+        let thread_node = unsafe {
+            static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
+            let node = &raw mut TEST_NODE as *mut _;
             qsbr::register_node(node);
             node
         };
@@ -267,8 +270,9 @@ mod tests {
     #[test]
     fn test_cache_core_t1_t0_hits() {
         let core = DualCacheCore::<u64, u64, TestPolicy, 8, 8, 8, 24>::default();
-        let thread_node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(qsbr::ThreadStateNode::new()));
+        let thread_node = unsafe {
+            static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
+            let node = &raw mut TEST_NODE as *mut _;
             qsbr::register_node(node);
             node
         };

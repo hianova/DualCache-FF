@@ -1,4 +1,3 @@
-#[cfg(not(feature = "std"))]
 use std::{boxed::Box, vec::Vec};
 
 use ::core::sync::atomic::{AtomicPtr, Ordering};
@@ -62,6 +61,11 @@ impl<K, V> T1<K, V> {
     pub fn len(&self) -> usize {
         self.slots.len()
     }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// T2 — Warm tier: direct-mapped L2 filter (intercepts warm data).
@@ -120,5 +124,10 @@ impl<K, V> T2<K, V> {
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.slots.len()
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }

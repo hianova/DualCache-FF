@@ -110,6 +110,66 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> Default for CacheTier<K, V,
 }
 
 
+
+
+/// A direct-mapped (1-way) fast tier optimized for T0 zero-cost lookups.
+/// It uses exactly 1 atomic load for maximum throughput.
+#[repr(C, align(64))]
+pub struct FastTier<const CAPACITY: usize> {
+    slots: [::core::sync::atomic::AtomicU32; CAPACITY],
+}
+
+impl<const CAPACITY: usize> Default for FastTier<CAPACITY> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const CAPACITY: usize> FastTier<CAPACITY> {
+    pub const fn new() -> Self {
+        assert!(CAPACITY > 0 && CAPACITY.is_power_of_two(), "CAPACITY must be a power of two");
+        let slots = [const { ::core::sync::atomic::AtomicU32::new(super::arena::NULL_INDEX) }; CAPACITY];
+        Self { slots }
+    }
+
+    #[inline(always)]
+    pub fn get_slot_idx(&self, hash: usize) -> u32 {
+        let mask = CAPACITY - 1;
+        let idx = hash & mask;
+        self.slots[idx].load(::core::sync::atomic::Ordering::Acquire)
+    }
+
+    #[inline(always)]
+    pub fn insert_idx(&self, hash: usize, node_idx: u32) -> u32 {
+        let mask = CAPACITY - 1;
+        let idx = hash & mask;
+        self.slots[idx].swap(node_idx, ::core::sync::atomic::Ordering::Release)
+    }
+
+    /// # Safety
+    /// The caller must ensure that `node` is a valid pointer to a ThreadStateNode
+    /// and that the thread state is active.
+    pub unsafe fn insert_promote<K, V, const N: usize>(&self, arena: &super::arena::Arena<K, V, N>, hash: usize, key: K, value: V, node: *mut super::qsbr::ThreadStateNode) {
+        if let Some(new_idx) = arena.alloc(key, value, node) {
+            let old_idx = self.insert_idx(hash, new_idx as u32);
+            if old_idx != super::arena::NULL_INDEX {
+                unsafe {
+                    let local_free = &mut *(*node).local_free.get();
+                    if !local_free.push(old_idx) {
+                        arena.free(old_idx as usize);
+                    }
+                }
+            }
+        }
+    }
+    
+    pub fn clear(&self) {
+        for slot in self.slots.iter() {
+            slot.store(super::arena::NULL_INDEX, ::core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,54 +210,5 @@ mod tests {
         let tier: CacheTier<u64, u64, crate::componant::policy::DefaultEvictionPolicy, 8, 8> = CacheTier::default();
         let set = tier.get_set(0);
         assert_eq!(set.len(), 8);
-    }
-}
-
-/// A direct-mapped (1-way) fast tier optimized for T0 zero-cost lookups.
-/// It uses exactly 1 atomic load for maximum throughput.
-#[repr(C, align(64))]
-pub struct FastTier<const CAPACITY: usize> {
-    slots: [::core::sync::atomic::AtomicU32; CAPACITY],
-}
-
-impl<const CAPACITY: usize> FastTier<CAPACITY> {
-    pub const fn new() -> Self {
-        assert!(CAPACITY > 0 && CAPACITY.is_power_of_two(), "CAPACITY must be a power of two");
-        let mut slots = [const { ::core::sync::atomic::AtomicU32::new(super::arena::NULL_INDEX) }; CAPACITY];
-        Self { slots }
-    }
-
-    #[inline(always)]
-    pub fn get_slot_idx(&self, hash: usize) -> u32 {
-        let mask = CAPACITY - 1;
-        let idx = hash & mask;
-        self.slots[idx].load(::core::sync::atomic::Ordering::Acquire)
-    }
-
-    #[inline(always)]
-    pub fn insert_idx(&self, hash: usize, node_idx: u32) -> u32 {
-        let mask = CAPACITY - 1;
-        let idx = hash & mask;
-        self.slots[idx].swap(node_idx, ::core::sync::atomic::Ordering::Release)
-    }
-
-    pub fn insert_promote<K, V, const N: usize>(&self, arena: &super::arena::Arena<K, V, N>, hash: usize, key: K, value: V, node: *mut super::qsbr::ThreadStateNode) {
-        if let Some(new_idx) = arena.alloc(key, value, node) {
-            let old_idx = self.insert_idx(hash, new_idx as u32);
-            if old_idx != super::arena::NULL_INDEX {
-                unsafe {
-                    let local_free = &mut *(*node).local_free.get();
-                    if !local_free.push(old_idx) {
-                        arena.free(old_idx as usize);
-                    }
-                }
-            }
-        }
-    }
-    
-    pub fn clear(&self) {
-        for slot in self.slots.iter() {
-            slot.store(super::arena::NULL_INDEX, ::core::sync::atomic::Ordering::Relaxed);
-        }
     }
 }

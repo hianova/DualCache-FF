@@ -41,6 +41,12 @@ pub struct MpmcQueue<const N: usize> {
     buffer: [::core::sync::atomic::AtomicU32; N],
 }
 
+impl<const N: usize> Default for MpmcQueue<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const N: usize> MpmcQueue<N> {
     pub const fn new() -> Self {
         Self {

@@ -1,6 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
 use std::sync::Arc;
-use std::thread;
+
 
 use dualcache_ff::componant::qsbr;
 use dualcache_ff::core::engine::DualCacheCore;

@@ -14,6 +14,12 @@ impl DefaultEvictionPolicy {
     }
 }
 
+impl Default for DefaultEvictionPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EvictionPolicy for DefaultEvictionPolicy {
     #[inline(always)]
     fn find_victim<'a, K, V>(&self, set: &'a [Slot<K, V>], hash: usize) -> &'a Slot<K, V> {

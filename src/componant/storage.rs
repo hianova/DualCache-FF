@@ -1,4 +1,3 @@
-#[cfg(not(feature = "std"))]
 use std::{boxed::Box, vec::Vec};
 
 use ::core::sync::atomic::{AtomicU64, AtomicPtr, Ordering};

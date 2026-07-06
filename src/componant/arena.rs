@@ -51,6 +51,9 @@ impl<K, V, const N: usize> Arena<K, V, N> {
 
     /// Allocates a node from the free list and initializes it.
     /// Returns the index of the allocated node.
+    /// # Safety
+    /// `node` must be a valid pointer.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn alloc(&self, key: K, value: V, node: *mut crate::componant::qsbr::ThreadStateNode) -> Option<usize> {
         let local_free = unsafe { &mut *(*node).local_free.get() };
         if let Some(idx) = local_free.pop() {
@@ -92,7 +95,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
                     // Put the first one into our return, and the rest into local_free
                     let mut p = self.next_free[index as usize].load(Ordering::Relaxed);
                     for _ in 1..count {
-                        local_free.push(p);
+                        let _ = local_free.push(p);
                         p = self.next_free[p as usize].load(Ordering::Relaxed);
                     }
                     
@@ -111,10 +114,10 @@ impl<K, V, const N: usize> Arena<K, V, N> {
 
     /// Safely frees a node, running its drop logic, and returning it to the free list.
     /// MUST only be called when no threads are reading the node (e.g., via QSBR).
-    pub unsafe fn free(&self, index: usize) {
+    pub unsafe fn free(&self, index: usize) { unsafe {
         self.drop_node(index);
         self.free_raw(index);
-    }
+    }}
 
     /// Drops the inner item without pushing it to the free list.
     pub unsafe fn drop_node(&self, index: usize) {
@@ -146,9 +149,9 @@ impl<K, V, const N: usize> Arena<K, V, N> {
     }
 
     /// Pushes a node index to the global free list without dropping it.
-    pub unsafe fn free_raw(&self, index: usize) {
+    pub unsafe fn free_raw(&self, index: usize) { unsafe {
         self.free_batch(index as u32, index as u32);
-    }
+    }}
 
     /// Get a reference to a node.
     /// Caller must ensure index is valid and the node is currently allocated.
@@ -159,6 +162,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut(&self, index: usize) -> &mut Node<K, V> {
         unsafe {
             &mut *((*self.nodes[index].get()).as_mut_ptr())

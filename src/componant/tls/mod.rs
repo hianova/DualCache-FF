@@ -1,4 +1,4 @@
-use std::vec::Vec;
+
 use core::cell::UnsafeCell;
 use ::core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -57,8 +57,8 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     #[inline(always)]
     pub fn get(&mut self, hash: usize, key: &K) -> (Option<&V>, bool, u8) {
         let idx = hash & (self.capacity - 1);
-        if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) } {
-            if entry.hash == hash && entry.key == *key {
+        if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
+            && entry.hash == hash && entry.key == *key {
                 let old_hits = entry.hits;
                 entry.hits = entry.hits.saturating_add(1);
                 
@@ -71,7 +71,6 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
                 };
                 
                 return (Some(&entry.value), promote, sync_weight);
-            }
         }
         (None, false, 0)
     }
@@ -79,11 +78,10 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     #[inline(always)]
     pub fn insert(&mut self, hash: usize, key: K, value: V) -> bool {
         let idx = hash & (self.capacity - 1);
-        if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) } {
-            if entry.hash == hash && entry.key == key {
+        if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
+            && entry.hash == hash && entry.key == key {
                 entry.value = value;
                 return true;
-            }
         }
         
         let filter_idx = hash & 4095;
@@ -114,10 +112,9 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
 
     pub fn record_remote_hit(&mut self, hash: usize, weight: u8) {
         let idx = hash & (self.capacity - 1);
-        if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) } {
-            if entry.hash == hash {
+        if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
+            && entry.hash == hash {
                 entry.hits = entry.hits.saturating_add(weight);
-            }
         }
     }
 }

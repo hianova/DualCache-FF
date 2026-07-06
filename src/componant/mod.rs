@@ -2,16 +2,22 @@ pub mod arena;
 pub mod cache_tier;
 pub mod qsbr;
 pub mod slot;
-pub mod tls;
 #[cfg(feature = "std")]
+pub mod tls;
 pub mod config;
 pub mod policy;
 
 // v0.2.0 missing components
+#[cfg(feature = "std")]
 pub mod filters;
+#[cfg(feature = "std")]
 pub mod storage;
+#[cfg(feature = "std")]
 pub mod workers;
 
+
+#[cfg(feature = "std")]
+pub mod cata;
 #[cfg(feature = "std")]
 pub mod daemon;
 
