@@ -62,6 +62,7 @@ impl Daemon {
     }
 
     /// Spawn the daemon thread. Returns the Daemon handle.
+    #[inline(never)]
     pub fn spawn<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>(
         core: &'static crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>, 
         rx: std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>,
@@ -99,7 +100,8 @@ impl Daemon {
                         if std::sync::Arc::strong_count(&rx) == 1 {
                             disconnected = true;
                         } else {
-                            // If we didn't receive anything, we just continue to GC!
+                            // If we didn't receive anything, sleep for _poll_ms to avoid 100% CPU spinning
+                            thread::sleep(std::time::Duration::from_millis(_poll_ms));
                         }
                     }
                 }
