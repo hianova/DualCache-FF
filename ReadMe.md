@@ -2,7 +2,7 @@
 
 > **A highly opinionated, absolutely wait-free concurrent cache in Rust, optimized for extreme read-to-write ratios and scan-resistance. Built for high-performance and `no_std` embedded compatibility.**
 
-`DualcacheFF` is a specialized, high-density concurrent primitive built on **CQRS (Command Query Responsibility Segregation)**, **QSBR (Quiet State Based Reclamation)**, and a novel **Avg-based Clock Eviction Algorithm**.
+`DualcacheFF` is a specialized, high-density concurrent primitive built on **CQRS (Command Query Responsibility Segregation)**, **QSBR (Quiet State Based Reclamation)**, and a novel **Avg-based Clock Eviction Algorithm (Blackjack)**.
 
 By deliberately abandoning heavy API contracts in favor of CPU spatial locality and wait-free semantics, `DualcacheFF` achieves massive throughput under hostile workloads.
 
@@ -12,64 +12,47 @@ By deliberately abandoning heavy API contracts in favor of CPU spatial locality 
 All reads are completely non-blocking and wait-free. Memory reclamation is handled via Quiet State Based Reclamation (QSBR), allowing readers to instantly access cached nodes without locks, mutexes, or atomic reference counting overhead.
 
 ### 2. Three-Tier Promotion System
+- **T0 (L1 Cache):** Ultra-fast array mapping for hyper-frequent hits.
 - **T1 (Hot Cache):** A high-speed `AtomicPtr` slot array mapping to Cache indices for instant lookup.
-- **T2 (Secondary Filter):** A larger slot array for capturing secondary heat patterns.
-- **Cache (Main Storage):** The source of truth using an open-addressed index (Linear Probing).
+- **T2 (Secondary Filter):** A larger slot array for capturing secondary heat patterns and delaying eviction.
+- **Cache (Arena):** The source of truth using a flat Arena allocator.
 
 ### 3. Asynchronous Daemon & Batched Telemetry
-Cache admissions and evictions are handled exclusively by an asynchronous background daemon. Read/write telemetry is buffered locally in Thread-Local Storage (TLS) and periodically flushed to the daemon via a custom lock-free `LossyQueue`.
+Cache admissions and evictions are handled exclusively by an asynchronous background daemon. Read/write telemetry is buffered locally in Thread-Local Storage (TLS) and periodically flushed to the daemon via a custom lock-free `mpsc_queue::BoundedQueue`.
 
-### 4. Avg-based Clock Eviction
+### 4. Blackjack (Avg-based Clock Eviction)
 A revolution-shielded circular clock evicts items whose access rank falls below the global average, instantly adapting to shifting workload heat distributions.
 
 ## Quick Start Examples
 
-### Single-Threaded Basic Usage
+### Basic Usage (`DualCacheFF`)
 ```rust
-use dualcache_ff::{DualCacheFF, Config};
+use dualcache_ff::DualCacheFF;
+use dualcache_ff::componant::config::DefaultExponentialPolicy;
 
 fn main() {
-    // Initialize cache with physical memory limits
-    let config = Config::with_memory_budget(10 * 1024 * 1024, 60); // 10MB budget, 60% TTL load
-    let cache = DualCacheFF::new(config);
+    // Initialize cache using default configuration and generics
+    let cache = DualCacheFF::<
+        u64, u64,
+        DefaultExponentialPolicy,
+        64,     // CAP2
+        4096,   // CAP1
+        262144, // CAP0
+        266304, // TOTAL_CAP
+        16,     // MAX_THREADS
+        1024,   // TLS_CAP
+        64      // TLS_INDEX_CAP
+    >::default();
 
-    // Insert data
-    cache.insert(1, "value_1");
-    cache.insert(2, "value_2");
+    // Spawn Daemon to process writes in the background
+    cache.spawn_daemon(dualcache_ff::ThreadCount::Pin(1));
 
-    // Retrieve data
+    // Wait-free insert
+    cache.put_t2_single_thread(1, 100);
+
+    // Wait-free read
     if let Some(val) = cache.get(&1) {
         println!("Found: {}", val);
-    }
-}
-```
-
-### Multi-Threaded Concurrent Usage
-```rust
-use dualcache_ff::{DualCacheFF, Config};
-use std::sync::Arc;
-use std::thread;
-
-fn main() {
-    let config = Config::with_memory_budget(50 * 1024 * 1024, 80);
-    let cache = Arc::new(DualCacheFF::new(config));
-
-    let mut handles = vec![];
-
-    for i in 0..4 {
-        let cache_clone = Arc::clone(&cache);
-        handles.push(thread::spawn(move || {
-            // High concurrency wait-free reads and writes
-            cache_clone.insert(i, format!("Data {}", i));
-            
-            if let Some(val) = cache_clone.get(&i) {
-                println!("Thread {} read: {}", i, val);
-            }
-        }));
-    }
-
-    for handle in handles {
-        handle.join().unwrap();
     }
 }
 ```
@@ -95,5 +78,3 @@ cargo bench
 ## License
 
 This project is licensed under the [**MIT License**](LICENSE).
-
----

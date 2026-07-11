@@ -5,3 +5,4 @@ profile.json
 cargo-flamegraph.trace
 .covopt/
 .agents/
+.covopt.toml
