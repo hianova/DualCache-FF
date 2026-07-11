@@ -2,6 +2,8 @@
 //! Uses a Trait-based Static Config pattern for maximum extensibility and zero runtime overhead.
 
 pub trait CachePolicy {
+    type Evict: crate::componant::policy::EvictionPolicy + Default;
+    
     /// Hit count threshold to promote from Local TLS Cache to T2 Core Cache.
     const T2_THRESHOLD: u16;
     /// Hit count threshold to promote from T2 to T1.
@@ -22,6 +24,8 @@ pub trait CachePolicy {
 pub struct DefaultExponentialPolicy;
 
 impl CachePolicy for DefaultExponentialPolicy {
+    type Evict = crate::componant::policy::DefaultEvictionPolicy;
+    
     const T2_THRESHOLD: u16 = 2;   // Local to T2 (T2 threshold not strictly defined in earlier prompts but 2 fits 2^1)
     const T1_THRESHOLD: u16 = 16;  // T2 to T1
     const T0_THRESHOLD: u16 = 256; // T1 to T0

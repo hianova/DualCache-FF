@@ -19,10 +19,16 @@ pub enum DaemonMessage<K, V> {
 /// The Daemon manages background tasks like TLS-to-Core promotion
 /// and QSBR memory reclamation.
 pub struct Daemon {
-    _handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl Daemon {
+    pub fn join(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+
     fn compress_and_push<K, V>(batch: &mut std::vec::Vec<DaemonMessage<K, V>>, msg: DaemonMessage<K, V>) {
         match msg {
             DaemonMessage::Hit(hash, weight) => {
@@ -165,7 +171,7 @@ impl Daemon {
                 }
             }
         });
-        Self { _handle: handle }
+        Self { handle: Some(handle) }
     }
 }
 

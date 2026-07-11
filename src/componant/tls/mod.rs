@@ -174,6 +174,17 @@ pub struct TlsRegistry<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, con
 unsafe impl<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync for TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {}
 unsafe impl<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Send for TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {}
 
+impl<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {
+    #[cfg(feature = "std")]
+    pub fn clear_channels(&self) {
+        for i in 0..MAX_THREADS {
+            let block = unsafe { &mut *self.blocks[i].get() };
+            block.value.tx = None;
+            block.value.hit_rx = None;
+        }
+    }
+}
+
 impl<K: Clone + Eq, V: Clone, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default for TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {
     fn default() -> Self {
         Self::new()

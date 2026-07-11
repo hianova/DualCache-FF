@@ -1,7 +1,7 @@
 #![allow(long_running_const_eval)]
 use crossbeam_utils::thread;
 use dualcache_ff::DualCacheFF;
-use dualcache_ff::core::static_cache::StaticBottomUpCache;
+use dualcache_ff::core::static_cache::{StaticBottomUpCache, StaticDualCache};
 use hdrhistogram::Histogram;
 use rand::Rng;
 use rand::distributions::Uniform;
@@ -32,11 +32,12 @@ const THREAD_COUNT: usize = 4;
 const TOTAL_OPS: usize = 40_000_000;
 const OPS_PER_THREAD: usize = TOTAL_OPS / THREAD_COUNT;
 const DATASET_SIZE: u64 = 10_000_000;
-const CACHE_T2_CAP: usize = 1048576; // 1M
-const CACHE_T1_CAP: usize = 131072;
-const CACHE_T0_CAP: usize = 16384;
-const TOTAL_CAP: usize = 1196032; 
-const MAX_THREADS: usize = 10;
+
+const CACHE_T2_CAP: usize = 1_048_576; // 1M
+const CACHE_T1_CAP: usize = 131_072;
+const CACHE_T0_CAP: usize = 16_384;
+const TOTAL_CAP: usize = CACHE_T0_CAP + CACHE_T1_CAP + CACHE_T2_CAP;
+const MAX_THREADS: usize = 64;
 const TLS_CAP: usize = 4096;
 const TLS_INDEX_CAP: usize = 128;
 
@@ -53,8 +54,14 @@ type BenchCache = DualCacheFF<
     TLS_INDEX_CAP,
 >;
 
-static mut GLOBAL_CACHE: BenchCache = DualCacheFF::new();
-static mut GLOBAL_STATIC_CACHE: StaticBottomUpCache<u64, u64> = StaticBottomUpCache::new();
+type StaticBenchCache = StaticDualCache<u64, u64, dualcache_ff::componant::config::DefaultExponentialPolicy, CACHE_T0_CAP, CACHE_T1_CAP, CACHE_T2_CAP, TOTAL_CAP>;
+
+use no_std_tool::lazy_static;
+
+lazy_static! {
+    static ref GLOBAL_CACHE: BenchCache = DualCacheFF::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
+    static ref GLOBAL_STATIC_CACHE: StaticBenchCache = StaticDualCache::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
+}
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -87,20 +94,16 @@ fn run_workload(
     shift_dataset: bool,
     mode: CacheMode,
 ) -> BenchResult {
-    // Reset caches for fair benchmarks
-    unsafe {
-        dualcache_ff::componant::qsbr::reset();
-        GLOBAL_CACHE = DualCacheFF::new();
-        GLOBAL_STATIC_CACHE = StaticBottomUpCache::new();
-    }
-    let cache = unsafe { &*std::ptr::addr_of!(GLOBAL_CACHE) };
-    let static_cache = unsafe { &*std::ptr::addr_of!(GLOBAL_STATIC_CACHE) };
+    // With lazy_static, we initialize only the needed cache to avoid allocating
+    // multiple 120MB structures on the stack sequentially.
+    let cache = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata { Some(&*GLOBAL_CACHE) } else { None };
+    let static_cache = if mode == CacheMode::StaticBottomUp { Some(&*GLOBAL_STATIC_CACHE) } else { None };
     
     if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
-        cache.set_daemon_mode(true);
+        cache.unwrap().set_daemon_mode(true);
     }
     if mode == CacheMode::WaitFreeDaemonCata {
-        cache.set_cata_tuning(true);
+        cache.unwrap().set_cata_tuning(true);
         // Wait 2000ms for Demiurge to converge parameters before we start benchmark
         std::thread::sleep(std::time::Duration::from_millis(2000));
     }
@@ -108,11 +111,19 @@ fn run_workload(
     println!("Warming up cache for {} mode...", match mode {
         CacheMode::WaitFreeDaemon => "Daemon",
         CacheMode::WaitFreeDaemonCata => "CATA-DC",
-        CacheMode::StaticBottomUp => "Static",
+        CacheMode::StaticBottomUp => "Static Default",
     });
-    let main_tls = cache.register_thread();
-    for i in 0..TOTAL_CAP as u64 {
-        cache.insert(i, i, &main_tls);
+    
+    let main_tls = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
+        Some(cache.unwrap().register_thread())
+    } else {
+        None
+    };
+    
+    if let Some(tls) = &main_tls {
+        for i in 0..TOTAL_CAP as u64 {
+            cache.unwrap().insert(i, i, tls);
+        }
     }
 
     let mut all_ops_data = Vec::new();
@@ -140,14 +151,17 @@ fn run_workload(
         all_ops_data.push(ops_data);
     }
 
-    if mode == CacheMode::WaitFreeDaemon {
-        let warmup_handle = cache.register_thread();
+    if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
+        let warmup_handle = cache.unwrap().register_thread();
         for &(key, _) in all_ops_data[0].iter().take(10_000) {
-            cache.insert(key, key, &warmup_handle);
+            cache.unwrap().insert(key, key, &warmup_handle);
         }
     } else {
         for &(key, _) in all_ops_data[0].iter().take(10_000) {
-            static_cache.put(key, key);
+            match mode {
+                CacheMode::StaticBottomUp => static_cache.unwrap().put(key, key),
+                _ => {}
+            }
         }
     }
 
@@ -180,8 +194,13 @@ fn run_workload(
                     core_affinity::set_for_current(target_core);
                 }
 
-                let tls_handle = cache.register_thread();
-                let tls = &tls_handle;
+                let tls_handle = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
+                    Some(cache.unwrap().register_thread())
+                } else {
+                    None
+                };
+                
+                let tls = tls_handle.as_ref();
 
                 barrier_clone.wait(); // Synchronize all threads to start
 
@@ -196,13 +215,24 @@ fn run_workload(
 
                     if is_read {
                         reads += 1;
-                        if cache.get(&key, tls).is_some() {
+                        let hit = match mode {
+                            CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => cache.unwrap().get(&key, tls.unwrap()).is_some(),
+                            CacheMode::StaticBottomUp => static_cache.unwrap().get(&key).is_some(),
+                        };
+                        
+                        if hit {
                             hits += 1;
                         } else {
-                            cache.insert(key, key, tls);
+                            match mode {
+                                CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => cache.unwrap().insert(key, key, tls.unwrap()),
+                                CacheMode::StaticBottomUp => static_cache.unwrap().put(key, key),
+                            }
                         }
                     } else {
-                        cache.insert(key, key, tls);
+                        match mode {
+                            CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => cache.unwrap().insert(key, key, tls.unwrap()),
+                            CacheMode::StaticBottomUp => static_cache.unwrap().put(key, key),
+                        }
                     }
                     
                     if let Some(start) = op_start {
@@ -244,8 +274,10 @@ fn run_workload(
     // The theoretical steady state for 1.2M cache on 10M Zipf(1.0) is ~83.6%.
     let corrected_hit_rate = if hit_rate > 70.0 { hit_rate + 3.0 } else { hit_rate };
 
-    if mode == CacheMode::WaitFreeDaemon {
-        cache.set_daemon_mode(false);
+    if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
+        cache.unwrap().set_daemon_mode(false);
+        cache.unwrap().set_cata_tuning(false);
+        std::thread::sleep(std::time::Duration::from_millis(600));
     }
 
     BenchResult {
@@ -309,15 +341,19 @@ fn main() {
             (AccessPattern::Zipf, 90, false, "Zipf (90:10)", CacheMode::WaitFreeDaemonCata),
         ];
 
-        let _static_configs = [
+        let _static_configs = vec![
             (AccessPattern::Zipf, 99, false, "Zipf (99:1)", CacheMode::StaticBottomUp),
             (AccessPattern::Zipf, 90, false, "Zipf (90:10)", CacheMode::StaticBottomUp),
             (AccessPattern::Zipf, 50, false, "Zipf (50:50)", CacheMode::StaticBottomUp),
             (AccessPattern::Uniform, 99, false, "Uniform (99:1)", CacheMode::StaticBottomUp),
         ];
 
+        println!("Running DualCacheFF (Wait-Free + Daemon)...");
         print_markdown_table("DualCacheFF (Wait-Free + Daemon)", &wait_free_configs);
+        println!("Running DualCacheFF (Wait-Free + CATA-DC Tuning)...");
         print_markdown_table("DualCacheFF (Wait-Free + CATA-DC Tuning)", &cata_configs);
+        println!("Running StaticDualCache (Default Pseudo-LFU)...");
+        print_markdown_table("StaticDualCache (Default Pseudo-LFU)", &_static_configs);
         
     }).unwrap().join().unwrap();
 }

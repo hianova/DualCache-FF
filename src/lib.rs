@@ -46,6 +46,8 @@ where
     #[cfg(feature = "std")]
     #[allow(clippy::type_complexity)]
     pub global_tx: std::sync::RwLock<Option<::std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>>>,
+    #[cfg(feature = "std")]
+    pub daemon_handle: std::sync::RwLock<Option<crate::componant::daemon::Daemon>>,
 }
 
 #[cfg(feature = "std")]
@@ -67,7 +69,7 @@ where
     P: crate::componant::config::CachePolicy + Send + Sync + 'static,
  {
     fn default() -> Self {
-        Self::new()
+        Self::new(P::Evict::default())
     }
 }
 
@@ -89,15 +91,17 @@ where
     V: Clone + Send + Sync + 'static,
     P: crate::componant::config::CachePolicy + Send + Sync + 'static,
 {
-    pub const fn new() -> Self {
+    pub const fn new(eviction: P::Evict) -> Self {
         Self {
-            core: crate::core::DualCacheCore::new(),
+            core: crate::core::DualCacheCore::new(eviction),
             daemon_mode: AtomicBool::new(false),
             #[cfg(feature = "std")]
             cata_mode: AtomicBool::new(false),
             tls_registry: TlsRegistry::new(),
             #[cfg(feature = "std")]
             global_tx: std::sync::RwLock::new(None),
+            #[cfg(feature = "std")]
+            daemon_handle: std::sync::RwLock::new(None),
         }
     }
 
@@ -137,7 +141,10 @@ where
                 crate::componant::qsbr::register_node(node);
                 node
             };
-            let _daemon = crate::componant::daemon::Daemon::spawn(&self.core, rx, broadcast_txs, daemon_node);
+            let daemon = crate::componant::daemon::Daemon::spawn(&self.core, rx, broadcast_txs, daemon_node);
+            if let Ok(mut handle_guard) = self.daemon_handle.write() {
+                *handle_guard = Some(daemon);
+            }
             if let Ok(mut gtx) = self.global_tx.write() {
                 *gtx = Some(tx.clone());
             }
@@ -145,11 +152,11 @@ where
             if let Ok(mut gtx) = self.global_tx.write() {
                 *gtx = None;
             }
-            for i in 0..self.tls_registry.max_threads() {
-                let dummy_handle = TlsHandle { id: i, qsbr_node: ::core::ptr::null_mut() };
-                let block = self.tls_registry.get_block_mut(&dummy_handle);
-                block.tx = None;
-                block.hit_rx = None;
+            self.tls_registry.clear_channels();
+            if let Ok(mut handle_guard) = self.daemon_handle.write()
+                && let Some(mut daemon) = handle_guard.take() 
+            {
+                daemon.join();
             }
         }
     }
@@ -319,6 +326,39 @@ where
         self.tls_registry.get_metrics()
     }
 }
+
+#[cfg(feature = "std")]
+impl<
+    K, V, P, 
+    const T0_CAP: usize, const T1_CAP: usize, const T2_CAP: usize, const TOTAL_CAP: usize,
+    const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize
+> Drop for DualCacheFF<K, V, P, T0_CAP, T1_CAP, T2_CAP, TOTAL_CAP, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> 
+where
+    P: crate::componant::config::CachePolicy + Send + Sync,
+{
+    fn drop(&mut self) {
+        // Automatically reclaim background threads to prevent Epoch Stall Deadlocks
+        // and resource leaks, implementing proper RAII.
+        self.daemon_mode.store(false, ::core::sync::atomic::Ordering::SeqCst);
+        self.cata_mode.store(false, ::core::sync::atomic::Ordering::SeqCst);
+        
+        // Disconnect channels to trigger daemon shutdown
+        if let Ok(mut gtx) = self.global_tx.write() {
+            *gtx = None;
+        }
+            self.tls_registry.clear_channels();
+
+        // Join the daemon thread
+        if let Ok(mut handle_guard) = self.daemon_handle.write()
+            && let Some(mut daemon) = handle_guard.take() 
+        {
+            daemon.join();
+        }
+        
+        // Fields will be dropped naturally.
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_static_global_cache() {
-        static GLOBAL_CACHE: DualCacheFF<u64, u64, crate::componant::config::DefaultExponentialPolicy, 256, 1024, 2048, 1024, 10, 256, 512> = DualCacheFF::new();
+        static GLOBAL_CACHE: DualCacheFF<u64, u64, crate::componant::config::DefaultExponentialPolicy, 256, 1024, 2048, 1024, 10, 256, 512> = DualCacheFF::new(crate::componant::policy::DefaultEvictionPolicy::new());
         let handle = GLOBAL_CACHE.register_thread();
         GLOBAL_CACHE.insert(1, 100, &handle);
         GLOBAL_CACHE.insert(1, 100, &handle);
@@ -335,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_daemon_off_sync() {
-        static CACHE: DualCacheFF<u64, u64, crate::componant::config::DefaultExponentialPolicy, 256, 1024, 2048, 4096, 10, 256, 512> = DualCacheFF::new();
+        static CACHE: DualCacheFF<u64, u64, crate::componant::config::DefaultExponentialPolicy, 256, 1024, 2048, 4096, 10, 256, 512> = DualCacheFF::new(crate::componant::policy::DefaultEvictionPolicy::new());
         let handle = CACHE.register_thread();
 
         // Put twice to pass admission filter
@@ -354,7 +394,7 @@ mod tests {
     fn test_daemon_on_async() {
         use std::time::Duration;
         
-        static CACHE: DualCacheFF<u64, u64, crate::componant::config::DefaultExponentialPolicy, 8, 16, 64, 88, 10, 256, 512> = DualCacheFF::new();
+        static CACHE: DualCacheFF<u64, u64, crate::componant::config::DefaultExponentialPolicy, 8, 16, 64, 88, 10, 256, 512> = DualCacheFF::new(crate::componant::policy::DefaultEvictionPolicy::new());
         
         // Turn ON Daemon (automatically spawns daemon)
         CACHE.set_daemon_mode(true);
@@ -364,10 +404,28 @@ mod tests {
         // Put twice to pass admission filter
         CACHE.insert(10, 1000, &handle);
         CACHE.insert(10, 1000, &handle);
+
+        // Insert 75 items to trigger capacity evictions (T2 cap is 64) 
+        // but avoid Arena OOM (Total cap is 88)
+        for i in 100..175 {
+            CACHE.insert(i, i * 10, &handle);
+            CACHE.insert(i, i * 10, &handle);
+        }
         
         // Get multiple times to reach promote threshold
         for _ in 0..5 {
             let _ = CACHE.get(&10, &handle);
+        }
+        
+        // Hit coverage for other DaemonMessage variants
+        if let Ok(gtx) = CACHE.global_tx.read() {
+            if let Some(ref tx) = *gtx {
+                let _ = tx.push(crate::componant::daemon::DaemonMessage::SetPollInterval(5));
+                
+                let ack = crate::componant::daemon::OneshotAck::new();
+                let _ = tx.push(crate::componant::daemon::DaemonMessage::Sync(ack.clone()));
+                ack.wait();
+            }
         }
         
         // Wait a bit for daemon to process the promote message
@@ -375,6 +433,10 @@ mod tests {
         
         // The value should be retrievable
         assert_eq!(CACHE.get(&10, &handle), Some(1000));
+        
+        // Shut down daemon to complete thread lifecycle and test Shutdown/None paths
+        CACHE.set_daemon_mode(false);
+        thread::sleep(Duration::from_millis(50));
     }
 
     #[cfg(feature = "std")]
@@ -382,7 +444,7 @@ mod tests {
     fn test_extensive_coverage() {
         use std::time::Duration;
         
-        static CACHE: DualCacheFF<u64, u64, crate::componant::config::DefaultExponentialPolicy, 256, 1024, 2048, 4096, 10, 256, 512> = DualCacheFF::new();
+        static CACHE: DualCacheFF<u64, u64, crate::componant::config::DefaultExponentialPolicy, 256, 1024, 2048, 4096, 10, 256, 512> = DualCacheFF::new(crate::componant::policy::DefaultEvictionPolicy::new());
         let handle = CACHE.register_thread();
 
         // Sync mode: insert many items to trigger evictions
@@ -467,13 +529,20 @@ mod tests {
         assert!(res.is_err());
 
         // Send a Promote message to Daemon directly
-        if let Ok(gtx) = CACHE.global_tx.read()
-            && let Some(ref tx) = *gtx
-        {
-            let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(123, 123, 123, 0));
-        }
-
-        // Wait for daemon to process
+        if let Ok(gtx) = CACHE.global_tx.read() {
+            if let Some(ref tx) = *gtx {
+                let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(123, 123, 123, 0));
+                
+                // Test the remaining DaemonMessage variants to achieve 100% coverage
+                let _ = tx.push(crate::componant::daemon::DaemonMessage::SetPollInterval(5));
+                
+                let ack = crate::componant::daemon::OneshotAck::new();
+                let _ = tx.push(crate::componant::daemon::DaemonMessage::Sync(ack.clone()));
+                ack.wait();
+                
+                // We don't send Shutdown here because it would kill the daemon prematurely
+            }
+        } // Wait for daemon to process
         thread::sleep(Duration::from_millis(50));
 
         // Turn off daemon

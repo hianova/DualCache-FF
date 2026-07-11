@@ -6,7 +6,7 @@ use no_std_tool::sync::SpinMutex;
 use ::core::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct StaticDualCache<K, V, P: CachePolicy, const T0_CAP: usize, const T1_CAP: usize, const T2_CAP: usize, const TOTAL_CAP: usize> {
-    inner: SpinMutex<(DualCacheCore<K, V, P, T0_CAP, T1_CAP, T2_CAP, TOTAL_CAP>, ThreadStateNode)>,
+    inner: SpinMutex<(DualCacheCore<K, V, P, T0_CAP, T1_CAP, T2_CAP, TOTAL_CAP>, ThreadStateNode, bool)>,
     insert_count: AtomicUsize,
 }
 
@@ -15,17 +15,25 @@ where
     K: Clone + Eq + Hash,
     V: Clone,
 {
-    pub const fn new() -> Self {
+    pub const fn new(eviction: P::Evict) -> Self {
         Self {
-            inner: SpinMutex::new((DualCacheCore::new(), ThreadStateNode::new())),
+            inner: SpinMutex::new((DualCacheCore::new(eviction), ThreadStateNode::new(), false)),
             insert_count: AtomicUsize::new(0),
         }
     }
 
     /// Retrieve a value from the cache synchronously.
     pub fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.lock().unwrap();
-        let (engine, qsbr_node) = &mut *inner;
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(_) => return None, // Aerospace-grade: treat lock timeout as cache miss to guarantee bounded latency
+        };
+        let (engine, qsbr_node, registered) = &mut *inner;
+        
+        if !*registered {
+            crate::componant::qsbr::register_node(qsbr_node as *mut _);
+            *registered = true;
+        }
         
         let guard = pin(qsbr_node as *mut ThreadStateNode);
         
@@ -36,8 +44,17 @@ where
 
     /// Insert a key-value pair into the cache. Handles inline reclamation synchronously.
     pub fn put(&self, key: K, value: V) {
-        let mut inner = self.inner.lock().unwrap();
-        let (engine, qsbr_node) = &mut *inner;
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(_) => return, // Aerospace-grade: drop insert on lock timeout to guarantee bounded latency
+        };
+        let (engine, qsbr_node, registered) = &mut *inner;
+        
+        if !*registered {
+            crate::componant::qsbr::register_node(qsbr_node as *mut _);
+            *registered = true;
+        }
+        
         let node_ptr = qsbr_node as *mut ThreadStateNode;
         
         engine.put(key, value, node_ptr);
@@ -46,7 +63,7 @@ where
         
         // Inline QSBR reclamation every 1024 inserts to prevent Arena OOM
         if count % 1024 == 1023 {
-            engine.try_reclaim(node_ptr);
+            engine.sync_reclaim();
         }
     }
 }
@@ -57,7 +74,7 @@ where
     V: Clone,
 {
     fn default() -> Self {
-        Self::new()
+        Self::new(P::Evict::default())
     }
 }
 

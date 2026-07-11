@@ -20,7 +20,7 @@ pub struct DualCacheCore<
     pub arena: Arena<K, V, TOTAL_CAP>,
     pub t0: FastTier<T0_CAP>,
     pub t1: FastTier<T1_CAP>,
-    pub t2: CacheTier<K, V, crate::componant::policy::DefaultEvictionPolicy, T2_CAP, 8>,
+    pub t2: CacheTier<K, V, P::Evict, T2_CAP, 8>,
     pub blackjack: crate::core::blackjack::PackedBlackjack,
     hash_builder: RandomState,
     _marker: core::marker::PhantomData<P>,
@@ -43,12 +43,12 @@ where
     K: Clone + Eq + Hash,
     V: Clone,
 {
-    pub const fn new() -> Self {
+    pub const fn new(eviction: P::Evict) -> Self {
         Self {
             arena: Arena::new(),
             t0: FastTier::new(),
             t1: FastTier::new(),
-            t2: CacheTier::new(crate::componant::policy::DefaultEvictionPolicy),
+            t2: CacheTier::new(eviction),
             blackjack: crate::core::blackjack::PackedBlackjack::new(
                 P::T0_THRESHOLD,
                 P::T1_THRESHOLD,
@@ -189,6 +189,25 @@ where
         // Reclamation is now handled exclusively by the Daemon using daemon_reclaim closure
     }
 
+    /// Synchronous inline reclamation for Lock-based caches (e.g., StaticDualCache)
+    /// that do not have a background daemon thread. MUST ONLY be called when protected
+    /// by a Mutex to avoid data races on the single-consumer QSBR garbage queues.
+    pub fn sync_reclaim(&self) {
+        crate::componant::qsbr::daemon_reclaim(|batch| {
+            if batch.is_empty() { return; }
+            unsafe {
+                for i in 0..batch.len() {
+                    let idx = batch[i];
+                    self.arena.drop_node(idx as usize);
+                    if i < batch.len() - 1 {
+                        self.arena.set_next_free(idx, batch[i + 1]);
+                    }
+                }
+                self.arena.free_batch(batch[0], batch[batch.len() - 1]);
+            }
+        });
+    }
+
     /// Record a remote hit for an item based on its hash.
     /// Used by the Daemon to propagate TLS hits into the global T2 cache.
     pub fn record_remote_hit(&self, hash: usize, _weight: u8) {
@@ -231,7 +250,7 @@ where
     V: Clone,
 {
     fn default() -> Self {
-        Self::new()
+        Self::new(P::Evict::default())
     }
 }
 
@@ -244,6 +263,7 @@ mod tests {
     // A test policy that forces 2^n thresholds but smaller values for quick testing
     struct TestPolicy;
     impl CachePolicy for TestPolicy {
+        type Evict = crate::componant::policy::DefaultEvictionPolicy;
         const T2_THRESHOLD: u16 = 2;
         const T1_THRESHOLD: u16 = 4;
         const T0_THRESHOLD: u16 = 8;

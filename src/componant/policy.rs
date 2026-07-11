@@ -1,7 +1,7 @@
 use crate::componant::slot::Slot;
 use ::core::sync::atomic::Ordering;
 
-pub trait EvictionPolicy {
+pub trait EvictionPolicy: Send + Sync {
     fn find_victim<'a, K, V>(&self, set: &'a [Slot<K, V>], hash: usize) -> &'a Slot<K, V>;
 }
 

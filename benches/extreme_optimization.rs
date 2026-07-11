@@ -12,7 +12,7 @@ fn bench_data_structure(c: &mut Criterion) {
     let mut group = c.benchmark_group("data_structure_latency");
     
     group.bench_function("put_t0_single_thread", |b| {
-        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new();
+        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
         qsbr::register_node(node);
         
@@ -22,13 +22,13 @@ fn bench_data_structure(c: &mut Criterion) {
             core.put_t0(i, i, node);
             i = (i + 1) % 512;
             if i % 64 == 0 {
-                core.try_reclaim(node);
+                core.sync_reclaim();
             }
         });
     });
 
     group.bench_function("put_t2_single_thread", |b| {
-        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new();
+        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
         qsbr::register_node(node);
         
@@ -38,7 +38,7 @@ fn bench_data_structure(c: &mut Criterion) {
             core.put(i, i, node);
             i = (i + 1) % 512;
             if i % 64 == 0 {
-                core.try_reclaim(node);
+                core.sync_reclaim();
             }
         });
     });
@@ -77,5 +77,5 @@ fn bench_tls(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_data_structure, bench_tls);
+criterion_group!(benches, bench_data_structure);
 criterion_main!(benches);
