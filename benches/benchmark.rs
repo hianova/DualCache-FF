@@ -1,7 +1,7 @@
 #![allow(long_running_const_eval)]
 use crossbeam_utils::thread;
 use dualcache_ff::DualCacheFF;
-use dualcache_ff::core::static_cache::{StaticBottomUpCache, StaticDualCache};
+use dualcache_ff::core::static_cache::StaticDualCache;
 use hdrhistogram::Histogram;
 use rand::Rng;
 use rand::distributions::Uniform;
@@ -158,9 +158,8 @@ fn run_workload(
         }
     } else {
         for &(key, _) in all_ops_data[0].iter().take(10_000) {
-            match mode {
-                CacheMode::StaticBottomUp => static_cache.unwrap().put(key, key),
-                _ => {}
+            if mode == CacheMode::StaticBottomUp {
+                static_cache.unwrap().put(key, key);
             }
         }
     }

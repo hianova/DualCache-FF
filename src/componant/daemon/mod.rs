@@ -85,6 +85,7 @@ impl Daemon {
             let daemon_node = daemon_node_ptr as *mut crate::componant::qsbr::ThreadStateNode;
             let mut batch = std::vec::Vec::with_capacity(65536);
             let mut _poll_ms = 10;
+            let mut empty_spins = 0u32;
             loop {
                 let mut disconnected = false;
 
@@ -93,6 +94,7 @@ impl Daemon {
                 
                 match msg_opt {
                     Some(msg) => {
+                        empty_spins = 0;
                         Self::compress_and_push(&mut batch, msg);
                         while batch.len() < 65536 {
                             if let Some(next_msg) = rx.pop() {
@@ -103,11 +105,20 @@ impl Daemon {
                         }
                     }
                     None => {
+                        empty_spins = empty_spins.saturating_add(1);
                         if std::sync::Arc::strong_count(&rx) == 1 {
                             disconnected = true;
                         } else {
-                            // If we didn't receive anything, sleep for _poll_ms to avoid 100% CPU spinning
-                            thread::sleep(std::time::Duration::from_millis(_poll_ms));
+                            if empty_spins < 100 {
+                                core::hint::spin_loop();
+                            } else if empty_spins < 200 {
+                                std::thread::yield_now();
+                            } else {
+                                let shift = core::cmp::min((empty_spins - 200) / 10, 6);
+                                let backoff = 1u64 << shift;
+                                let sleep_ms = core::cmp::min(backoff, _poll_ms);
+                                thread::sleep(std::time::Duration::from_millis(sleep_ms));
+                            }
                         }
                     }
                 }

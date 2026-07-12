@@ -183,7 +183,7 @@ mod tests {
         let arena = Arena::<u64, u64, 16>::new();
         let node = {
             let node = std::boxed::Box::into_raw(std::boxed::Box::new(crate::componant::qsbr::ThreadStateNode::new()));
-            crate::componant::qsbr::register_node(node);
+            crate::componant::qsbr::register_node(node, 0, ::core::ptr::null(), None);
             node
         };
         let guard = qsbr::pin(node);

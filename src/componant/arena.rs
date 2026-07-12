@@ -214,7 +214,7 @@ mod tests {
         let arena = Arena::<u64, u64, 4>::new();
         let node = {
             let node = std::boxed::Box::into_raw(std::boxed::Box::new(crate::componant::qsbr::ThreadStateNode::new()));
-            crate::componant::qsbr::register_node(node);
+            crate::componant::qsbr::register_node(node, 0, ::core::ptr::null(), None);
             node
         };
         assert!(arena.alloc(1, 1, node).is_some());

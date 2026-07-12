@@ -71,9 +71,6 @@ where
         .name("CATA-DC-Demiurge".to_string())
         .stack_size(2 * 1024 * 1024)
         .spawn(move || {
-            // Register thread for potential interactions
-            let _handle = cache.register_thread(); 
-            
             let mut rng = XorShiftRng::new(42);
             let mut current_state = CataState {
                 t0: 8.0,
@@ -87,6 +84,24 @@ where
             let mut temperature = 1.0;
 
             while cache.cata_mode.load(std::sync::atomic::Ordering::SeqCst) {
+                // Check if workload is active
+                let (start_ops, _) = cache.get_metrics();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                let (end_ops, _) = cache.get_metrics();
+                let delta = end_ops.saturating_sub(start_ops);
+                
+                if delta < 1000 {
+                    // Workload is inactive (e.g. during warmup). Keep best parameters and sleep.
+                    cache.core.blackjack.store_params(
+                        best_state.t0 as u16,
+                        best_state.t1 as u16,
+                        best_state.t2 as u16,
+                        best_state.warmup as u16,
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+
                 let candidate = current_state.perturb(&mut rng, temperature);
                 
                 // Apply candidate parameters
@@ -97,17 +112,25 @@ where
                     candidate.warmup as u16,
                 );
 
-                // Benchmark window
+                // Benchmark window (50ms)
                 let start_time = Instant::now();
-                let (start_ops, start_hits) = cache.get_metrics();
+                let (start_ops_eval, start_hits_eval) = cache.get_metrics();
                 
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 
                 let elapsed = start_time.elapsed().as_secs_f64();
-                let (end_ops, end_hits) = cache.get_metrics();
+                let (end_ops_eval, end_hits_eval) = cache.get_metrics();
                 
-                let delta_ops = end_ops.saturating_sub(start_ops);
-                let delta_hits = end_hits.saturating_sub(start_hits);
+                // Restore best parameters immediately to restore maximum performance
+                cache.core.blackjack.store_params(
+                    best_state.t0 as u16,
+                    best_state.t1 as u16,
+                    best_state.t2 as u16,
+                    best_state.warmup as u16,
+                );
+
+                let delta_ops = end_ops_eval.saturating_sub(start_ops_eval);
+                let delta_hits = end_hits_eval.saturating_sub(start_hits_eval);
                 
                 let ops_per_sec = (delta_ops as f64 / elapsed) as f32;
                 let hit_rate = if delta_ops > 0 {
@@ -137,7 +160,7 @@ where
                 // Decay temperature
                 temperature = (temperature * 0.99).max(0.01);
                 
-                // Apply best parameters to ensure steady state stability
+                // Re-apply best parameters just to be safe
                 cache.core.blackjack.store_params(
                     best_state.t0 as u16,
                     best_state.t1 as u16,
@@ -145,7 +168,8 @@ where
                     best_state.warmup as u16,
                 );
                 
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                // Stable execution window (450ms)
+                std::thread::sleep(std::time::Duration::from_millis(450));
             }
         }).unwrap();
 }

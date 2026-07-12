@@ -1,6 +1,6 @@
 [package]
 name = "dualcache-ff"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 authors = ["hianova"]
 description = "A wait-free, high-performance concurrent cache optimized for extreme read-to-write ratios."

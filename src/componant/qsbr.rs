@@ -161,7 +161,47 @@ unsafe impl Sync for ThreadStateNode {}
 
 /// Register a pre-allocated thread state node. The caller should allocate this node
 /// locally or in the static TLS blocks.
-pub fn register_node(node: *mut ThreadStateNode) {
+#[cfg(feature = "std")]
+struct QsbrCleanup {
+    node: *mut ThreadStateNode,
+    id: usize,
+    registry_ptr: *const core::ffi::c_void,
+    free_id_fn: Option<unsafe fn(*const core::ffi::c_void, usize)>,
+}
+
+#[cfg(feature = "std")]
+impl Drop for QsbrCleanup {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.node).active.store(false, Ordering::Release);
+            if let (Some(free_fn), false) = (self.free_id_fn, self.registry_ptr.is_null()) {
+                free_fn(self.registry_ptr, self.id);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+thread_local! {
+    static QSBR_CLEANUP: std::cell::RefCell<std::vec::Vec<QsbrCleanup>> = const { std::cell::RefCell::new(std::vec::Vec::new()) };
+}
+
+#[cfg(feature = "std")]
+pub fn reregister_cleanup(
+    node: *mut ThreadStateNode,
+    id: usize,
+    registry_ptr: *const core::ffi::c_void,
+    free_id_fn: Option<unsafe fn(*const core::ffi::c_void, usize)>
+) {
+    QSBR_CLEANUP.with(|c| c.borrow_mut().push(QsbrCleanup { node, id, registry_ptr, free_id_fn }));
+}
+
+pub fn register_node(
+    node: *mut ThreadStateNode,
+    id: usize,
+    registry_ptr: *const core::ffi::c_void,
+    free_id_fn: Option<unsafe fn(*const core::ffi::c_void, usize)>
+) {
     let mut head = THREAD_STATES.load(Ordering::Acquire);
     loop {
         unsafe { (*node).next = head };
@@ -176,7 +216,11 @@ pub fn register_node(node: *mut ThreadStateNode) {
             Ordering::Release,
             Ordering::Relaxed,
         ) {
-            Ok(_) => break,
+            Ok(_) => {
+                #[cfg(feature = "std")]
+                QSBR_CLEANUP.with(|c| c.borrow_mut().push(QsbrCleanup { node, id, registry_ptr, free_id_fn }));
+                break;
+            }
             Err(new_head) => {
                 head = new_head;
                 ::core::hint::spin_loop();

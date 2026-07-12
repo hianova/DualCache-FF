@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, Criterion, BenchmarkId};
 use std::sync::Arc;
 
 
@@ -14,7 +14,7 @@ fn bench_data_structure(c: &mut Criterion) {
     group.bench_function("put_t0_single_thread", |b| {
         let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
-        qsbr::register_node(node);
+        qsbr::register_node(node, 0, ::core::ptr::null(), None);
         
         let mut i = 0;
         b.iter(|| {
@@ -30,7 +30,7 @@ fn bench_data_structure(c: &mut Criterion) {
     group.bench_function("put_t2_single_thread", |b| {
         let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
-        qsbr::register_node(node);
+        qsbr::register_node(node, 0, ::core::ptr::null(), None);
         
         let mut i = 0;
         b.iter(|| {
@@ -77,5 +77,15 @@ fn bench_tls(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_data_structure);
-criterion_main!(benches);
+criterion_group!(benches, bench_data_structure, bench_tls);
+
+fn main() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            benches();
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

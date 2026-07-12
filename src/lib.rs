@@ -138,7 +138,7 @@ where
 
             let daemon_node = {
                 let node = std::boxed::Box::into_raw(std::boxed::Box::new(crate::componant::qsbr::ThreadStateNode::new()));
-                crate::componant::qsbr::register_node(node);
+                crate::componant::qsbr::register_node(node, 0, ::core::ptr::null(), None);
                 node
             };
             let daemon = crate::componant::daemon::Daemon::spawn(&self.core, rx, broadcast_txs, daemon_node);
@@ -249,7 +249,8 @@ where
 
         let hash = self.core.hash_key(&key);
 
-        if block.warmup_state > 50 {
+        let (_, _, _, warmup_thresh) = self.core.blackjack.load_params();
+        if block.warmup_state > warmup_thresh {
             block.cache.insert_fast_pass(hash, key.clone(), value.clone());
             self.core.put_t0(key, value, handle.qsbr_node);
             block.warmup_state = block.warmup_state.saturating_sub(20);
@@ -418,14 +419,12 @@ mod tests {
         }
         
         // Hit coverage for other DaemonMessage variants
-        if let Ok(gtx) = CACHE.global_tx.read() {
-            if let Some(ref tx) = *gtx {
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::SetPollInterval(5));
-                
-                let ack = crate::componant::daemon::OneshotAck::new();
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::Sync(ack.clone()));
-                ack.wait();
-            }
+        if let Some(ref tx) = *CACHE.global_tx.read().unwrap() {
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::SetPollInterval(5));
+            
+            let ack = crate::componant::daemon::OneshotAck::new();
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::Sync(ack.clone()));
+            ack.wait();
         }
         
         // Wait a bit for daemon to process the promote message
@@ -529,20 +528,17 @@ mod tests {
         assert!(res.is_err());
 
         // Send a Promote message to Daemon directly
-        if let Ok(gtx) = CACHE.global_tx.read() {
-            if let Some(ref tx) = *gtx {
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(123, 123, 123, 0));
-                
-                // Test the remaining DaemonMessage variants to achieve 100% coverage
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::SetPollInterval(5));
-                
-                let ack = crate::componant::daemon::OneshotAck::new();
-                let _ = tx.push(crate::componant::daemon::DaemonMessage::Sync(ack.clone()));
-                ack.wait();
-                
-                // We don't send Shutdown here because it would kill the daemon prematurely
-            }
-        } // Wait for daemon to process
+        if let Some(ref tx) = *CACHE.global_tx.read().unwrap() {
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::Promote(123, 123, 123, 0));
+            
+            // Test the remaining DaemonMessage variants to achieve 100% coverage
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::SetPollInterval(5));
+            
+            let ack = crate::componant::daemon::OneshotAck::new();
+            let _ = tx.push(crate::componant::daemon::DaemonMessage::Sync(ack.clone()));
+            ack.wait();
+        }
+        // Wait for daemon to process
         thread::sleep(Duration::from_millis(50));
 
         // Turn off daemon

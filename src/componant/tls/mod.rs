@@ -169,6 +169,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
 pub struct TlsRegistry<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     blocks: [UnsafeCell<no_std_tool::sync::CachePadded<TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>>>; MAX_THREADS],
     next_id: AtomicUsize,
+    free_list: no_std_tool::sync::SpinMutex<no_std_tool::collections::Vec<usize, MAX_THREADS>>,
 }
 
 unsafe impl<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync for TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> {}
@@ -196,6 +197,7 @@ impl<K: Clone + Eq, V: Clone, const MAX_THREADS: usize, const TLS_CAP: usize, co
         Self {
             blocks: [const { UnsafeCell::new(no_std_tool::sync::CachePadded { value: TlsBlock::new() }) }; MAX_THREADS],
             next_id: AtomicUsize::new(0),
+            free_list: no_std_tool::sync::SpinMutex::new(no_std_tool::collections::Vec::new()),
         }
     }
 
@@ -216,14 +218,52 @@ impl<K: Clone + Eq, V: Clone, const MAX_THREADS: usize, const TLS_CAP: usize, co
     }
 
     pub fn register_thread(&self) -> TlsHandle {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        if id >= MAX_THREADS {
-            panic!("Exceeded max thread capacity in TlsRegistry");
+        let mut id = usize::MAX;
+        if let Ok(Some(free_id)) = self.free_list.lock().map(|mut f| f.pop()) {
+            id = free_id;
         }
+        
+        let mut is_new = false;
+        if id == usize::MAX {
+            id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            if id >= MAX_THREADS {
+                panic!("Exceeded max thread capacity in TlsRegistry");
+            }
+            is_new = true;
+        }
+
         let block = unsafe { &mut (*self.blocks[id].get()).value };
         let qsbr_node = &mut block.qsbr_node as *mut _;
-        crate::componant::qsbr::register_node(qsbr_node);
+        
+        unsafe fn free_id_trampoline<K, V, const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>(
+            registry: *const core::ffi::c_void,
+            id: usize,
+        ) {
+            let registry = unsafe { &*(registry as *const TlsRegistry<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP>) };
+            if let Ok(mut free_list) = registry.free_list.lock() {
+                let _ = free_list.push(id);
+            }
+        }
+        let trampoline = Some(free_id_trampoline::<K, V, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP> as unsafe fn(*const core::ffi::c_void, usize));
+        let registry_ptr = self as *const _ as *const core::ffi::c_void;
+        
+        if is_new {
+            crate::componant::qsbr::register_node(qsbr_node, id, registry_ptr, trampoline);
+        } else {
+            // Already registered, just reactivate it
+            unsafe { (*qsbr_node).active.store(true, Ordering::Release) };
+            
+            #[cfg(feature = "std")]
+            crate::componant::qsbr::reregister_cleanup(qsbr_node, id, registry_ptr, trampoline);
+        }
+        
         TlsHandle { id, qsbr_node }
+    }
+
+    pub fn deregister_thread(&self, handle: &TlsHandle) {
+        if let Ok(mut free_list) = self.free_list.lock() {
+            let _ = free_list.push(handle.id);
+        }
     }
 
     #[inline]

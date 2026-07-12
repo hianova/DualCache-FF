@@ -275,7 +275,7 @@ mod tests {
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
         let thread_node = {
             let node = &raw mut TEST_NODE as *mut _;
-            qsbr::register_node(node);
+            qsbr::register_node(node, 0, ::core::ptr::null(), None);
             node
         };
         let guard = qsbr::pin(thread_node);
@@ -298,7 +298,7 @@ mod tests {
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
         let thread_node = {
             let node = &raw mut TEST_NODE as *mut _;
-            qsbr::register_node(node);
+            qsbr::register_node(node, 0, ::core::ptr::null(), None);
             node
         };
         let guard = qsbr::pin(thread_node);
@@ -319,7 +319,7 @@ mod tests {
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
         let thread_node = {
             let node = &raw mut TEST_NODE as *mut _;
-            qsbr::register_node(node);
+            qsbr::register_node(node, 0, ::core::ptr::null(), None);
             node
         };
         let guard = qsbr::pin(thread_node);

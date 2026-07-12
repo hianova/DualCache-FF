@@ -75,7 +75,7 @@ mod tests {
         let node = {
             static mut TEST_NODE: crate::componant::qsbr::ThreadStateNode = crate::componant::qsbr::ThreadStateNode::new();
             let n = &raw mut TEST_NODE as *mut _;
-            crate::componant::qsbr::register_node(n);
+            crate::componant::qsbr::register_node(n, 0, ::core::ptr::null(), None);
             n
         };
         let guard = crate::componant::qsbr::pin(node);
@@ -88,7 +88,7 @@ mod tests {
         let node = {
             static mut TEST_NODE: crate::componant::qsbr::ThreadStateNode = crate::componant::qsbr::ThreadStateNode::new();
             let n = &raw mut TEST_NODE as *mut _;
-            crate::componant::qsbr::register_node(n);
+            crate::componant::qsbr::register_node(n, 0, ::core::ptr::null(), None);
             n
         };
         let guard = crate::componant::qsbr::pin(node);
