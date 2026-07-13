@@ -28,7 +28,7 @@ A revolution-shielded circular clock evicts items whose access rank falls below 
 ### Basic Usage (`DualCacheFF`)
 ```rust
 use dualcache_ff::DualCacheFF;
-use dualcache_ff::componant::config::DefaultExponentialPolicy;
+use dualcache_ff::component::config::DefaultExponentialPolicy;
 
 fn main() {
     // Initialize cache using default configuration and generics

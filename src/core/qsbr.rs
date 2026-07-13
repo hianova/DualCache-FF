@@ -18,7 +18,7 @@ struct RetiredNode {
     epoch: u64,
 }
 
-const GARBAGE_CAP: usize = 16384;
+const GARBAGE_CAP: usize = 4096;
 pub struct GarbageQueue {
     items: [RetiredNode; GARBAGE_CAP],
     head: AtomicUsize,
@@ -56,44 +56,52 @@ impl<const N: usize> MpmcQueue<N> {
         }
     }
     pub fn push(&self, val: u32) -> bool {
-        let mut tail = self.tail.load(Ordering::Relaxed);
-        loop {
+        let result = self.tail.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |tail| {
             if tail.wrapping_sub(self.head.load(Ordering::Acquire)) >= N {
-                return false;
+                None
+            } else {
+                Some(tail + 1)
             }
-            if self.tail.compare_exchange_weak(tail, tail + 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+        });
+
+        match result {
+            Ok(tail) => {
                 while self.buffer[tail % N].load(Ordering::Acquire) != u32::MAX {
                     ::core::hint::spin_loop();
                 }
                 self.buffer[tail % N].store(val, Ordering::Release);
-                return true;
+                true
             }
-            tail = self.tail.load(Ordering::Relaxed);
+            Err(_) => false,
         }
     }
     pub fn pop(&self) -> Option<u32> {
-        let mut head = self.head.load(Ordering::Relaxed);
-        loop {
+        let mut final_val = 0;
+        let result = self.head.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |head| {
             if head == self.tail.load(Ordering::Acquire) {
                 return None;
             }
             let val = self.buffer[head % N].load(Ordering::Acquire);
             if val != u32::MAX {
-                if self.head.compare_exchange_weak(head, head + 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
-                    self.buffer[head % N].store(u32::MAX, Ordering::Release);
-                    return Some(val);
-                }
+                final_val = val;
+                Some(head + 1)
             } else {
-                return None;
+                None
             }
-            head = self.head.load(Ordering::Relaxed);
+        });
+
+        if let Ok(old_head) = result {
+            self.buffer[old_head % N].store(u32::MAX, Ordering::Release);
+            Some(final_val)
+        } else {
+            None
         }
     }
 }
 
 
 pub struct LocalFreeQueue {
-    items: [u32; 16384],
+    items: [u32; 4096],
     len: usize,
 }
 
@@ -105,7 +113,7 @@ impl Default for LocalFreeQueue {
 
 impl LocalFreeQueue {
     pub const fn new() -> Self {
-        Self { items: [0; 16384], len: 0 }
+        Self { items: [0; 4096], len: 0 }
     }
     pub fn pop(&mut self) -> Option<u32> {
         if self.len > 0 {
@@ -117,7 +125,7 @@ impl LocalFreeQueue {
     }
     #[must_use]
     pub fn push(&mut self, val: u32) -> bool {
-        if self.len < 16384 {
+        if self.len < 4096 {
             self.items[self.len] = val;
             self.len += 1;
             true
@@ -159,74 +167,22 @@ impl ThreadStateNode {
 unsafe impl Send for ThreadStateNode {}
 unsafe impl Sync for ThreadStateNode {}
 
+pub trait RegistryCore: Send + Sync {
+    fn free_id(&self, id: usize);
+}
+
 /// Register a pre-allocated thread state node. The caller should allocate this node
 /// locally or in the static TLS blocks.
-#[cfg(feature = "std")]
-struct QsbrCleanup {
-    node: *mut ThreadStateNode,
-    id: usize,
-    registry_ptr: *const core::ffi::c_void,
-    free_id_fn: Option<unsafe fn(*const core::ffi::c_void, usize)>,
-}
-
-#[cfg(feature = "std")]
-impl Drop for QsbrCleanup {
-    fn drop(&mut self) {
-        unsafe {
-            (*self.node).active.store(false, Ordering::Release);
-            if let (Some(free_fn), false) = (self.free_id_fn, self.registry_ptr.is_null()) {
-                free_fn(self.registry_ptr, self.id);
-            }
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-thread_local! {
-    static QSBR_CLEANUP: std::cell::RefCell<std::vec::Vec<QsbrCleanup>> = const { std::cell::RefCell::new(std::vec::Vec::new()) };
-}
-
-#[cfg(feature = "std")]
-pub fn reregister_cleanup(
-    node: *mut ThreadStateNode,
-    id: usize,
-    registry_ptr: *const core::ffi::c_void,
-    free_id_fn: Option<unsafe fn(*const core::ffi::c_void, usize)>
-) {
-    QSBR_CLEANUP.with(|c| c.borrow_mut().push(QsbrCleanup { node, id, registry_ptr, free_id_fn }));
-}
-
-pub fn register_node(
-    node: *mut ThreadStateNode,
-    id: usize,
-    registry_ptr: *const core::ffi::c_void,
-    free_id_fn: Option<unsafe fn(*const core::ffi::c_void, usize)>
-) {
-    let mut head = THREAD_STATES.load(Ordering::Acquire);
-    loop {
+pub fn register_node(node: *mut ThreadStateNode) {
+    let _ = THREAD_STATES.fetch_update(Ordering::Release, Ordering::Relaxed, |head| {
         unsafe { (*node).next = head };
         
         // Yield to encourage a CAS collision for coverage
         #[cfg(test)]
-        std::thread::yield_now();
+        core::hint::spin_loop();
 
-        match THREAD_STATES.compare_exchange_weak(
-            head,
-            node,
-            Ordering::Release,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => {
-                #[cfg(feature = "std")]
-                QSBR_CLEANUP.with(|c| c.borrow_mut().push(QsbrCleanup { node, id, registry_ptr, free_id_fn }));
-                break;
-            }
-            Err(new_head) => {
-                head = new_head;
-                ::core::hint::spin_loop();
-            }
-        }
-    }
+        Some(node)
+    });
 }
 
 pub fn get_global_epoch() -> usize {

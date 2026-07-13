@@ -56,16 +56,16 @@ impl CataState {
 
 #[cfg(feature = "std")]
 pub fn spawn_demiurge<
-    K, V, P, 
+    K, V, 
     const T2: usize, const T1: usize, const T0: usize, const TOTAL: usize,
-    const MAX_THREADS: usize, const TLS_CAP: usize, const TLS_INDEX_CAP: usize
+    
 >(
-    cache: &'static DualCacheFF<K, V, P, T2, T1, T0, TOTAL, MAX_THREADS, TLS_CAP, TLS_INDEX_CAP>
+    cache: &'static DualCacheFF<K, V, T2, T1, T0, TOTAL>
 ) 
 where 
     K: core::cmp::Eq + core::hash::Hash + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
-    P: crate::componant::config::CachePolicy + Send + Sync + 'static,
+    
 {
     std::thread::Builder::new()
         .name("CATA-DC-Demiurge".to_string())

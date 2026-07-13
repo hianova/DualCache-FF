@@ -1,4 +1,4 @@
-use crate::componant::slot::Slot;
+use crate::core::slot::Slot;
 use ::core::sync::atomic::Ordering;
 
 pub trait EvictionPolicy: Send + Sync {

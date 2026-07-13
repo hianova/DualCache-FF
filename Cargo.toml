@@ -1,6 +1,6 @@
 [package]
 name = "dualcache-ff"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 authors = ["hianova"]
 description = "A wait-free, high-performance concurrent cache optimized for extreme read-to-write ratios."
@@ -14,13 +14,13 @@ exclude = ["*.DS_Store", "/target", ".covopt/", ".agents/"]
 
 
 [features]
-default = ["std"]
+default = ["std", "daemon"]
 std = ["ahash/std"]
 daemon = ["std"]
 
 [dependencies]
 ahash = { version = "0.8", default-features = false, features = ["compile-time-rng"] }
-no_std_tool = "1.0.0"
+no_std_tool = { path = "../no_std_tool", version = "1.1.0" }
 
 [dev-dependencies]
 crossbeam-utils = "0.8.21"
@@ -44,3 +44,10 @@ debug = true
 
 [profile.release]
 debug = true
+
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"

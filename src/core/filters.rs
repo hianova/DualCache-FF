@@ -1,8 +1,8 @@
-use std::{boxed::Box, vec::Vec};
+use no_std_tool::collections::{Box, AllocVec as Vec};
 
 use ::core::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr;
-use crate::componant::storage::Node;
+use crate::core::storage::Node;
 
 /// T1 — Hottest tier: direct-mapped L1 filter (fits in CPU L1 cache).
 ///

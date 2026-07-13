@@ -20,8 +20,9 @@ fn test_core_insert() {
     let cache = std::boxed::Box::new(TestCache::new());
     let handle = cache.register_thread();
 
-    // Fill the cache
+    // Fill the cache (insert twice to pass probation filter)
     for i in 0..n as u64 {
+        cache.insert(i, i, &handle);
         cache.insert(i, i, &handle);
     }
 }

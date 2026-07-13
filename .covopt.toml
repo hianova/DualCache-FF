@@ -1,9 +1,9 @@
 [[target]]
-test = "test_extensive_coverage"
+test = "test_comprehensive_cache_flow"
 expected = "O(1)"
 n_values = "10,20,50"
-target_file = "src/componant/daemon/mod.rs"
-target_line = 86
+target_file = "src/core/engine.rs"
+target_line = 185
 require_cache_padding = false
 require_branch_hints = false
 require_aerospace_grade = false

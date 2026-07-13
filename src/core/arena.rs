@@ -54,7 +54,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
     /// # Safety
     /// `node` must be a valid pointer.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn alloc(&self, key: K, value: V, node: *mut crate::componant::qsbr::ThreadStateNode) -> Option<usize> {
+    pub fn alloc(&self, key: K, value: V, node: *mut crate::core::qsbr::ThreadStateNode) -> Option<usize> {
         let local_free = unsafe { &mut *(*node).local_free.get() };
         if let Some(idx) = local_free.pop() {
             unsafe {
@@ -66,8 +66,10 @@ impl<K, V, const N: usize> Arena<K, V, N> {
 
 
         // Batch pop from free_head to amortize CAS contention
-        let mut head = self.free_head.load(Ordering::Acquire);
-        loop {
+        let mut final_count = 0;
+        let mut final_index = 0;
+
+        let result = self.free_head.fetch_update(Ordering::AcqRel, Ordering::Acquire, |head| {
             let index = (head & 0xFFFFFFFF) as u32;
             if index == NULL_INDEX {
                 return None; // OOM
@@ -88,27 +90,27 @@ impl<K, V, const N: usize> Arena<K, V, N> {
             let next_after_batch = self.next_free[curr as usize].load(Ordering::Relaxed);
             let tag = head >> 32;
             let new_head = (tag.wrapping_add(1) << 32) | (next_after_batch as usize);
+            
+            final_count = count;
+            final_index = index;
 
-            match self.free_head.compare_exchange_weak(head, new_head, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => {
-                    // Success! Grabbed a batch of `count` items.
-                    // Put the first one into our return, and the rest into local_free
-                    let mut p = self.next_free[index as usize].load(Ordering::Relaxed);
-                    for _ in 1..count {
-                        let _ = local_free.push(p);
-                        p = self.next_free[p as usize].load(Ordering::Relaxed);
-                    }
-                    
-                    unsafe {
-                        (*self.nodes[index as usize].get()).write(Node { key, value });
-                    }
-                    return Some(index as usize);
+            Some(new_head)
+        });
+
+        match result {
+            Ok(_) => {
+                let mut p = self.next_free[final_index as usize].load(Ordering::Relaxed);
+                for _ in 1..final_count {
+                    let _ = local_free.push(p);
+                    p = self.next_free[p as usize].load(Ordering::Relaxed);
                 }
-                Err(h) => {
-                    head = h;
-                    ::core::hint::spin_loop();
+                
+                unsafe {
+                    (*self.nodes[final_index as usize].get()).write(Node { key, value });
                 }
+                Some(final_index as usize)
             }
+            Err(_) => None,
         }
     }
 
@@ -132,20 +134,13 @@ impl<K, V, const N: usize> Arena<K, V, N> {
 
     /// Pushes a batch of nodes to the global free list without dropping it.
     pub unsafe fn free_batch(&self, head_idx: u32, tail_idx: u32) {
-        let mut head = self.free_head.load(Ordering::Relaxed);
-        loop {
+        let _ = self.free_head.fetch_update(Ordering::AcqRel, Ordering::Acquire, |head| {
             let next = (head & 0xFFFFFFFF) as u32;
             self.next_free[tail_idx as usize].store(next, Ordering::Relaxed);
             let tag = head >> 32;
             let new_head = (tag.wrapping_add(1) << 32) | (head_idx as usize);
-            
-            if self.free_head.compare_exchange_weak(head, new_head, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                return;
-            } else {
-                head = self.free_head.load(Ordering::Relaxed);
-                ::core::hint::spin_loop();
-            }
-        }
+            Some(new_head)
+        });
     }
 
     /// Pushes a node index to the global free list without dropping it.
@@ -173,13 +168,13 @@ impl<K, V, const N: usize> Arena<K, V, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use no_std_tool::sync::Arc;
     use std::thread;
 
     #[test]
     fn test_arena_default() {
         let arena = Arena::<u64, u64, 100>::new();
-        let mut dummy_node = crate::componant::qsbr::ThreadStateNode::new();
+        let mut dummy_node = crate::core::qsbr::ThreadStateNode::new();
         let dummy_ptr = &mut dummy_node as *mut _;
         assert!(arena.alloc(1, 10, dummy_ptr).is_some());
     }
@@ -192,7 +187,7 @@ mod tests {
         for i in 0..10 {
             let arena_clone = arena.clone();
             handles.push(thread::spawn(move || {
-                let mut dummy_node = crate::componant::qsbr::ThreadStateNode::new();
+                let mut dummy_node = crate::core::qsbr::ThreadStateNode::new();
                 let dummy_ptr = &mut dummy_node as *mut _;
                 let mut idxs = vec![];
                 for _ in 0..50 {
@@ -213,8 +208,8 @@ mod tests {
     fn test_arena_oom() {
         let arena = Arena::<u64, u64, 4>::new();
         let node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(crate::componant::qsbr::ThreadStateNode::new()));
-            crate::componant::qsbr::register_node(node, 0, ::core::ptr::null(), None);
+            let node = no_std_tool::collections::Box::into_raw(no_std_tool::collections::Box::new(crate::core::qsbr::ThreadStateNode::new()));
+            crate::core::qsbr::register_node(node);
             node
         };
         assert!(arena.alloc(1, 1, node).is_some());

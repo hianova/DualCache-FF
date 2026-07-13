@@ -36,31 +36,25 @@ const DATASET_SIZE: u64 = 10_000_000;
 const CACHE_T2_CAP: usize = 1_048_576; // 1M
 const CACHE_T1_CAP: usize = 131_072;
 const CACHE_T0_CAP: usize = 16_384;
-const TOTAL_CAP: usize = CACHE_T0_CAP + CACHE_T1_CAP + CACHE_T2_CAP;
-const MAX_THREADS: usize = 64;
+const TOTAL_CAP: usize = 2_000_000;
 const TLS_CAP: usize = 4096;
-const TLS_INDEX_CAP: usize = 128;
 
 type BenchCache = DualCacheFF<
     u64,
     u64,
-    dualcache_ff::componant::config::DefaultExponentialPolicy,
     CACHE_T2_CAP,
     CACHE_T1_CAP,
     CACHE_T0_CAP,
     TOTAL_CAP,
-    MAX_THREADS,
-    TLS_CAP,
-    TLS_INDEX_CAP,
 >;
 
-type StaticBenchCache = StaticDualCache<u64, u64, dualcache_ff::componant::config::DefaultExponentialPolicy, CACHE_T0_CAP, CACHE_T1_CAP, CACHE_T2_CAP, TOTAL_CAP>;
+type StaticBenchCache = StaticDualCache<u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, CACHE_T0_CAP, CACHE_T1_CAP, CACHE_T2_CAP, TOTAL_CAP>;
 
 use no_std_tool::lazy_static;
 
 lazy_static! {
-    static ref GLOBAL_CACHE: BenchCache = DualCacheFF::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
-    static ref GLOBAL_STATIC_CACHE: StaticBenchCache = StaticDualCache::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
+    static ref GLOBAL_CACHE: BenchCache = DualCacheFF::new();
+    static ref GLOBAL_STATIC_CACHE: StaticBenchCache = StaticDualCache::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
 }
 
 #[derive(Clone, Copy)]

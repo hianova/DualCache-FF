@@ -1,56 +1,101 @@
-# DualCache-FF Refactored v1.0.1 Benchmarking Results
-
+# DualCache-FF Refactored v1.0.0 Benchmarking Results
 * **Threads**: 4
 * **Dataset Size**: 10000000
 * **Operations per test**: 40000000
-* **Cache Size**: ~1196032 (L2) + ~4096 (L1 per thread)
-* **Environment**: `cargo bench` on release profile
+* **Cache Size**: ~2000000 (L2) + ~4096 (L1 per thread)
 
-## 1. Throughput & Hit Rate (End-to-End Workloads)
+Running DualCacheFF (Wait-Free + Daemon)...
 
 ### Mode: DualCacheFF (Wait-Free + Daemon)
 | Pattern | R/W Ratio | Throughput (ops/s) | Hit Rate (%) | P50 (ns) | P90 (ns) | P99 (ns) | P99.9 (ns) | P99.99 (ns) |
 |---------|-----------|-------------------|-------------|----------|----------|----------|------------|-------------|
-| Zipf (99:1)             | 99: 1 |         121536587 |       85.10% |       42 |      125 |      250 |        458 |        4292 |
-| Zipf (90:10)            | 90:10 |         101677542 |       85.51% |       42 |      125 |      292 |        541 |        4000 |
-| Zipf (50:50)            | 50:50 |           7187489 |       85.13% |       42 |      167 |      375 |       3875 |        4833 |
-| Uniform (99:1)          | 99: 1 |           3881722 |       19.00% |      167 |      292 |      750 |       4500 |        4875 |
+Warming up cache for Daemon mode...
+| Zipf (99:1)             | 99: 1 |         100507900 |       85.12% |       41 |       84 |      209 |        375 |        1208 |
+Warming up cache for Daemon mode...
+| Zipf (90:10)            | 90:10 |         124305009 |       85.40% |       42 |      125 |      250 |        458 |        4167 |
+Warming up cache for Daemon mode...
+| Zipf (50:50)            | 50:50 |           1806267 |       85.12% |       42 |      208 |      459 |       3791 |        4833 |
+Warming up cache for Daemon mode...
+| Uniform (99:1)          | 99: 1 |            995818 |       19.01% |      167 |      334 |      791 |       4334 |        4875 |
+Running DualCacheFF (Wait-Free + CATA-DC Tuning)...
 
 ### Mode: DualCacheFF (Wait-Free + CATA-DC Tuning)
 | Pattern | R/W Ratio | Throughput (ops/s) | Hit Rate (%) | P50 (ns) | P90 (ns) | P99 (ns) | P99.9 (ns) | P99.99 (ns) |
 |---------|-----------|-------------------|-------------|----------|----------|----------|------------|-------------|
-| Zipf (99:1)             | 99: 1 |         105233515 |       85.71% |       42 |      125 |      250 |        542 |        4458 |
-| Zipf (90:10)            | 90:10 |         108596142 |       85.57% |       42 |      125 |      250 |        500 |        4417 |
+Warming up cache for CATA-DC mode...
+| Zipf (99:1)             | 99: 1 |         118648299 |       85.73% |       42 |      125 |      250 |        334 |        2959 |
+Warming up cache for CATA-DC mode...
+| Zipf (90:10)            | 90:10 |         112786327 |       85.67% |       42 |      125 |      250 |        500 |        4334 |
+Running StaticDualCache (Default Pseudo-LFU)...
 
-### Mode: StaticDualCache (Default Pseudo-LFU Baseline)
+### Mode: StaticDualCache (Default Pseudo-LFU)
 | Pattern | R/W Ratio | Throughput (ops/s) | Hit Rate (%) | P50 (ns) | P90 (ns) | P99 (ns) | P99.9 (ns) | P99.99 (ns) |
 |---------|-----------|-------------------|-------------|----------|----------|----------|------------|-------------|
-| Zipf (99:1)             | 99: 1 |          39859591 |       93.18% |       42 |      292 |      500 |       3333 |        4583 |
-| Zipf (90:10)            | 90:10 |          33956150 |       91.39% |       42 |      333 |      542 |       3625 |        4666 |
-| Zipf (50:50)            | 50:50 |          24332227 |       37.64% |      125 |      292 |      584 |       3709 |        4667 |
-| Uniform (99:1)          | 99: 1 |          17632898 |        0.01% |      209 |      334 |      584 |       4042 |        4709 |
+Warming up cache for Static Default mode...
+| Zipf (99:1)             | 99: 1 |          42736763 |       93.14% |       42 |      292 |      500 |       2125 |        4375 |
+Warming up cache for Static Default mode...
+| Zipf (90:10)            | 90:10 |          34412855 |       91.72% |       42 |      333 |      542 |       1708 |        4334 |
+Warming up cache for Static Default mode...
+| Zipf (50:50)            | 50:50 |          30960579 |       91.73% |       84 |      333 |      584 |       2459 |        4542 |
+Warming up cache for Static Default mode...
+| Uniform (99:1)          | 99: 1 |          15384536 |       10.48% |      250 |      375 |      875 |       3083 |        4500 |
+     Running benches/extreme_optimization.rs (target/release/deps/extreme_optimization-4b974f5df6e55fad)
+Gnuplot not found, using plotters backend
+Benchmarking data_structure_latency/put_t0_single_thread
+Benchmarking data_structure_latency/put_t0_single_thread: Warming up for 3.0000 s
+Benchmarking data_structure_latency/put_t0_single_thread: Collecting 100 samples in estimated 5.0000 s (499M iterations)
+Benchmarking data_structure_latency/put_t0_single_thread: Analyzing
+data_structure_latency/put_t0_single_thread
+                        time:   [30.840 ns 32.671 ns 34.155 ns]
+                        change: [-14.970% -5.1318% +6.0153%] (p = 0.36 > 0.05)
+                        No change in performance detected.
+Benchmarking data_structure_latency/put_t2_single_thread
+Benchmarking data_structure_latency/put_t2_single_thread: Warming up for 3.0000 s
+Benchmarking data_structure_latency/put_t2_single_thread: Collecting 100 samples in estimated 5.0003 s (83M iterations)
+Benchmarking data_structure_latency/put_t2_single_thread: Analyzing
+data_structure_latency/put_t2_single_thread
+                        time:   [108.51 ns 112.59 ns 116.24 ns]
+                        change: [+1.2950% +5.7436% +10.435%] (p = 0.01 < 0.05)
+                        Performance has regressed.
+Found 5 outliers among 100 measurements (5.00%)
+  1 (1.00%) low mild
+  4 (4.00%) high mild
 
-## 2. Extreme Data Structure Latency (Wait-Free Arena Overhead)
-
-These tests measure the raw overhead of `DualCacheCore` node allocation, promotion, and QSBR retirement mechanisms.
-
-| Operation | Latency (Mean) | Deviation |
-|-----------|----------------|-----------|
-| `put_t0_single_thread` | ~37.5 ns | ±2 ns |
-| `put_t2_single_thread` | ~176.5 ns | ±5 ns |
-
-*(Note: Data structure latency measurements are taken via `criterion` benchmarking with single-thread node iteration.)*
-
-## 3. Thesis on v1.0.1 Optimizations: Correlation of Throughput, Latency, and Hit Rate
-
-With the v1.0.1 optimization release, we address the critical relationship between concurrent synchronization overhead, hardware cache line invalidation, and data locality.
-
-### 3.1 StaticDualCache Lock-Free Read Path Correlation
-- **The Bottleneck**: The legacy baseline used a global `SpinMutex` wrapping the entire cache core and a shared `ThreadStateNode`. Even for a read-heavy workload (99:1), all reader threads contended on the spinlock, causing extreme CPU cache line invalidations and serializing execution. This limited Zipf (99:1) throughput to **~8.8M ops/s** and pushed P50 latency to **125 ns**.
-- **The Optimization**: Under `std`, we introduced thread-local node registration (`TlsRegistry`) and bypassed the global lock entirely for reads, while using fine-grained locking only for the periodic reclaim cycle (every 1024 writes).
-- **The Correlation**: By eliminating the lock from the read path, P50 latency was slashed from **125 ns to 42 ns** (a 66.4% reduction). This latency reduction directly unlocked parallel execution scaling, boosting Zipf (99:1) throughput to **~39.8M ops/s** (a **4.5x speedup**). Interestingly, the hit rate remained consistent at **93.18%**, demonstrating that the performance gain is pure concurrency efficiency rather than strategy compromise.
-
-### 3.2 CATA-DC Autotuning Cache-Line Invalidation Correlation
-- **The Bottleneck**: In the legacy CATA-DC tuning mode, simulated annealing perturbed parameters every 60ms, meaning the cache spent 83.3% of its runtime running on random candidate parameters. More critically, writing candidates to the shared `blackjack.state` atomic variable invalidated the L1/L2 caches of all CPU cores running worker threads, causing severe false sharing. This caused tail latency spikes (P99.99 of **4,458 ns**) and degraded throughput to **103M ops/s**.
-- **The Optimization**: We changed the tuning loop to run on the confirmed `best_state` parameters for a stable 450ms window and only test candidates for a 50ms window (reducing the duty cycle of candidate testing to 10%). We also added an active workload check to prevent parameter drift during idle/warmup phases.
-- **The Correlation**: By reducing the candidate write rate by 16x and allowing the blackjack parameters to remain static for 90% of the runtime, the shared atomic read became a permanent L1 cache hit for worker threads. This eliminated cache bouncing, improving Zipf (99:1) throughput to **105,233,515 ops/s** and stabilising tail latency.
+Benchmarking tls_parallel_overhead/get_block_mut_contention/1
+Benchmarking tls_parallel_overhead/get_block_mut_contention/1: Warming up for 3.0000 s
+Benchmarking tls_parallel_overhead/get_block_mut_contention/1: Collecting 100 samples in estimated 5.1006 s (197k iterations)
+Benchmarking tls_parallel_overhead/get_block_mut_contention/1: Analyzing
+tls_parallel_overhead/get_block_mut_contention/1
+                        time:   [24.949 µs 25.365 µs 25.892 µs]
+                        change: [-3.4247% -1.4155% +0.4976%] (p = 0.17 > 0.05)
+                        No change in performance detected.
+Found 11 outliers among 100 measurements (11.00%)
+  4 (4.00%) low mild
+  4 (4.00%) high mild
+  3 (3.00%) high severe
+Benchmarking tls_parallel_overhead/get_block_mut_contention/4
+Benchmarking tls_parallel_overhead/get_block_mut_contention/4: Warming up for 3.0000 s
+Benchmarking tls_parallel_overhead/get_block_mut_contention/4: Collecting 100 samples in estimated 5.0371 s (91k iterations)
+Benchmarking tls_parallel_overhead/get_block_mut_contention/4: Analyzing
+tls_parallel_overhead/get_block_mut_contention/4
+                        time:   [48.659 µs 51.238 µs 54.495 µs]
+                        change: [-9.9881% -1.8176% +5.8144%] (p = 0.66 > 0.05)
+                        No change in performance detected.
+Found 7 outliers among 100 measurements (7.00%)
+  3 (3.00%) high mild
+  4 (4.00%) high severe
+Benchmarking tls_parallel_overhead/get_block_mut_contention/8
+Benchmarking tls_parallel_overhead/get_block_mut_contention/8: Warming up for 3.0000 s
+Benchmarking tls_parallel_overhead/get_block_mut_contention/8: Collecting 100 samples in estimated 5.1571 s (56k iterations)
+Benchmarking tls_parallel_overhead/get_block_mut_contention/8: Analyzing
+tls_parallel_overhead/get_block_mut_contention/8
+                        time:   [124.45 µs 147.63 µs 177.87 µs]
+                        change: [+32.889% +59.795% +87.520%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 13 outliers among 100 measurements (13.00%)
+  4 (4.00%) high mild
+  9 (9.00%) high severe
+Benchmarking tls_parallel_overhead/get_block_mut_contention/16
+Benchmarking tls_parallel_overhead/get_block_mut_contention/16: Warming up for 3.0000 s
+Benchmarking tls_parallel_overhead/get_block_mut_contention/16: Collecting 100 samples in estimated 5.7093 s (35k iterations)
+Benchmarking tls_parallel_overhead/get_block_mut_contention/16: Analyzing

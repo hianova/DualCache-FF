@@ -73,16 +73,16 @@ impl Daemon {
         core: &'static crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>, 
         rx: std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>,
         broadcast_txs: std::vec::Vec<std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
-        daemon_node: *mut crate::componant::qsbr::ThreadStateNode
+        daemon_node: *mut crate::core::qsbr::ThreadStateNode
     ) -> Self
     where
         K: Clone + Eq + Hash + Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
-        P: crate::componant::config::CachePolicy + Send + Sync + 'static,
+        P: crate::core::config::CachePolicy + Send + Sync + 'static,
     {
         let daemon_node_ptr = daemon_node as usize;
         let handle = thread::spawn(move || {
-            let daemon_node = daemon_node_ptr as *mut crate::componant::qsbr::ThreadStateNode;
+            let daemon_node = daemon_node_ptr as *mut crate::core::qsbr::ThreadStateNode;
             let mut batch = std::vec::Vec::with_capacity(65536);
             let mut _poll_ms = 10;
             let mut empty_spins = 0u32;
@@ -158,10 +158,10 @@ impl Daemon {
                 }
 
                 // Pin daemon node so it updates its QSBR epoch and participates in GC
-                let _guard = crate::componant::qsbr::pin(daemon_node);
+                let _guard = crate::core::qsbr::pin(daemon_node);
                 
                 // GC: Move safe nodes from thread-local garbage queues to the Arena directly
-                crate::componant::qsbr::daemon_reclaim(|batch| {
+                crate::core::qsbr::daemon_reclaim(|batch| {
                     if batch.is_empty() { return; }
                     unsafe {
                         for i in 0..batch.len() {

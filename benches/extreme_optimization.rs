@@ -2,19 +2,19 @@ use criterion::{criterion_group, Criterion, BenchmarkId};
 use std::sync::Arc;
 
 
-use dualcache_ff::componant::qsbr;
+use dualcache_ff::core::qsbr;
 use dualcache_ff::core::engine::DualCacheCore;
-use dualcache_ff::componant::config::DefaultExponentialPolicy;
-use dualcache_ff::componant::tls::TlsRegistry;
+use dualcache_ff::core::config::DefaultExponentialPolicy;
+use dualcache_ff::component::tls::TlsRegistry;
 
 // 2. Data Structure Overhead: test DualCacheCore put_t0 / put_t2 latency
 fn bench_data_structure(c: &mut Criterion) {
     let mut group = c.benchmark_group("data_structure_latency");
     
     group.bench_function("put_t0_single_thread", |b| {
-        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
+        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
-        qsbr::register_node(node, 0, ::core::ptr::null(), None);
+        qsbr::register_node(node);
         
         let mut i = 0;
         b.iter(|| {
@@ -28,9 +28,9 @@ fn bench_data_structure(c: &mut Criterion) {
     });
 
     group.bench_function("put_t2_single_thread", |b| {
-        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::componant::policy::DefaultEvictionPolicy::new());
+        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
-        qsbr::register_node(node, 0, ::core::ptr::null(), None);
+        qsbr::register_node(node);
         
         let mut i = 0;
         b.iter(|| {
@@ -52,7 +52,7 @@ fn bench_tls(c: &mut Criterion) {
 
     for threads in [1, 4, 8, 16].iter() {
         group.bench_with_input(BenchmarkId::new("get_block_mut_contention", threads), threads, |b, &threads| {
-            let registry = Arc::new(Box::new(TlsRegistry::<u64, u64, 16, 128, 128>::new()));
+            let registry = Arc::new(Box::new(TlsRegistry::<u64, u64, 128, 128>::default()));
             let mut handles = Vec::new();
             for _ in 0..threads {
                 handles.push(registry.register_thread());

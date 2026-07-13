@@ -192,7 +192,7 @@ mod tests {
     // A test policy that forces 2^n thresholds but smaller values for quick testing
     struct TestPolicy;
     impl CachePolicy for TestPolicy {
-        type Evict = crate::componant::policy::DefaultEvictionPolicy;
+        type Evict = crate::core::policy::DefaultEvictionPolicy;
         const T2_THRESHOLD: u16 = 2;
         const T1_THRESHOLD: u16 = 4;
         const T0_THRESHOLD: u16 = 8;

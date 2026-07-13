@@ -173,17 +173,17 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::componant::arena::Arena;
-    use crate::componant::qsbr;
+    use crate::core::arena::Arena;
+    use crate::core::qsbr;
 
     #[test]
     fn test_cache_tier_eviction() {
         // CAPACITY=8, WAYS=8 means 1 set, 8 slots.
-        let tier = CacheTier::<u64, u64, crate::componant::policy::DefaultEvictionPolicy, 8, 8>::new(crate::componant::policy::DefaultEvictionPolicy::new());
+        let tier = CacheTier::<u64, u64, crate::core::policy::DefaultEvictionPolicy, 8, 8>::new(crate::core::policy::DefaultEvictionPolicy::new());
         let arena = Arena::<u64, u64, 16>::new();
         let node = {
-            let node = std::boxed::Box::into_raw(std::boxed::Box::new(crate::componant::qsbr::ThreadStateNode::new()));
-            crate::componant::qsbr::register_node(node, 0, ::core::ptr::null(), None);
+            let node = no_std_tool::collections::Box::into_raw(no_std_tool::collections::Box::new(crate::core::qsbr::ThreadStateNode::new()));
+            crate::core::qsbr::register_node(node);
             node
         };
         let guard = qsbr::pin(node);
@@ -207,7 +207,7 @@ mod tests {
     }
     #[test]
     fn test_cache_tier_default() {
-        let tier: CacheTier<u64, u64, crate::componant::policy::DefaultEvictionPolicy, 8, 8> = CacheTier::default();
+        let tier: CacheTier<u64, u64, crate::core::policy::DefaultEvictionPolicy, 8, 8> = CacheTier::default();
         let set = tier.get_set(0);
         assert_eq!(set.len(), 8);
     }
