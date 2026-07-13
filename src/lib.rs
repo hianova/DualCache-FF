@@ -12,6 +12,73 @@ use crate::component::tls::{TlsRegistry, TlsHandle};
 #[cfg(feature = "std")]
 use crate::component::daemon::DaemonMessage;
 
+/// Macro to easily define a `DualCacheFF` type alias by just specifying T0 (L1 capacity per thread)
+/// and TOTAL (L2 total capacity). The macro automatically derives T1 (1/6 of TOTAL) and T2 (5/6 of TOTAL).
+#[macro_export]
+macro_rules! define_dualcache {
+    (
+        $name:ident,
+        $k:ty,
+        $v:ty,
+        T0 = $t0:expr,
+        TOTAL = $total:expr
+    ) => {
+        pub type $name = $crate::DualCacheFF<
+            $k,
+            $v,
+            { $total - ($total / 6) },
+            { $total / 6 },
+            $t0,
+            $total
+        >;
+    };
+}
+
+/// Macro to easily define a `StaticDualCache` type alias by just specifying T0 and TOTAL.
+#[macro_export]
+macro_rules! define_static_dualcache {
+    (
+        $name:ident,
+        $k:ty,
+        $v:ty,
+        $policy:ty,
+        T0 = $t0:expr,
+        TOTAL = $total:expr
+    ) => {
+        pub type $name = $crate::core::static_cache::StaticDualCache<
+            $k,
+            $v,
+            $policy,
+            $t0,
+            { $total / 6 },
+            { $total - ($total / 6) },
+            $total
+        >;
+    };
+}
+
+/// Macro to easily define a `DualCacheCore` type alias by just specifying T0 and TOTAL.
+#[macro_export]
+macro_rules! define_core_cache {
+    (
+        $name:ident,
+        $k:ty,
+        $v:ty,
+        $policy:ty,
+        T0 = $t0:expr,
+        TOTAL = $total:expr
+    ) => {
+        pub type $name = $crate::core::engine::DualCacheCore<
+            $k,
+            $v,
+            $policy,
+            $t0,
+            { $total / 6 },
+            { $total - ($total / 6) },
+            $total
+        >;
+    };
+}
 
 #[cfg(feature = "std")]
 /// `DualCacheFF` is the main entry point for the cache, providing standard API operations and managing the 

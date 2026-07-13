@@ -12,7 +12,8 @@ fn bench_data_structure(c: &mut Criterion) {
     let mut group = c.benchmark_group("data_structure_latency");
     
     group.bench_function("put_t0_single_thread", |b| {
-        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
+        dualcache_ff::define_core_cache!(CoreType, u64, u64, DefaultExponentialPolicy, T0 = 1024, TOTAL = 3072);
+        let core: CoreType = DualCacheCore::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
         qsbr::register_node(node);
         
@@ -28,7 +29,8 @@ fn bench_data_structure(c: &mut Criterion) {
     });
 
     group.bench_function("put_t2_single_thread", |b| {
-        let core: DualCacheCore<u64, u64, DefaultExponentialPolicy, 1024, 1024, 1024, 3072> = DualCacheCore::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
+        dualcache_ff::define_core_cache!(CoreType2, u64, u64, DefaultExponentialPolicy, T0 = 1024, TOTAL = 3072);
+        let core: CoreType2 = DualCacheCore::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
         qsbr::register_node(node);
         

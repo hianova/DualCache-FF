@@ -33,22 +33,11 @@ const TOTAL_OPS: usize = 40_000_000;
 const OPS_PER_THREAD: usize = TOTAL_OPS / THREAD_COUNT;
 const DATASET_SIZE: u64 = 10_000_000;
 
-const CACHE_T2_CAP: usize = 1_048_576; // 1M
-const CACHE_T1_CAP: usize = 131_072;
-const CACHE_T0_CAP: usize = 16_384;
 const TOTAL_CAP: usize = 2_000_000;
 const TLS_CAP: usize = 4096;
 
-type BenchCache = DualCacheFF<
-    u64,
-    u64,
-    CACHE_T2_CAP,
-    CACHE_T1_CAP,
-    CACHE_T0_CAP,
-    TOTAL_CAP,
->;
-
-type StaticBenchCache = StaticDualCache<u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, CACHE_T0_CAP, CACHE_T1_CAP, CACHE_T2_CAP, TOTAL_CAP>;
+dualcache_ff::define_dualcache!(BenchCache, u64, u64, T0 = 16_384, TOTAL = 2_000_000);
+dualcache_ff::define_static_dualcache!(StaticBenchCache, u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, T0 = 16_384, TOTAL = 2_000_000);
 
 use no_std_tool::lazy_static;
 
