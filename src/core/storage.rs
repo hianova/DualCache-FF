@@ -1,6 +1,6 @@
-use no_std_tool::collections::{Box, AllocVec as Vec};
+use no_std_tool::collections::{AllocVec as Vec, Box};
 
-use ::core::sync::atomic::{AtomicU64, AtomicPtr, Ordering};
+use ::core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use core::ptr;
 
 /// A single cached entry. Stored in the Arena node pool.

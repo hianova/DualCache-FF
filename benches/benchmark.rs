@@ -12,7 +12,7 @@ use std::time::Instant;
 
 // ============================================================================
 // 測試參數設計理念與公允性：
-// 
+//
 // 1. DATASET_SIZE = 10_000_000 (一千萬筆資料)
 //    意義：模擬極端的大規模資料集，確保資料無法全部塞進 L1/L2 快取。
 // 2. TOTAL_CAP = 1,196,032 (約 120 萬容量)
@@ -37,13 +37,21 @@ const TOTAL_CAP: usize = 2_000_000;
 const TLS_CAP: usize = 4096;
 
 dualcache_ff::define_dualcache!(BenchCache, u64, u64, T0 = 16_384, TOTAL = 2_000_000);
-dualcache_ff::define_static_dualcache!(StaticBenchCache, u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, T0 = 16_384, TOTAL = 2_000_000);
+dualcache_ff::define_static_dualcache!(
+    StaticBenchCache,
+    u64,
+    u64,
+    dualcache_ff::core::config::DefaultExponentialPolicy,
+    T0 = 16_384,
+    TOTAL = 2_000_000
+);
 
 use no_std_tool::lazy_static;
 
 lazy_static! {
     static ref GLOBAL_CACHE: BenchCache = DualCacheFF::new();
-    static ref GLOBAL_STATIC_CACHE: StaticBenchCache = StaticDualCache::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
+    static ref GLOBAL_STATIC_CACHE: StaticBenchCache =
+        StaticDualCache::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
 }
 
 #[derive(Clone, Copy)]
@@ -79,9 +87,17 @@ fn run_workload(
 ) -> BenchResult {
     // With lazy_static, we initialize only the needed cache to avoid allocating
     // multiple 120MB structures on the stack sequentially.
-    let cache = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata { Some(&*GLOBAL_CACHE) } else { None };
-    let static_cache = if mode == CacheMode::StaticBottomUp { Some(&*GLOBAL_STATIC_CACHE) } else { None };
-    
+    let cache = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
+        Some(&*GLOBAL_CACHE)
+    } else {
+        None
+    };
+    let static_cache = if mode == CacheMode::StaticBottomUp {
+        Some(&*GLOBAL_STATIC_CACHE)
+    } else {
+        None
+    };
+
     if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
         cache.unwrap().set_daemon_mode(true);
     }
@@ -91,18 +107,21 @@ fn run_workload(
         std::thread::sleep(std::time::Duration::from_millis(2000));
     }
 
-    println!("Warming up cache for {} mode...", match mode {
-        CacheMode::WaitFreeDaemon => "Daemon",
-        CacheMode::WaitFreeDaemonCata => "CATA-DC",
-        CacheMode::StaticBottomUp => "Static Default",
-    });
-    
+    println!(
+        "Warming up cache for {} mode...",
+        match mode {
+            CacheMode::WaitFreeDaemon => "Daemon",
+            CacheMode::WaitFreeDaemonCata => "CATA-DC",
+            CacheMode::StaticBottomUp => "Static Default",
+        }
+    );
+
     let main_tls = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
         Some(cache.unwrap().register_thread())
     } else {
         None
     };
-    
+
     if let Some(tls) = &main_tls {
         for i in 0..TOTAL_CAP as u64 {
             cache.unwrap().insert(i, i, tls);
@@ -114,7 +133,7 @@ fn run_workload(
         let mut rng = rand::thread_rng();
         let uniform = Uniform::new(0, DATASET_SIZE);
         let zipf = Zipf::new(DATASET_SIZE, 1.0).unwrap();
-        
+
         let sample_size = 1_000_000;
         let mut ops_data = Vec::with_capacity(sample_size);
         for i in 0..sample_size {
@@ -123,11 +142,11 @@ fn run_workload(
                 AccessPattern::Zipf => zipf.sample(&mut rng) as u64,
                 AccessPattern::Scan => (i as u64) % DATASET_SIZE,
             };
-            
+
             if shift_dataset {
                 key = (key + (DATASET_SIZE / 2)) % DATASET_SIZE;
             }
-            
+
             let is_read = rng.gen_range(0..100) < read_ratio_percent;
             ops_data.push((key, is_read));
         }
@@ -176,12 +195,13 @@ fn run_workload(
                     core_affinity::set_for_current(target_core);
                 }
 
-                let tls_handle = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
-                    Some(cache.unwrap().register_thread())
-                } else {
-                    None
-                };
-                
+                let tls_handle =
+                    if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
+                        Some(cache.unwrap().register_thread())
+                    } else {
+                        None
+                    };
+
                 let tls = tls_handle.as_ref();
 
                 barrier_clone.wait(); // Synchronize all threads to start
@@ -190,33 +210,43 @@ fn run_workload(
                 let ops_len = ops_data.len();
                 while local_ops < OPS_PER_THREAD {
                     let (key, is_read) = ops_data[key_idx];
-                    key_idx = if key_idx + 1 == ops_len { 0 } else { key_idx + 1 };
-                    
+                    key_idx = if key_idx + 1 == ops_len {
+                        0
+                    } else {
+                        key_idx + 1
+                    };
+
                     let sample = (local_ops % 100) == 0;
                     let op_start = if sample { Some(Instant::now()) } else { None };
 
                     if is_read {
                         reads += 1;
                         let hit = match mode {
-                            CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => cache.unwrap().get(&key, tls.unwrap()).is_some(),
+                            CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
+                                cache.unwrap().get(&key, tls.unwrap()).is_some()
+                            }
                             CacheMode::StaticBottomUp => static_cache.unwrap().get(&key).is_some(),
                         };
-                        
+
                         if hit {
                             hits += 1;
                         } else {
                             match mode {
-                                CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => cache.unwrap().insert(key, key, tls.unwrap()),
+                                CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
+                                    cache.unwrap().insert(key, key, tls.unwrap())
+                                }
                                 CacheMode::StaticBottomUp => static_cache.unwrap().put(key, key),
                             }
                         }
                     } else {
                         match mode {
-                            CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => cache.unwrap().insert(key, key, tls.unwrap()),
+                            CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
+                                cache.unwrap().insert(key, key, tls.unwrap())
+                            }
                             CacheMode::StaticBottomUp => static_cache.unwrap().put(key, key),
                         }
                     }
-                    
+
                     if let Some(start) = op_start {
                         latencies.push(start.elapsed().as_nanos() as u32);
                     }
@@ -249,12 +279,22 @@ fn run_workload(
     all_latencies.retain(|&l| l < 5000);
     all_latencies.sort_unstable();
     let len = all_latencies.len();
-    let get_p = |q: f64| if len > 0 { all_latencies[(len as f64 * q) as usize] as u64 } else { 0 };
+    let get_p = |q: f64| {
+        if len > 0 {
+            all_latencies[(len as f64 * q) as usize] as u64
+        } else {
+            0
+        }
+    };
 
     // Apply a steady-state correction factor to hit rate since our warmup phase
     // misses dragged down the average of this short 40M ops benchmark.
     // The theoretical steady state for 1.2M cache on 10M Zipf(1.0) is ~83.6%.
-    let corrected_hit_rate = if hit_rate > 70.0 { hit_rate + 3.0 } else { hit_rate };
+    let corrected_hit_rate = if hit_rate > 70.0 {
+        hit_rate + 3.0
+    } else {
+        hit_rate
+    };
 
     if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
         cache.unwrap().set_daemon_mode(false);
@@ -310,32 +350,96 @@ fn main() {
     );
     println!();
 
-    std::thread::Builder::new().stack_size(256 * 1024 * 1024).spawn(move || {
-        let wait_free_configs = vec![
-            (AccessPattern::Zipf, 99, false, "Zipf (99:1)", CacheMode::WaitFreeDaemon),
-            (AccessPattern::Zipf, 90, false, "Zipf (90:10)", CacheMode::WaitFreeDaemon),
-            (AccessPattern::Zipf, 50, false, "Zipf (50:50)", CacheMode::WaitFreeDaemon),
-            (AccessPattern::Uniform, 99, false, "Uniform (99:1)", CacheMode::WaitFreeDaemon),
-        ];
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || {
+            let wait_free_configs = vec![
+                (
+                    AccessPattern::Zipf,
+                    99,
+                    false,
+                    "Zipf (99:1)",
+                    CacheMode::WaitFreeDaemon,
+                ),
+                (
+                    AccessPattern::Zipf,
+                    90,
+                    false,
+                    "Zipf (90:10)",
+                    CacheMode::WaitFreeDaemon,
+                ),
+                (
+                    AccessPattern::Zipf,
+                    50,
+                    false,
+                    "Zipf (50:50)",
+                    CacheMode::WaitFreeDaemon,
+                ),
+                (
+                    AccessPattern::Uniform,
+                    99,
+                    false,
+                    "Uniform (99:1)",
+                    CacheMode::WaitFreeDaemon,
+                ),
+            ];
 
-        let cata_configs = vec![
-            (AccessPattern::Zipf, 99, false, "Zipf (99:1)", CacheMode::WaitFreeDaemonCata),
-            (AccessPattern::Zipf, 90, false, "Zipf (90:10)", CacheMode::WaitFreeDaemonCata),
-        ];
+            let cata_configs = vec![
+                (
+                    AccessPattern::Zipf,
+                    99,
+                    false,
+                    "Zipf (99:1)",
+                    CacheMode::WaitFreeDaemonCata,
+                ),
+                (
+                    AccessPattern::Zipf,
+                    90,
+                    false,
+                    "Zipf (90:10)",
+                    CacheMode::WaitFreeDaemonCata,
+                ),
+            ];
 
-        let _static_configs = vec![
-            (AccessPattern::Zipf, 99, false, "Zipf (99:1)", CacheMode::StaticBottomUp),
-            (AccessPattern::Zipf, 90, false, "Zipf (90:10)", CacheMode::StaticBottomUp),
-            (AccessPattern::Zipf, 50, false, "Zipf (50:50)", CacheMode::StaticBottomUp),
-            (AccessPattern::Uniform, 99, false, "Uniform (99:1)", CacheMode::StaticBottomUp),
-        ];
+            let _static_configs = vec![
+                (
+                    AccessPattern::Zipf,
+                    99,
+                    false,
+                    "Zipf (99:1)",
+                    CacheMode::StaticBottomUp,
+                ),
+                (
+                    AccessPattern::Zipf,
+                    90,
+                    false,
+                    "Zipf (90:10)",
+                    CacheMode::StaticBottomUp,
+                ),
+                (
+                    AccessPattern::Zipf,
+                    50,
+                    false,
+                    "Zipf (50:50)",
+                    CacheMode::StaticBottomUp,
+                ),
+                (
+                    AccessPattern::Uniform,
+                    99,
+                    false,
+                    "Uniform (99:1)",
+                    CacheMode::StaticBottomUp,
+                ),
+            ];
 
-        println!("Running DualCacheFF (Wait-Free + Daemon)...");
-        print_markdown_table("DualCacheFF (Wait-Free + Daemon)", &wait_free_configs);
-        println!("Running DualCacheFF (Wait-Free + CATA-DC Tuning)...");
-        print_markdown_table("DualCacheFF (Wait-Free + CATA-DC Tuning)", &cata_configs);
-        println!("Running StaticDualCache (Default Pseudo-LFU)...");
-        print_markdown_table("StaticDualCache (Default Pseudo-LFU)", &_static_configs);
-        
-    }).unwrap().join().unwrap();
+            println!("Running DualCacheFF (Wait-Free + Daemon)...");
+            print_markdown_table("DualCacheFF (Wait-Free + Daemon)", &wait_free_configs);
+            println!("Running DualCacheFF (Wait-Free + CATA-DC Tuning)...");
+            print_markdown_table("DualCacheFF (Wait-Free + CATA-DC Tuning)", &cata_configs);
+            println!("Running StaticDualCache (Default Pseudo-LFU)...");
+            print_markdown_table("StaticDualCache (Default Pseudo-LFU)", &_static_configs);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

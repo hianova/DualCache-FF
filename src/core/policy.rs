@@ -26,7 +26,7 @@ impl EvictionPolicy for DefaultEvictionPolicy {
         let mut min_hits = u16::MAX;
         let mut candidates = [0; 8]; // Assumes WAYS is at most 8
         let mut candidates_len = 0;
-        
+
         for (i, slot) in set.iter().enumerate() {
             let hits = slot.hits.load(Ordering::Relaxed);
             if hits < min_hits {

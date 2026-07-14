@@ -10,7 +10,9 @@ pub struct XorShiftRng {
 
 impl XorShiftRng {
     pub fn new(seed: u64) -> Self {
-        Self { state: if seed == 0 { 0x1234567890abcdef } else { seed } }
+        Self {
+            state: if seed == 0 { 0x1234567890abcdef } else { seed },
+        }
     }
 
     pub fn next_u64(&mut self) -> u64 {
@@ -46,26 +48,23 @@ impl CataState {
     fn perturb(&self, rng: &mut XorShiftRng, temperature: f32) -> Self {
         let max_step = temperature;
         let mut new_state = *self;
-        new_state.t0 = (self.t0 + rng.gen_range(-max_step * 10.0, max_step * 10.0)).clamp(1.0, 100.0);
-        new_state.t1 = (self.t1 + rng.gen_range(-max_step * 10.0, max_step * 10.0)).clamp(1.0, 100.0);
+        new_state.t0 =
+            (self.t0 + rng.gen_range(-max_step * 10.0, max_step * 10.0)).clamp(1.0, 100.0);
+        new_state.t1 =
+            (self.t1 + rng.gen_range(-max_step * 10.0, max_step * 10.0)).clamp(1.0, 100.0);
         new_state.t2 = (self.t2 + rng.gen_range(-max_step * 2.0, max_step * 2.0)).clamp(1.0, 10.0);
-        new_state.warmup = (self.warmup + rng.gen_range(-max_step * 100.0, max_step * 100.0)).clamp(100.0, 1000.0);
+        new_state.warmup =
+            (self.warmup + rng.gen_range(-max_step * 100.0, max_step * 100.0)).clamp(100.0, 1000.0);
         new_state
     }
 }
 
 #[cfg(feature = "std")]
-pub fn spawn_demiurge<
-    K, V, 
-    const T2: usize, const T1: usize, const T0: usize, const TOTAL: usize,
-    
->(
-    cache: &'static DualCacheFF<K, V, T2, T1, T0, TOTAL>
-) 
-where 
+pub fn spawn_demiurge<K, V, const T2: usize, const T1: usize, const T0: usize, const TOTAL: usize>(
+    cache: &'static DualCacheFF<K, V, T2, T1, T0, TOTAL>,
+) where
     K: core::cmp::Eq + core::hash::Hash + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
-    
 {
     std::thread::Builder::new()
         .name("CATA-DC-Demiurge".to_string())
@@ -78,7 +77,7 @@ where
                 t2: 2.0,
                 warmup: 256.0,
             };
-            
+
             let mut best_state = current_state;
             let mut best_loss = f32::MAX;
             let mut temperature = 1.0;
@@ -89,7 +88,7 @@ where
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 let (end_ops, _) = cache.get_metrics();
                 let delta = end_ops.saturating_sub(start_ops);
-                
+
                 if delta < 1000 {
                     // Workload is inactive (e.g. during warmup). Keep best parameters and sleep.
                     cache.core.blackjack.store_params(
@@ -103,7 +102,7 @@ where
                 }
 
                 let candidate = current_state.perturb(&mut rng, temperature);
-                
+
                 // Apply candidate parameters
                 cache.core.blackjack.store_params(
                     candidate.t0 as u16,
@@ -115,12 +114,12 @@ where
                 // Benchmark window (50ms)
                 let start_time = Instant::now();
                 let (start_ops_eval, start_hits_eval) = cache.get_metrics();
-                
+
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                
+
                 let elapsed = start_time.elapsed().as_secs_f64();
                 let (end_ops_eval, end_hits_eval) = cache.get_metrics();
-                
+
                 // Restore best parameters immediately to restore maximum performance
                 cache.core.blackjack.store_params(
                     best_state.t0 as u16,
@@ -131,14 +130,14 @@ where
 
                 let delta_ops = end_ops_eval.saturating_sub(start_ops_eval);
                 let delta_hits = end_hits_eval.saturating_sub(start_hits_eval);
-                
+
                 let ops_per_sec = (delta_ops as f64 / elapsed) as f32;
                 let hit_rate = if delta_ops > 0 {
                     delta_hits as f32 / delta_ops as f32
                 } else {
                     0.0
                 };
-                
+
                 // Loss function
                 let hr_loss = (1.0 - hit_rate) * 100.0;
                 let ops_bonus = (ops_per_sec / 10_000_000.0).clamp(0.1, 10.0);
@@ -156,10 +155,10 @@ where
                         current_state = candidate;
                     }
                 }
-                
+
                 // Decay temperature
                 temperature = (temperature * 0.99).max(0.01);
-                
+
                 // Re-apply best parameters just to be safe
                 cache.core.blackjack.store_params(
                     best_state.t0 as u16,
@@ -167,9 +166,10 @@ where
                     best_state.t2 as u16,
                     best_state.warmup as u16,
                 );
-                
+
                 // Stable execution window (450ms)
                 std::thread::sleep(std::time::Duration::from_millis(450));
             }
-        }).unwrap();
+        })
+        .unwrap();
 }

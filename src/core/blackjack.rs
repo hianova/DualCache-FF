@@ -8,7 +8,10 @@ pub struct PackedBlackjack {
 
 impl PackedBlackjack {
     pub const fn new(t0_hit: u16, t1_hit: u16, t2_penalty: u16, warmup: u16) -> Self {
-        let packed = (t0_hit as u64) << 48 | (t1_hit as u64) << 32 | (t2_penalty as u64) << 16 | (warmup as u64);
+        let packed = (t0_hit as u64) << 48
+            | (t1_hit as u64) << 32
+            | (t2_penalty as u64) << 16
+            | (warmup as u64);
         Self {
             state: AtomicU64::new(packed),
         }
@@ -26,7 +29,10 @@ impl PackedBlackjack {
     }
 
     pub fn store_params(&self, t0_hit: u16, t1_hit: u16, t2_penalty: u16, warmup: u16) {
-        let packed = (t0_hit as u64) << 48 | (t1_hit as u64) << 32 | (t2_penalty as u64) << 16 | (warmup as u64);
+        let packed = (t0_hit as u64) << 48
+            | (t1_hit as u64) << 32
+            | (t2_penalty as u64) << 16
+            | (warmup as u64);
         self.state.store(packed, Ordering::Relaxed);
     }
 }

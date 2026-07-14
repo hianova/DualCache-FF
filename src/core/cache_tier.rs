@@ -1,23 +1,34 @@
-use super::slot::Slot;
-use super::qsbr;
 use super::arena::{self, Arena};
-use super::policy::{EvictionPolicy, DefaultEvictionPolicy};
+use super::policy::{DefaultEvictionPolicy, EvictionPolicy};
+use super::qsbr;
+use super::slot::Slot;
 
 /// Represents a single cache tier (e.g., T0, T1, T2) using Set-Associative Lock-Free arrays.
 #[repr(C, align(64))]
-pub struct CacheTier<K, V, P: EvictionPolicy = DefaultEvictionPolicy, const CAPACITY: usize = 0, const WAYS: usize = 8> {
+pub struct CacheTier<
+    K,
+    V,
+    P: EvictionPolicy = DefaultEvictionPolicy,
+    const CAPACITY: usize = 0,
+    const WAYS: usize = 8,
+> {
     slots: [Slot<K, V>; CAPACITY],
     policy: P,
 }
 
-impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize> CacheTier<K, V, P, CAPACITY, WAYS> {
+impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
+    CacheTier<K, V, P, CAPACITY, WAYS>
+{
     /// Create a new `CacheTier`.
     #[must_use]
     pub const fn new(policy: P) -> Self {
         assert!(CAPACITY > 0, "CAPACITY must be greater than 0");
-        assert!(CAPACITY.is_multiple_of(WAYS), "CAPACITY must be a multiple of WAYS");
+        assert!(
+            CAPACITY.is_multiple_of(WAYS),
+            "CAPACITY must be a multiple of WAYS"
+        );
 
-        Self { 
+        Self {
             slots: [const { Slot::new() }; CAPACITY],
             policy,
         }
@@ -29,14 +40,17 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize> CacheTie
         let num_sets = CAPACITY / WAYS;
         let index = hash % num_sets;
         let start = index * WAYS;
-        unsafe {
-            self.slots.get_unchecked(start..start + WAYS)
-        }
+        unsafe { self.slots.get_unchecked(start..start + WAYS) }
     }
 
     /// Touch a slot by hash to prevent it from being evicted (Prefetch hint)
     #[inline(always)]
-    pub fn fetch_hint<const N: usize>(&self, hash: usize, arena: &super::arena::Arena<K, V, N>, guard: &super::qsbr::Guard) -> Option<(K, V)>
+    pub fn fetch_hint<const N: usize>(
+        &self,
+        hash: usize,
+        arena: &super::arena::Arena<K, V, N>,
+        guard: &super::qsbr::Guard,
+    ) -> Option<(K, V)>
     where
         K: Clone,
         V: Clone,
@@ -54,7 +68,13 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize> CacheTie
 
     /// Retrieve a slot if the key exists in this tier.
     #[inline(always)]
-    pub fn get_slot<const N: usize>(&self, arena: &Arena<K, V, N>, hash: usize, key: &K, guard: &qsbr::Guard) -> Option<&Slot<K, V>>
+    pub fn get_slot<const N: usize>(
+        &self,
+        arena: &Arena<K, V, N>,
+        hash: usize,
+        key: &K,
+        guard: &qsbr::Guard,
+    ) -> Option<&Slot<K, V>>
     where
         K: PartialEq,
     {
@@ -72,13 +92,19 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize> CacheTie
     }
 
     /// Insert a key and value into the tier using the provided eviction policy.
-    pub fn insert<const N: usize>(&self, arena: &Arena<K, V, N>, hash: usize, key: K, value: V, node: *mut super::qsbr::ThreadStateNode)
-    where
+    pub fn insert<const N: usize>(
+        &self,
+        arena: &Arena<K, V, N>,
+        hash: usize,
+        key: K,
+        value: V,
+        node: *mut super::qsbr::ThreadStateNode,
+    ) where
         K: PartialEq,
     {
         let set = self.get_set(hash);
         let guard = qsbr::pin(node);
-        
+
         // 1. Try to find an empty slot or overwrite the exact matching key
         for slot in set {
             let (slot_hash, idx) = slot.read(&guard);
@@ -94,7 +120,7 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize> CacheTie
                 }
             }
         }
-        
+
         // 2. Use EvictionPolicy to find victim and perform decay
         let victim_slot = self.policy.find_victim(set, hash);
 
@@ -103,14 +129,13 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize> CacheTie
     }
 }
 
-impl<K, V, const CAPACITY: usize, const WAYS: usize> Default for CacheTier<K, V, DefaultEvictionPolicy, CAPACITY, WAYS> {
+impl<K, V, const CAPACITY: usize, const WAYS: usize> Default
+    for CacheTier<K, V, DefaultEvictionPolicy, CAPACITY, WAYS>
+{
     fn default() -> Self {
         Self::new(DefaultEvictionPolicy::new())
     }
 }
-
-
-
 
 /// A direct-mapped (1-way) fast tier optimized for T0 zero-cost lookups.
 /// It uses exactly 1 atomic load for maximum throughput.
@@ -127,8 +152,12 @@ impl<const CAPACITY: usize> Default for FastTier<CAPACITY> {
 
 impl<const CAPACITY: usize> FastTier<CAPACITY> {
     pub const fn new() -> Self {
-        assert!(CAPACITY > 0 && CAPACITY.is_power_of_two(), "CAPACITY must be a power of two");
-        let slots = [const { ::core::sync::atomic::AtomicU32::new(super::arena::NULL_INDEX) }; CAPACITY];
+        assert!(
+            CAPACITY > 0 && CAPACITY.is_power_of_two(),
+            "CAPACITY must be a power of two"
+        );
+        let slots =
+            [const { ::core::sync::atomic::AtomicU32::new(super::arena::NULL_INDEX) }; CAPACITY];
         Self { slots }
     }
 
@@ -149,7 +178,14 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
     /// # Safety
     /// The caller must ensure that `node` is a valid pointer to a ThreadStateNode
     /// and that the thread state is active.
-    pub unsafe fn insert_promote<K, V, const N: usize>(&self, arena: &super::arena::Arena<K, V, N>, hash: usize, key: K, value: V, node: *mut super::qsbr::ThreadStateNode) {
+    pub unsafe fn insert_promote<K, V, const N: usize>(
+        &self,
+        arena: &super::arena::Arena<K, V, N>,
+        hash: usize,
+        key: K,
+        value: V,
+        node: *mut super::qsbr::ThreadStateNode,
+    ) {
         if let Some(new_idx) = arena.alloc(key, value, node) {
             let old_idx = self.insert_idx(hash, new_idx as u32);
             if old_idx != super::arena::NULL_INDEX {
@@ -162,10 +198,13 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
             }
         }
     }
-    
+
     pub fn clear(&self) {
         for slot in self.slots.iter() {
-            slot.store(super::arena::NULL_INDEX, ::core::sync::atomic::Ordering::Relaxed);
+            slot.store(
+                super::arena::NULL_INDEX,
+                ::core::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
 }
@@ -179,10 +218,14 @@ mod tests {
     #[test]
     fn test_cache_tier_eviction() {
         // CAPACITY=8, WAYS=8 means 1 set, 8 slots.
-        let tier = CacheTier::<u64, u64, crate::core::policy::DefaultEvictionPolicy, 8, 8>::new(crate::core::policy::DefaultEvictionPolicy::new());
+        let tier = CacheTier::<u64, u64, crate::core::policy::DefaultEvictionPolicy, 8, 8>::new(
+            crate::core::policy::DefaultEvictionPolicy::new(),
+        );
         let arena = Arena::<u64, u64, 16>::new();
         let node = {
-            let node = no_std_tool::collections::Box::into_raw(no_std_tool::collections::Box::new(crate::core::qsbr::ThreadStateNode::new()));
+            let node = no_std_tool::collections::Box::into_raw(no_std_tool::collections::Box::new(
+                crate::core::qsbr::ThreadStateNode::new(),
+            ));
             crate::core::qsbr::register_node(node);
             node
         };
@@ -207,7 +250,8 @@ mod tests {
     }
     #[test]
     fn test_cache_tier_default() {
-        let tier: CacheTier<u64, u64, crate::core::policy::DefaultEvictionPolicy, 8, 8> = CacheTier::default();
+        let tier: CacheTier<u64, u64, crate::core::policy::DefaultEvictionPolicy, 8, 8> =
+            CacheTier::default();
         let set = tier.get_set(0);
         assert_eq!(set.len(), 8);
     }

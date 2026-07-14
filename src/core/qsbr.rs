@@ -1,6 +1,6 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::missing_safety_doc)]
-use ::core::sync::atomic::{AtomicPtr, AtomicUsize, AtomicBool, Ordering};
+use ::core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use core::ptr;
 
 static GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
@@ -56,13 +56,15 @@ impl<const N: usize> MpmcQueue<N> {
         }
     }
     pub fn push(&self, val: u32) -> bool {
-        let result = self.tail.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |tail| {
-            if tail.wrapping_sub(self.head.load(Ordering::Acquire)) >= N {
-                None
-            } else {
-                Some(tail + 1)
-            }
-        });
+        let result = self
+            .tail
+            .try_update(Ordering::SeqCst, Ordering::Relaxed, |tail| {
+                if tail.wrapping_sub(self.head.load(Ordering::Acquire)) >= N {
+                    None
+                } else {
+                    Some(tail + 1)
+                }
+            });
 
         match result {
             Ok(tail) => {
@@ -77,18 +79,20 @@ impl<const N: usize> MpmcQueue<N> {
     }
     pub fn pop(&self) -> Option<u32> {
         let mut final_val = 0;
-        let result = self.head.fetch_update(Ordering::SeqCst, Ordering::Relaxed, |head| {
-            if head == self.tail.load(Ordering::Acquire) {
-                return None;
-            }
-            let val = self.buffer[head % N].load(Ordering::Acquire);
-            if val != u32::MAX {
-                final_val = val;
-                Some(head + 1)
-            } else {
-                None
-            }
-        });
+        let result = self
+            .head
+            .try_update(Ordering::SeqCst, Ordering::Relaxed, |head| {
+                if head == self.tail.load(Ordering::Acquire) {
+                    return None;
+                }
+                let val = self.buffer[head % N].load(Ordering::Acquire);
+                if val != u32::MAX {
+                    final_val = val;
+                    Some(head + 1)
+                } else {
+                    None
+                }
+            });
 
         if let Ok(old_head) = result {
             self.buffer[old_head % N].store(u32::MAX, Ordering::Release);
@@ -98,7 +102,6 @@ impl<const N: usize> MpmcQueue<N> {
         }
     }
 }
-
 
 pub struct LocalFreeQueue {
     items: [u32; 4096],
@@ -113,7 +116,10 @@ impl Default for LocalFreeQueue {
 
 impl LocalFreeQueue {
     pub const fn new() -> Self {
-        Self { items: [0; 4096], len: 0 }
+        Self {
+            items: [0; 4096],
+            len: 0,
+        }
     }
     pub fn pop(&mut self) -> Option<u32> {
         if self.len > 0 {
@@ -137,7 +143,10 @@ impl LocalFreeQueue {
 
 pub struct QsbrToken;
 
-#[cfg_attr(not(feature = "std"), no_std_tool::auto_static(capacity = 256, partition = "qsbr"))]
+#[cfg_attr(
+    not(feature = "std"),
+    no_std_tool::auto_static(capacity = 256, partition = "qsbr")
+)]
 pub struct ThreadStateNode {
     pub active: AtomicBool,
     pub epoch: AtomicUsize,
@@ -174,9 +183,9 @@ pub trait RegistryCore: Send + Sync {
 /// Register a pre-allocated thread state node. The caller should allocate this node
 /// locally or in the static TLS blocks.
 pub fn register_node(node: *mut ThreadStateNode) {
-    let _ = THREAD_STATES.fetch_update(Ordering::Release, Ordering::Relaxed, |head| {
+    let _ = THREAD_STATES.try_update(Ordering::Release, Ordering::Relaxed, |head| {
         unsafe { (*node).next = head };
-        
+
         // Yield to encourage a CAS collision for coverage
         #[cfg(test)]
         core::hint::spin_loop();
@@ -209,12 +218,14 @@ impl Guard {
     pub unsafe fn unpinned(node: *mut ThreadStateNode) -> Self {
         Self { node }
     }
-    
+
     #[inline(always)]
     pub unsafe fn dummy() -> Self {
-        Self { node: core::ptr::null_mut() }
+        Self {
+            node: core::ptr::null_mut(),
+        }
     }
-    
+
     /// Get the underlying ThreadStateNode pointer.
     #[inline(always)]
     pub fn node(&self) -> *mut ThreadStateNode {
@@ -243,14 +254,13 @@ pub fn pin(node: *mut ThreadStateNode) -> Guard {
     Guard::new(node)
 }
 
-
 /// Retire a node index into the thread-local garbage queue safely using QSBR.
 /// This prevents ABA by ensuring the index is not freed to the Arena until all threads observing it have advanced.
 pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut _free_fn: F) {
     let epoch = GLOBAL_EPOCH.load(Ordering::Acquire) as u64;
     unsafe {
         let q = &mut (*node).garbage_queue;
-        
+
         // Wait until there's space (Daemon is slow, but we shouldn't drop)
         let mut head = q.head.load(Ordering::Relaxed);
         while head.wrapping_sub(q.tail.load(Ordering::Acquire)) >= GARBAGE_CAP {
@@ -260,7 +270,7 @@ pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut _free
             ::core::hint::spin_loop();
             head = q.head.load(Ordering::Relaxed);
         }
-        
+
         let idx = head % GARBAGE_CAP;
         q.items[idx] = RetiredNode {
             index: index as u32,
@@ -284,16 +294,16 @@ pub fn daemon_reclaim<F: FnMut(&[u32])>(mut free_batch_fn: F) {
             let q = &mut (*node).garbage_queue;
             let mut tail = q.tail.load(Ordering::Relaxed);
             let head = q.head.load(Ordering::Acquire);
-            
+
             while tail < head {
                 let idx = tail % GARBAGE_CAP;
                 let retired = q.items[idx];
-                
+
                 if retired.epoch < min_epoch as u64 {
                     batch[batch_len] = retired.index;
                     batch_len += 1;
                     tail += 1;
-                    
+
                     if batch_len == 128 {
                         free_batch_fn(&batch[..batch_len]);
                         batch_len = 0;
@@ -303,7 +313,7 @@ pub fn daemon_reclaim<F: FnMut(&[u32])>(mut free_batch_fn: F) {
                 }
             }
             q.tail.store(tail, Ordering::Release);
-            
+
             node = (*node).next;
         }
     }
@@ -319,15 +329,15 @@ fn get_min_epoch() -> usize {
         unsafe {
             if (*node).active.load(Ordering::Acquire) {
                 let e = (*node).epoch.load(Ordering::Acquire);
-                if e < min_epoch { min_epoch = e; }
+                if e < min_epoch {
+                    min_epoch = e;
+                }
             }
             node = (*node).next;
         }
     }
     min_epoch
 }
-
-
 
 #[cfg(test)]
 mod tests {

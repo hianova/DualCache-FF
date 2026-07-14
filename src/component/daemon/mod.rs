@@ -1,13 +1,11 @@
-use std::thread::{self, JoinHandle};
 use ::core::hash::Hash;
-
-
+use std::thread::{self, JoinHandle};
 
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonMessage<K, V> {
-    Hit(usize, u8),           // hash, weight
+    Hit(usize, u8),                  // hash, weight
     HitBatch([(usize, u8); 32], u8), // batch of hits
-    Promote(usize, K, V, u8), // hash, key, value, tier (0=T0, 2=T2)
+    Promote(usize, K, V, u8),        // hash, key, value, tier (0=T0, 2=T2)
     /// Dynamically adjust Daemon poll interval (Power-Saving Mode) - missing from v0.5.0
     SetPollInterval(u64),
     /// Zero-cost callbacks / blocking maintenance flush - missing from v0.5.0
@@ -29,24 +27,29 @@ impl Daemon {
         }
     }
 
-    fn compress_and_push<K, V>(batch: &mut std::vec::Vec<DaemonMessage<K, V>>, msg: DaemonMessage<K, V>) {
+    fn compress_and_push<K, V>(
+        batch: &mut std::vec::Vec<DaemonMessage<K, V>>,
+        msg: DaemonMessage<K, V>,
+    ) {
         match msg {
             DaemonMessage::Hit(hash, weight) => {
                 if let Some(DaemonMessage::Hit(last_hash, last_weight)) = batch.last_mut()
-                    && *last_hash == hash {
-                        *last_weight = last_weight.saturating_add(weight);
-                        return;
-                    }
+                    && *last_hash == hash
+                {
+                    *last_weight = last_weight.saturating_add(weight);
+                    return;
+                }
                 batch.push(DaemonMessage::Hit(hash, weight));
             }
             DaemonMessage::HitBatch(arr, len) => {
                 for &(hash, weight) in arr[..(len as usize)].iter() {
                     let mut found = false;
                     if let Some(DaemonMessage::Hit(last_hash, last_weight)) = batch.last_mut()
-                        && *last_hash == hash {
-                            *last_weight = last_weight.saturating_add(weight);
-                            found = true;
-                        }
+                        && *last_hash == hash
+                    {
+                        *last_weight = last_weight.saturating_add(weight);
+                        found = true;
+                    }
                     if !found {
                         batch.push(DaemonMessage::Hit(hash, weight));
                     }
@@ -69,11 +72,23 @@ impl Daemon {
 
     /// Spawn the daemon thread. Returns the Daemon handle.
     #[inline(never)]
-    pub fn spawn<K, V, P, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>(
-        core: &'static crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>, 
-        rx: std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>,
-        broadcast_txs: std::vec::Vec<std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
-        daemon_node: *mut crate::core::qsbr::ThreadStateNode
+    pub fn spawn<
+        K,
+        V,
+        P,
+        const CAP2: usize,
+        const CAP1: usize,
+        const CAP0: usize,
+        const TOTAL_CAP: usize,
+    >(
+        core: &'static crate::core::DualCacheCore<K, V, P, CAP2, CAP1, CAP0, TOTAL_CAP>,
+        rx: std::sync::Arc<
+            no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>,
+        >,
+        broadcast_txs: std::vec::Vec<
+            std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>,
+        >,
+        daemon_node: *mut crate::core::qsbr::ThreadStateNode,
     ) -> Self
     where
         K: Clone + Eq + Hash + Send + Sync + 'static,
@@ -91,7 +106,7 @@ impl Daemon {
 
                 // 1. Log Compaction (High Fidelity Compression)
                 let msg_opt = rx.pop();
-                
+
                 match msg_opt {
                     Some(msg) => {
                         empty_spins = 0;
@@ -159,10 +174,12 @@ impl Daemon {
 
                 // Pin daemon node so it updates its QSBR epoch and participates in GC
                 let _guard = crate::core::qsbr::pin(daemon_node);
-                
+
                 // GC: Move safe nodes from thread-local garbage queues to the Arena directly
                 crate::core::qsbr::daemon_reclaim(|batch| {
-                    if batch.is_empty() { return; }
+                    if batch.is_empty() {
+                        return;
+                    }
                     unsafe {
                         for i in 0..batch.len() {
                             let idx = batch[i];
@@ -182,11 +199,11 @@ impl Daemon {
                 }
             }
         });
-        Self { handle: Some(handle) }
+        Self {
+            handle: Some(handle),
+        }
     }
 }
-
-
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -231,7 +248,7 @@ mod tests {
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 10));
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 5));
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(2, 5));
-        
+
         let mut arr = [(0usize, 0u8); 32];
         arr[0] = (2, 5);
         arr[1] = (3, 10);

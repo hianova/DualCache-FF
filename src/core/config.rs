@@ -3,7 +3,7 @@
 
 pub trait CachePolicy {
     type Evict: crate::core::policy::EvictionPolicy + Default;
-    
+
     /// Hit count threshold to promote from Local TLS Cache to T2 Core Cache.
     const T2_THRESHOLD: u16;
     /// Hit count threshold to promote from T2 to T1.
@@ -14,9 +14,18 @@ pub trait CachePolicy {
     /// Compile-Time Assertions
     /// Forces the user-defined thresholds to be powers of two.
     const _ASSERT_POWER_OF_TWO: () = {
-        assert!(Self::T2_THRESHOLD.is_power_of_two(), "T2 Threshold must be 2^n");
-        assert!(Self::T1_THRESHOLD.is_power_of_two(), "T1 Threshold must be 2^n");
-        assert!(Self::T0_THRESHOLD.is_power_of_two(), "T0 Threshold must be 2^n");
+        assert!(
+            Self::T2_THRESHOLD.is_power_of_two(),
+            "T2 Threshold must be 2^n"
+        );
+        assert!(
+            Self::T1_THRESHOLD.is_power_of_two(),
+            "T1 Threshold must be 2^n"
+        );
+        assert!(
+            Self::T0_THRESHOLD.is_power_of_two(),
+            "T0 Threshold must be 2^n"
+        );
     };
 }
 
@@ -25,8 +34,8 @@ pub struct DefaultExponentialPolicy;
 
 impl CachePolicy for DefaultExponentialPolicy {
     type Evict = crate::core::policy::DefaultEvictionPolicy;
-    
-    const T2_THRESHOLD: u16 = 2;   // Local to T2 (T2 threshold not strictly defined in earlier prompts but 2 fits 2^1)
-    const T1_THRESHOLD: u16 = 16;  // T2 to T1
+
+    const T2_THRESHOLD: u16 = 2; // Local to T2 (T2 threshold not strictly defined in earlier prompts but 2 fits 2^1)
+    const T1_THRESHOLD: u16 = 16; // T2 to T1
     const T0_THRESHOLD: u16 = 256; // T1 to T0
 }

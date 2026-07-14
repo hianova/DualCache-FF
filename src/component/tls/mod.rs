@@ -1,6 +1,5 @@
-
-use core::cell::UnsafeCell;
 use ::core::sync::atomic::Ordering;
+use core::cell::UnsafeCell;
 
 pub struct TlsHandle {
     pub id: usize,
@@ -42,15 +41,19 @@ pub struct TlsCache<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     probation_cursor: usize,
 }
 
-impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default for TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP> {
+impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default
+    for TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP> {
+impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
+    TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
     pub const fn new() -> Self {
-        Self { 
+        Self {
             slots: [const { None }; TLS_CAP],
             capacity: TLS_CAP,
             promote_threshold: 4,
@@ -63,19 +66,21 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     pub fn get(&mut self, hash: usize, key: &K) -> (Option<&V>, bool, u8) {
         let idx = hash & (self.capacity - 1);
         if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
-            && entry.hash == hash && entry.key == *key {
-                let old_hits = entry.hits;
-                entry.hits = entry.hits.saturating_add(1);
-                
-                let promote = old_hits < self.promote_threshold && entry.hits >= self.promote_threshold;
-                
-                let sync_weight = if entry.hits > self.promote_threshold && (entry.hits & 15) == 0 {
-                    16
-                } else {
-                    0
-                };
-                
-                return (Some(&entry.value), promote, sync_weight);
+            && entry.hash == hash
+            && entry.key == *key
+        {
+            let old_hits = entry.hits;
+            entry.hits = entry.hits.saturating_add(1);
+
+            let promote = old_hits < self.promote_threshold && entry.hits >= self.promote_threshold;
+
+            let sync_weight = if entry.hits > self.promote_threshold && (entry.hits & 15) == 0 {
+                16
+            } else {
+                0
+            };
+
+            return (Some(&entry.value), promote, sync_weight);
         }
         (None, false, 0)
     }
@@ -84,27 +89,42 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     pub fn insert(&mut self, hash: usize, key: K, value: V) -> bool {
         let idx = hash & (self.capacity - 1);
         if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
-            && entry.hash == hash && entry.key == key {
-                entry.value = value;
-                return true;
+            && entry.hash == hash
+            && entry.key == key
+        {
+            entry.value = value;
+            return true;
         }
-        
+
         let filter_idx = hash & 4095;
-        
+
         // Slower Probation Filter: clear 1 element every 16 inserts
         self.probation_cursor = (self.probation_cursor + 1) & 65535;
         if (self.probation_cursor & 15) == 0 {
-            unsafe { *self.probation_filter.get_unchecked_mut(self.probation_cursor >> 4) = 0; }
+            unsafe {
+                *self
+                    .probation_filter
+                    .get_unchecked_mut(self.probation_cursor >> 4) = 0;
+            }
         }
-        
+
         let count = unsafe { *self.probation_filter.get_unchecked(filter_idx) }.saturating_add(1);
-        unsafe { *self.probation_filter.get_unchecked_mut(filter_idx) = count; }
-        
+        unsafe {
+            *self.probation_filter.get_unchecked_mut(filter_idx) = count;
+        }
+
         if count < 2 {
             return false;
         }
-        
-        unsafe { *self.slots.get_unchecked_mut(idx) = Some(TlsEntry { hash, key, value, hits: 0 }); }
+
+        unsafe {
+            *self.slots.get_unchecked_mut(idx) = Some(TlsEntry {
+                hash,
+                key,
+                value,
+                hits: 0,
+            });
+        }
         true
     }
 
@@ -112,14 +132,22 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     pub fn insert_fast_pass(&mut self, hash: usize, key: K, value: V) {
         let idx = hash & (self.capacity - 1);
         let hits = self.promote_threshold;
-        unsafe { *self.slots.get_unchecked_mut(idx) = Some(TlsEntry { hash, key, value, hits }); }
+        unsafe {
+            *self.slots.get_unchecked_mut(idx) = Some(TlsEntry {
+                hash,
+                key,
+                value,
+                hits,
+            });
+        }
     }
 
     pub fn record_remote_hit(&mut self, hash: usize, weight: u8) {
         let idx = hash & (self.capacity - 1);
         if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
-            && entry.hash == hash {
-                entry.hits = entry.hits.saturating_add(weight);
+            && entry.hash == hash
+        {
+            entry.hits = entry.hits.saturating_add(weight);
         }
     }
 }
@@ -131,9 +159,15 @@ use crate::component::daemon::DaemonMessage;
 pub struct TlsBlock<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     pub cache: TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>,
     #[cfg(feature = "std")]
-    pub tx: Option<std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>>>,
+    pub tx: Option<
+        std::sync::Arc<
+            no_std_tool::collections::mpsc_queue::BoundedQueue<DaemonMessage<K, V>, 65536>,
+        >,
+    >,
     #[cfg(feature = "std")]
-    pub hit_rx: Option<std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>>,
+    pub hit_rx: Option<
+        std::sync::Arc<no_std_tool::collections::mpsc_queue::BoundedQueue<(usize, u8), 1024>>,
+    >,
     pub op_count: u64,
     pub hit_count: u64,
     #[cfg(feature = "std")]
@@ -145,13 +179,17 @@ pub struct TlsBlock<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     pub registered: bool,
 }
 
-impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default for TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP> {
+impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default
+    for TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP> {
+impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
+    TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
     pub const fn new() -> Self {
         Self {
             cache: TlsCache::new(),
@@ -174,11 +212,19 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
 
 pub struct TlsRegistryState<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     #[allow(clippy::type_complexity)]
-    blocks: no_std_tool::sync::SpinMutex<no_std_tool::collections::AllocVec<no_std_tool::collections::Box<UnsafeCell<no_std_tool::sync::CachePadded<TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>>>>>>,
+    blocks: no_std_tool::sync::SpinMutex<
+        no_std_tool::collections::AllocVec<
+            no_std_tool::collections::Box<
+                UnsafeCell<no_std_tool::sync::CachePadded<TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>>>,
+            >,
+        >,
+    >,
     free_list: no_std_tool::sync::SpinMutex<no_std_tool::collections::AllocVec<usize>>,
 }
 
-impl<K: Send + 'static, V: Send + 'static, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> crate::core::qsbr::RegistryCore for TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP> {
+impl<K: Send + 'static, V: Send + 'static, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
+    crate::core::qsbr::RegistryCore for TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
     fn free_id(&self, id: usize) {
         if let Ok(mut free_list) = self.free_list.lock() {
             free_list.push(id);
@@ -186,18 +232,32 @@ impl<K: Send + 'static, V: Send + 'static, const TLS_CAP: usize, const TLS_INDEX
     }
 }
 
-unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Send for TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP> {}
-unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync for TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP> {}
+unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Send
+    for TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
+}
+unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync
+    for TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
+}
 
 /// Registry for managing Thread-Local Caches dynamically without OS TLS.
 pub struct TlsRegistry<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     state: no_std_tool::sync::Arc<TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP>>,
 }
 
-unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync for TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP> {}
-unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Send for TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP> {}
+unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync
+    for TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
+}
+unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Send
+    for TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
+}
 
-impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP> {
+impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
+    TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
     #[cfg(feature = "std")]
     pub fn clear_channels(&self) {
         let blocks = self.state.blocks.lock().unwrap();
@@ -209,13 +269,25 @@ impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsRegistry<K, V, T
     }
 }
 
-impl<K: Clone + Eq + 'static + Send, V: Clone + 'static + Send, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default for TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP> {
+impl<
+    K: Clone + Eq + 'static + Send,
+    V: Clone + 'static + Send,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+> Default for TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Clone + Eq + 'static + Send, V: Clone + 'static + Send, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP> {
+impl<
+    K: Clone + Eq + 'static + Send,
+    V: Clone + 'static + Send,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+> TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP>
+{
     pub fn new() -> Self {
         let blocks = no_std_tool::collections::AllocVec::with_capacity(64);
         let free_list = no_std_tool::collections::AllocVec::with_capacity(64);
@@ -234,7 +306,7 @@ impl<K: Clone + Eq + 'static + Send, V: Clone + 'static + Send, const TLS_CAP: u
     pub fn get_metrics(&self) -> (u64, u64) {
         let mut total_ops = 0;
         let mut total_hits = 0;
-        
+
         let blocks = self.state.blocks.lock().unwrap();
         for i in 0..blocks.len() {
             let block = unsafe { &*blocks[i].get() };
@@ -253,9 +325,13 @@ impl<K: Clone + Eq + 'static + Send, V: Clone + 'static + Send, const TLS_CAP: u
         {
             id = free_id;
         }
-        
+
         if id == usize::MAX {
-            let new_block = no_std_tool::collections::Box::new(UnsafeCell::new(no_std_tool::sync::CachePadded { value: TlsBlock::new() }));
+            let new_block = no_std_tool::collections::Box::new(UnsafeCell::new(
+                no_std_tool::sync::CachePadded {
+                    value: TlsBlock::new(),
+                },
+            ));
             let mut blocks = loop {
                 if let Ok(guard) = self.state.blocks.lock() {
                     break guard;
@@ -275,17 +351,23 @@ impl<K: Clone + Eq + 'static + Send, V: Clone + 'static + Send, const TLS_CAP: u
         let block = unsafe { &mut (*blocks[id].get()).value };
         let qsbr_node = &mut block.qsbr_node as *mut _;
         let block_ptr = block as *mut _ as *mut core::ffi::c_void;
-        
-        let registry_arc = self.state.clone() as no_std_tool::sync::Arc<dyn crate::core::qsbr::RegistryCore>;
-        
+
+        let registry_arc =
+            self.state.clone() as no_std_tool::sync::Arc<dyn crate::core::qsbr::RegistryCore>;
+
         if !block.registered {
             crate::core::qsbr::register_node(qsbr_node);
             block.registered = true;
         } else {
             unsafe { (*qsbr_node).active.store(true, Ordering::Release) };
         }
-        
-        TlsHandle { id, qsbr_node, block_ptr, registry: Some(registry_arc) }
+
+        TlsHandle {
+            id,
+            qsbr_node,
+            block_ptr,
+            registry: Some(registry_arc),
+        }
     }
 
     pub fn deregister_thread(&self, handle: &TlsHandle) {

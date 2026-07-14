@@ -1,6 +1,6 @@
-use ::core::sync::atomic::Ordering;
-use super::qsbr;
 use super::arena::{self, Arena};
+use super::qsbr;
+use ::core::sync::atomic::Ordering;
 
 /// A Slot in the CacheTier.
 #[repr(align(64))]
@@ -47,13 +47,22 @@ impl<K, V> Slot<K, V> {
     }
 
     /// Insert a new node into the slot, retiring the old one safely using QSBR.
-    pub fn insert<const N: usize>(&self, arena: &Arena<K, V, N>, hash: usize, key: K, value: V, node: *mut crate::core::qsbr::ThreadStateNode) {
+    pub fn insert<const N: usize>(
+        &self,
+        arena: &Arena<K, V, N>,
+        hash: usize,
+        key: K,
+        value: V,
+        node: *mut crate::core::qsbr::ThreadStateNode,
+    ) {
         let new_idx = arena.alloc(key, value, node).expect("Arena OOM!");
         self.hash.store(hash, Ordering::Relaxed);
         self.hits.store(8, Ordering::Relaxed);
         let old_idx = self.node_idx.swap(new_idx as u32, Ordering::Release);
         if old_idx != arena::NULL_INDEX {
-            crate::core::qsbr::retire(old_idx as usize, node, |idx| unsafe { arena.free(idx as usize) });
+            crate::core::qsbr::retire(old_idx as usize, node, |idx| unsafe {
+                arena.free(idx as usize)
+            });
         }
     }
 }
@@ -64,7 +73,6 @@ impl<K, V> Default for Slot<K, V> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,7 +81,8 @@ mod tests {
     fn test_slot_default() {
         let slot: Slot<u64, u64> = Slot::default();
         let node = {
-            static mut TEST_NODE: crate::core::qsbr::ThreadStateNode = crate::core::qsbr::ThreadStateNode::new();
+            static mut TEST_NODE: crate::core::qsbr::ThreadStateNode =
+                crate::core::qsbr::ThreadStateNode::new();
             let n = &raw mut TEST_NODE as *mut _;
             crate::core::qsbr::register_node(n);
             n
@@ -86,20 +95,21 @@ mod tests {
         let arena = crate::core::arena::Arena::<u64, u64, 4>::new();
         let slot = Slot::<u64, u64>::default();
         let node = {
-            static mut TEST_NODE: crate::core::qsbr::ThreadStateNode = crate::core::qsbr::ThreadStateNode::new();
+            static mut TEST_NODE: crate::core::qsbr::ThreadStateNode =
+                crate::core::qsbr::ThreadStateNode::new();
             let n = &raw mut TEST_NODE as *mut _;
             crate::core::qsbr::register_node(n);
             n
         };
         let guard = crate::core::qsbr::pin(node);
-        
+
         slot.insert(&arena, 100, 10, 20, node);
         assert_eq!(slot.read(&guard).0, 100);
-        
+
         let (old_hits, new_hits) = slot.record_hit(100);
         assert_eq!(old_hits, 8);
         assert_eq!(new_hits, 108);
-        
+
         // Re-insert to trigger retirement of old_idx
         slot.insert(&arena, 200, 30, 40, node);
         assert_eq!(slot.read(&guard).0, 200);

@@ -8,7 +8,10 @@ use core::mem::MaybeUninit;
 ///
 /// Cache-line aligned to prevent false sharing between worker slots.
 #[cfg_attr(any(target_arch = "aarch64", target_arch = "arm"), repr(C, align(128)))]
-#[cfg_attr(not(any(target_arch = "aarch64", target_arch = "arm")), repr(C, align(64)))]
+#[cfg_attr(
+    not(any(target_arch = "aarch64", target_arch = "arm")),
+    repr(C, align(64))
+)]
 pub struct BatchBuf<K, V> {
     items: [MaybeUninit<(K, V, u64)>; 32],
     len: usize,
@@ -76,7 +79,10 @@ unsafe impl<K: Sync, V: Sync> Sync for BatchBuf<K, V> {}
 /// any given slot, eliminating the need for any synchronisation primitive on
 /// the insert hot-path (zero atomics, zero locks, pure memory write).
 #[cfg_attr(any(target_arch = "aarch64", target_arch = "arm"), repr(C, align(128)))]
-#[cfg_attr(not(any(target_arch = "aarch64", target_arch = "arm")), repr(C, align(64)))]
+#[cfg_attr(
+    not(any(target_arch = "aarch64", target_arch = "arm")),
+    repr(C, align(64))
+)]
 pub struct WorkerSlot<K, V> {
     inner: UnsafeCell<BatchBuf<K, V>>,
 }

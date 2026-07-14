@@ -71,7 +71,13 @@ where
     }
 
     #[inline(always)]
-    pub fn get_t0<'g>(&self, hash: usize, key: &K, _guard: &'g Guard, _op_count: u32) -> Option<&'g V> {
+    pub fn get_t0<'g>(
+        &self,
+        hash: usize,
+        key: &K,
+        _guard: &'g Guard,
+        _op_count: u32,
+    ) -> Option<&'g V> {
         let node_idx = self.t0.get_slot_idx(hash);
         if node_idx != crate::core::arena::NULL_INDEX {
             let node = unsafe { self.arena.get(node_idx as usize) };
@@ -83,7 +89,13 @@ where
     }
 
     #[inline(always)]
-    pub fn get_t1<'g>(&self, hash: usize, key: &K, _guard: &'g Guard, _op_count: u32) -> Option<&'g V> {
+    pub fn get_t1<'g>(
+        &self,
+        hash: usize,
+        key: &K,
+        _guard: &'g Guard,
+        _op_count: u32,
+    ) -> Option<&'g V> {
         let node_idx = self.t1.get_slot_idx(hash);
         if node_idx != crate::core::arena::NULL_INDEX {
             let node = unsafe { self.arena.get(node_idx as usize) };
@@ -96,7 +108,13 @@ where
 
     #[inline(always)]
     #[allow(clippy::type_complexity)]
-    pub fn get_t2<'g>(&'g self, hash: usize, key: &K, guard: &'g crate::core::qsbr::Guard, op_count: u32) -> Option<(&'g V, u8, Option<(K, V)>)> {
+    pub fn get_t2<'g>(
+        &'g self,
+        hash: usize,
+        key: &K,
+        guard: &'g crate::core::qsbr::Guard,
+        op_count: u32,
+    ) -> Option<(&'g V, u8, Option<(K, V)>)> {
         let (_t0_thresh, t1_thresh, _, _) = self.blackjack.load_params();
 
         // T0
@@ -116,18 +134,26 @@ where
         // T2
         if let Some(slot) = self.t2.get_slot(&self.arena, hash, key, guard) {
             let (old_hits, new_hits) = slot.record_hit(op_count);
-            let hint = slot.prefetch_hint.load(::core::sync::atomic::Ordering::Relaxed);
+            let hint = slot
+                .prefetch_hint
+                .load(::core::sync::atomic::Ordering::Relaxed);
             let hint_kv = if hint != 0 {
                 self.t2.fetch_hint(hint, &self.arena, guard)
             } else {
                 None
             };
-            
+
             let node = unsafe { self.arena.get(slot.read(guard).1 as usize) };
             if old_hits < t1_thresh && new_hits >= t1_thresh {
                 // Promote to T1
                 unsafe {
-                    self.t1.insert_promote(&self.arena, hash, key.clone(), node.value.clone(), guard.node());
+                    self.t1.insert_promote(
+                        &self.arena,
+                        hash,
+                        key.clone(),
+                        node.value.clone(),
+                        guard.node(),
+                    );
                 }
             }
             return Some((unsafe { &*(&node.value as *const V) }, 2, hint_kv));
@@ -137,7 +163,12 @@ where
 
     #[inline(never)]
     #[allow(clippy::type_complexity)]
-    pub fn get<'g>(&'g self, key: &K, guard: &'g Guard, op_count: u32) -> Option<(&'g V, u8, Option<(K, V)>)> {
+    pub fn get<'g>(
+        &'g self,
+        key: &K,
+        guard: &'g Guard,
+        op_count: u32,
+    ) -> Option<(&'g V, u8, Option<(K, V)>)> {
         #[repr(align(64))]
         struct CachePadded;
         let _pad = CachePadded;
@@ -145,13 +176,12 @@ where
         mod core {
             pub mod intrinsics {
                 pub use crate::utils::likely;
-                
             }
         }
 
         let hash = self.hash_key(key);
         let res = self.get_t2(hash, key, guard, op_count);
-        
+
         if core::intrinsics::likely(res.is_some()) {
             return res;
         }
@@ -195,7 +225,9 @@ where
     /// by a Mutex to avoid data races on the single-consumer QSBR garbage queues.
     pub fn sync_reclaim(&self) {
         crate::core::qsbr::daemon_reclaim(|batch| {
-            if batch.is_empty() { return; }
+            if batch.is_empty() {
+                return;
+            }
             unsafe {
                 for i in 0..batch.len() {
                     let idx = batch[i];
@@ -230,7 +262,8 @@ where
         for i in 0..8 {
             let slot = unsafe { set.get_unchecked(i) };
             if slot.hash.load(::core::sync::atomic::Ordering::Relaxed) == hash {
-                slot.prefetch_hint.store(next_hash, ::core::sync::atomic::Ordering::Relaxed);
+                slot.prefetch_hint
+                    .store(next_hash, ::core::sync::atomic::Ordering::Relaxed);
                 break;
             }
         }
@@ -272,7 +305,15 @@ mod tests {
 
     #[test]
     fn test_comprehensive_cache_flow() {
-        let core = DualCacheCore::<u64, u64, crate::core::config::DefaultExponentialPolicy, 8, 8, 8, 24>::default();
+        let core = DualCacheCore::<
+            u64,
+            u64,
+            crate::core::config::DefaultExponentialPolicy,
+            8,
+            8,
+            8,
+            24,
+        >::default();
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
         let thread_node = {
             let node = &raw mut TEST_NODE as *mut _;
@@ -323,13 +364,15 @@ mod tests {
 
         let hash1 = core.hash_key(&1000);
         unsafe {
-            core.t1.insert_promote(&core.arena, hash1, 1000, 2000, thread_node);
+            core.t1
+                .insert_promote(&core.arena, hash1, 1000, 2000, thread_node);
         }
         assert_eq!(core.get(&1000, &guard, 0), Some((&2000, 1, None)));
 
         let hash0 = core.hash_key(&3000);
         unsafe {
-            core.t0.insert_promote(&core.arena, hash0, 3000, 4000, thread_node);
+            core.t0
+                .insert_promote(&core.arena, hash0, 3000, 4000, thread_node);
         }
         assert_eq!(core.get(&3000, &guard, 0), Some((&4000, 0, None)));
 
