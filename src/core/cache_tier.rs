@@ -13,6 +13,7 @@ pub struct CacheTier<
     const WAYS: usize = 8,
 > {
     slots: [Slot<K, V>; CAPACITY],
+    tags: no_std_tool::collections::Box<[::core::sync::atomic::AtomicU8]>,
     policy: P,
 }
 
@@ -21,15 +22,21 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
 {
     /// Create a new `CacheTier`.
     #[must_use]
-    pub const fn new(policy: P) -> Self {
+    pub fn new(policy: P) -> Self {
         assert!(CAPACITY > 0, "CAPACITY must be greater than 0");
         assert!(
             CAPACITY.is_multiple_of(WAYS),
             "CAPACITY must be a multiple of WAYS"
         );
 
+        let mut tags = no_std_tool::collections::AllocVec::with_capacity(CAPACITY);
+        for _ in 0..CAPACITY {
+            tags.push(::core::sync::atomic::AtomicU8::new(0));
+        }
+
         Self {
             slots: [const { Slot::new() }; CAPACITY],
+            tags: tags.into_boxed_slice(),
             policy,
         }
     }
@@ -78,13 +85,33 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
     where
         K: PartialEq,
     {
+        let num_sets = CAPACITY / WAYS;
+        let index = hash % num_sets;
+        let start = index * WAYS;
+        
+        let expected_tag = ((hash >> 16) & 255) as u8;
+        let mut match_mask = 0u8;
+        
+        for i in 0..WAYS {
+            let tag = unsafe { self.tags.get_unchecked(start + i) }.load(::core::sync::atomic::Ordering::Relaxed);
+            if tag == expected_tag {
+                match_mask |= 1 << i;
+            }
+        }
+        
+        if match_mask == 0 {
+            return None;
+        }
+
         let set = self.get_set(hash);
-        for slot in set {
-            let (slot_hash, idx) = slot.read(guard);
-            if slot_hash == hash && idx != arena::NULL_INDEX {
-                let node = unsafe { arena.get(idx as usize) };
-                if node.key == *key {
-                    return Some(slot);
+        for (i, slot) in set.iter().enumerate() {
+            if (match_mask & (1 << i)) != 0 {
+                let (slot_hash, idx) = slot.read(guard);
+                if slot_hash == hash && idx != arena::NULL_INDEX {
+                    let node = unsafe { arena.get(idx as usize) };
+                    if node.key == *key {
+                        return Some(slot);
+                    }
                 }
             }
         }
@@ -102,19 +129,24 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
     ) where
         K: PartialEq,
     {
+        let num_sets = CAPACITY / WAYS;
+        let index = hash % num_sets;
+        let start = index * WAYS;
         let set = self.get_set(hash);
         let guard = qsbr::pin(node);
 
         // 1. Try to find an empty slot or overwrite the exact matching key
-        for slot in set {
+        for (i, slot) in set.iter().enumerate() {
             let (slot_hash, idx) = slot.read(&guard);
             if idx == arena::NULL_INDEX {
+                unsafe { self.tags.get_unchecked(start + i) }.store(((hash >> 16) & 255) as u8, ::core::sync::atomic::Ordering::Relaxed);
                 slot.insert(arena, hash, key, value, node);
                 return;
             }
             if slot_hash == hash {
                 let node_data = unsafe { arena.get(idx as usize) };
                 if node_data.key == key {
+                    unsafe { self.tags.get_unchecked(start + i) }.store(((hash >> 16) & 255) as u8, ::core::sync::atomic::Ordering::Relaxed);
                     slot.insert(arena, hash, key, value, node);
                     return;
                 }
@@ -122,9 +154,10 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         }
 
         // 2. Use EvictionPolicy to find victim and perform decay
-        let victim_slot = self.policy.find_victim(set, hash);
+        let (victim_idx, victim_slot) = self.policy.find_victim_idx(set, hash);
 
         // 3. Evict the victim
+        unsafe { self.tags.get_unchecked(start + victim_idx) }.store(((hash >> 16) & 255) as u8, ::core::sync::atomic::Ordering::Relaxed);
         victim_slot.insert(arena, hash, key, value, node);
     }
 }
@@ -141,14 +174,19 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> Default
 /// It uses exactly 1 atomic load for maximum throughput.
 #[repr(C, align(64))]
 pub struct FastTier<const CAPACITY: usize> {
-    slots: [::core::sync::atomic::AtomicU32; CAPACITY],
+    slots: [AtomicU64; CAPACITY],
 }
+
+pub const NULL_PACKED: u64 = u64::MAX;
+pub const IDX_MASK: u64 = 0x0000_0000_FFFF_FFFF;
 
 impl<const CAPACITY: usize> Default for FastTier<CAPACITY> {
     fn default() -> Self {
         Self::new()
     }
 }
+
+use core::sync::atomic::AtomicU64;
 
 impl<const CAPACITY: usize> FastTier<CAPACITY> {
     pub const fn new() -> Self {
@@ -157,22 +195,48 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
             "CAPACITY must be a power of two"
         );
         let slots =
-            [const { ::core::sync::atomic::AtomicU32::new(super::arena::NULL_INDEX) }; CAPACITY];
+            [const { AtomicU64::new(NULL_PACKED) }; CAPACITY];
         Self { slots }
     }
 
+    /// Retrieve the slot index from the fast tier.
     #[inline(always)]
     pub fn get_slot_idx(&self, hash: usize) -> u32 {
         let mask = CAPACITY - 1;
         let idx = hash & mask;
-        self.slots[idx].load(::core::sync::atomic::Ordering::Acquire)
+        let val = self.slots[idx].load(::core::sync::atomic::Ordering::Relaxed);
+        
+        let node_idx = val & IDX_MASK;
+        let tag = val & 0xFFFFFFFF00000000;
+        let expected_tag = (hash as u64) & 0xFFFFFFFF00000000;
+        
+        if node_idx == NULL_PACKED || tag != expected_tag {
+            super::arena::NULL_INDEX
+        } else {
+            node_idx as u32
+        }
     }
 
     #[inline(always)]
     pub fn insert_idx(&self, hash: usize, node_idx: u32) -> u32 {
         let mask = CAPACITY - 1;
         let idx = hash & mask;
-        self.slots[idx].swap(node_idx, ::core::sync::atomic::Ordering::Release)
+        
+        let new_val = if node_idx == super::arena::NULL_INDEX {
+            NULL_PACKED
+        } else {
+            let tag = (hash as u64) & 0xFFFFFFFF00000000;
+            tag | (node_idx as u64)
+        };
+        
+        let old_val = self.slots[idx].swap(new_val, ::core::sync::atomic::Ordering::Release);
+        
+        let old_idx = old_val & IDX_MASK;
+        if old_idx == NULL_PACKED {
+            super::arena::NULL_INDEX
+        } else {
+            old_idx as u32
+        }
     }
 
     /// # Safety
@@ -185,7 +249,9 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
         key: K,
         value: V,
         node: *mut super::qsbr::ThreadStateNode,
-    ) {
+    ) where
+        K: PartialEq,
+    {
         if let Some(new_idx) = arena.alloc(key, value, node) {
             let old_idx = self.insert_idx(hash, new_idx as u32);
             if old_idx != super::arena::NULL_INDEX {
@@ -202,7 +268,7 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
     pub fn clear(&self) {
         for slot in self.slots.iter() {
             slot.store(
-                super::arena::NULL_INDEX,
+                NULL_PACKED,
                 ::core::sync::atomic::Ordering::Relaxed,
             );
         }
@@ -254,5 +320,26 @@ mod tests {
             CacheTier::default();
         let set = tier.get_set(0);
         assert_eq!(set.len(), 8);
+    }
+
+    #[test]
+    fn test_fast_tier_logic() {
+        let t0: FastTier<64> = FastTier::new();
+        let hash: usize = 0x123456789ABCDEF0;
+        
+        let old_idx = t0.insert_idx(hash, 42);
+        assert_eq!(old_idx, super::super::arena::NULL_INDEX);
+        
+        let out_idx = t0.get_slot_idx(hash);
+        assert_eq!(out_idx, 42);
+        
+        // Test miss due to tag mismatch
+        let bad_hash: usize = 0x876543219ABCDEF0; // Top 8 bits differ
+        let out_miss = t0.get_slot_idx(bad_hash);
+        assert_eq!(out_miss, super::super::arena::NULL_INDEX);
+
+        // Test clear
+        t0.clear();
+        assert_eq!(t0.get_slot_idx(hash), super::super::arena::NULL_INDEX);
     }
 }

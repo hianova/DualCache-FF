@@ -17,7 +17,7 @@ pub struct StaticDualCache<
     const TOTAL_CAP: usize,
 > {
     core: DualCacheCore<K, V, P, T0_CAP, T1_CAP, T2_CAP, TOTAL_CAP>,
-    tls_registry: crate::component::tls::TlsRegistry<K, V, 4096, 128>,
+    tls_registry: crate::component::tls::TlsRegistry<K, V, 65536, 128>,
     reclaim_lock: SpinMutex<()>,
     insert_count: AtomicUsize,
 }
@@ -73,7 +73,7 @@ where
                 .qsbr_node
         });
 
-        self.core.put(key, value, node_ptr);
+        self.core.put(key, value, node_ptr, 1);
 
         let count = self.insert_count.fetch_add(1, Ordering::Relaxed);
 
@@ -116,7 +116,7 @@ where
     K: Clone + Eq + Hash,
     V: Clone,
 {
-    pub const fn new(eviction: P::Evict) -> Self {
+    pub fn new(eviction: P::Evict) -> Self {
         Self {
             inner: SpinMutex::new((DualCacheCore::new(eviction), ThreadStateNode::new(), false)),
             insert_count: AtomicUsize::new(0),
@@ -160,7 +160,7 @@ where
 
         let node_ptr = qsbr_node as *mut ThreadStateNode;
 
-        engine.put(key, value, node_ptr);
+        engine.put(key, value, node_ptr, 1);
 
         let count = self.insert_count.fetch_add(1, Ordering::Relaxed);
 

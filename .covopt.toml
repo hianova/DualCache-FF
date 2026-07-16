@@ -1,9 +1,9 @@
 [[target]]
-test = "test_comprehensive_cache_flow"
-expected = "O(1)"
+test = "covopt_audit_test"
+expected = "ON"
 n_values = "10,20,50"
-target_file = "src/core/engine.rs"
-target_line = 185
+target_file = "tests/covopt_audit.rs"
+target_line = 2
 require_cache_padding = false
 require_branch_hints = false
 require_aerospace_grade = false

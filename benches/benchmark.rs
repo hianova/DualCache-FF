@@ -1,4 +1,5 @@
 #![allow(long_running_const_eval)]
+use std::vec::Vec;
 use crossbeam_utils::thread;
 use dualcache_ff::DualCacheFF;
 use dualcache_ff::core::static_cache::StaticDualCache;
@@ -33,17 +34,17 @@ const TOTAL_OPS: usize = 40_000_000;
 const OPS_PER_THREAD: usize = TOTAL_OPS / THREAD_COUNT;
 const DATASET_SIZE: u64 = 10_000_000;
 
-const TOTAL_CAP: usize = 2_000_000;
-const TLS_CAP: usize = 4096;
+const TOTAL_CAP: usize = 1_572_864;
+const TLS_CAP: usize = 65536;
 
-dualcache_ff::define_dualcache!(BenchCache, u64, u64, T0 = 16_384, TOTAL = 2_000_000);
+dualcache_ff::define_dualcache!(BenchCache, u64, u64, T0 = 16_384, TOTAL = 1_572_864);
 dualcache_ff::define_static_dualcache!(
     StaticBenchCache,
     u64,
     u64,
     dualcache_ff::core::config::DefaultExponentialPolicy,
     T0 = 16_384,
-    TOTAL = 2_000_000
+    TOTAL = 1_572_864
 );
 
 use no_std_tool::lazy_static;
@@ -351,7 +352,7 @@ fn main() {
     println!();
 
     std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
+        .stack_size(1024 * 1024 * 1024)
         .spawn(move || {
             let wait_free_configs = vec![
                 (

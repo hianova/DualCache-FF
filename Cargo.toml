@@ -17,10 +17,11 @@ exclude = ["*.DS_Store", "/target", ".covopt/", ".agents/"]
 default = ["std", "daemon"]
 std = ["ahash/std"]
 daemon = ["std"]
+covopt = []
 
 [dependencies]
-ahash = { version = "0.8", default-features = false, features = ["compile-time-rng"] }
-no_std_tool = { path = "../no_std_tool", version = "1.1.0" }
+ahash = { version = "0.8", features = ["compile-time-rng"] }
+no_std_tool = { path = "../../core/no_std_tool", version = "1.1.0" }
 
 [dev-dependencies]
 crossbeam-utils = "0.8.21"
@@ -39,6 +40,10 @@ harness = false
 name = "extreme_optimization"
 harness = false
 
+[[bench]]
+name = "covopt_harness"
+harness = false
+
 [profile.bench]
 debug = true
 
@@ -51,3 +56,4 @@ warnings = "deny"
 
 [lints.clippy]
 all = "deny"
+

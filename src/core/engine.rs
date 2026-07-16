@@ -43,17 +43,17 @@ where
     K: Clone + Eq + Hash,
     V: Clone,
 {
-    pub const fn new(eviction: P::Evict) -> Self {
+    pub fn new(eviction: P::Evict) -> Self {
         Self {
             arena: Arena::new(),
             t0: FastTier::new(),
             t1: FastTier::new(),
             t2: CacheTier::new(eviction),
             blackjack: crate::core::blackjack::PackedBlackjack::new(
-                P::T0_THRESHOLD,
-                P::T1_THRESHOLD,
-                P::T2_THRESHOLD,
-                256,
+                crate::covopt_param!("T0_THRESH", P::T0_THRESHOLD, 1..1000),
+                crate::covopt_param!("T1_THRESH", P::T1_THRESHOLD, 1..100),
+                crate::covopt_param!("T2_THRESH", P::T2_THRESHOLD, 1..50),
+                crate::covopt_param!("WARMUP_THRESH", 256, 1..2000),
             ),
             hash_builder: ahash::RandomState::with_seeds(
                 0x1234567890ABCDEF,
@@ -209,11 +209,9 @@ where
     }
 
     #[inline(never)]
-    pub fn put(&self, key: K, value: V, node: *mut crate::core::qsbr::ThreadStateNode) {
-        if crate::utils::likely(true) {
-            let hash = self.hash_key(&key);
-            self.t2.insert(&self.arena, hash, key, value, node);
-        }
+    pub fn put(&self, key: K, value: V, node: *mut crate::core::qsbr::ThreadStateNode, _op_count: u32) {
+        let hash = self.hash_key(&key);
+        self.t2.insert(&self.arena, hash, key, value, node);
     }
 
     pub fn try_reclaim(&self, _node: *mut crate::core::qsbr::ThreadStateNode) {
@@ -322,7 +320,7 @@ mod tests {
         };
         let guard = qsbr::pin(thread_node);
 
-        core.put(100, 200, thread_node);
+        core.put(100, 200, thread_node, 0);
         core.put_t1(300, 400, thread_node);
         assert_eq!(core.get(&300, &guard, 0), Some((&400, 1, None)));
 
@@ -343,7 +341,7 @@ mod tests {
 
         assert_eq!(core.get(&99, &guard, 0), None);
 
-        core.put(300, 400, thread_node);
+        core.put(300, 400, thread_node, 0);
         core.record_remote_hit(core.hash_key(&300), 10);
         assert_eq!(core.get(&300, &guard, 0), Some((&400, 2, None)));
 

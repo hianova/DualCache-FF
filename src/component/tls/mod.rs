@@ -34,11 +34,11 @@ pub struct TlsEntry<K, V> {
 }
 
 pub struct TlsCache<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
-    slots: [Option<TlsEntry<K, V>>; TLS_CAP],
-    capacity: usize,
+    pub slots: no_std_tool::collections::Box<[Option<TlsEntry<K, V>>]>,
+    pub capacity: usize,
     pub promote_threshold: u8,
-    probation_filter: [u8; 65536],
-    probation_cursor: usize,
+    pub probation_filter: no_std_tool::collections::Box<[u8; 16384]>,
+    pub probation_cursor: usize,
 }
 
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Default
@@ -52,18 +52,22 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
     TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        let mut slots_vec = no_std_tool::collections::AllocVec::with_capacity(TLS_CAP);
+        for _ in 0..TLS_CAP {
+            slots_vec.push(None);
+        }
         Self {
-            slots: [const { None }; TLS_CAP],
+            slots: slots_vec.into_boxed_slice(),
             capacity: TLS_CAP,
-            promote_threshold: 4,
-            probation_filter: [0; 65536],
+            promote_threshold: crate::covopt_param!("T0_PROMOTE_THRESH", 2u8, 1..10),
+            probation_filter: no_std_tool::collections::Box::new([0; 16384]),
             probation_cursor: 0,
         }
     }
 
     #[inline(always)]
-    pub fn get(&mut self, hash: usize, key: &K) -> (Option<&V>, bool, u8) {
+    pub fn get(&mut self, hash: usize, key: &K) -> (Option<V>, bool, u8) {
         let idx = hash & (self.capacity - 1);
         if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
             && entry.hash == hash
@@ -73,39 +77,19 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
             entry.hits = entry.hits.saturating_add(1);
 
             let promote = old_hits < self.promote_threshold && entry.hits >= self.promote_threshold;
-
-            let sync_weight = if entry.hits > self.promote_threshold && (entry.hits & 15) == 0 {
-                16
-            } else {
-                0
-            };
-
-            return (Some(&entry.value), promote, sync_weight);
+            return (Some(entry.value.clone()), promote, entry.hits);
         }
         (None, false, 0)
     }
 
     #[inline(always)]
-    pub fn insert(&mut self, hash: usize, key: K, value: V) -> bool {
-        let idx = hash & (self.capacity - 1);
-        if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
-            && entry.hash == hash
-            && entry.key == key
-        {
-            entry.value = value;
-            return true;
-        }
+    pub fn insert(&mut self, hash: usize, key: K, value: V) -> u8 {
+        let filter_idx = hash & 16383;
 
-        let filter_idx = hash & 4095;
-
-        // Slower Probation Filter: clear 1 element every 16 inserts
-        self.probation_cursor = (self.probation_cursor + 1) & 65535;
-        if (self.probation_cursor & 15) == 0 {
-            unsafe {
-                *self
-                    .probation_filter
-                    .get_unchecked_mut(self.probation_cursor >> 4) = 0;
-            }
+        self.probation_cursor = self.probation_cursor.wrapping_add(1);
+        let decay_idx = self.probation_cursor & 16383;
+        unsafe {
+            *self.probation_filter.get_unchecked_mut(decay_idx) = 0;
         }
 
         let count = unsafe { *self.probation_filter.get_unchecked(filter_idx) }.saturating_add(1);
@@ -113,8 +97,17 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
             *self.probation_filter.get_unchecked_mut(filter_idx) = count;
         }
 
-        if count < 2 {
-            return false;
+        if count < self.promote_threshold {
+            return 0;
+        }
+
+        let idx = hash & (self.capacity - 1);
+        if let Some(entry) = unsafe { self.slots.get_unchecked_mut(idx) }
+            && entry.hash == hash
+            && entry.key == key
+        {
+            entry.value = value;
+            return 2;
         }
 
         unsafe {
@@ -125,7 +118,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
                 hits: 0,
             });
         }
-        true
+        1
     }
 
     #[inline(always)]
@@ -157,6 +150,7 @@ use crate::component::daemon::DaemonMessage;
 
 /// A block of TLS data representing the state for a single thread.
 pub struct TlsBlock<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
+    pub id: usize,
     pub cache: TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>,
     #[cfg(feature = "std")]
     pub tx: Option<
@@ -190,8 +184,9 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
     TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
+            id: 0,
             cache: TlsCache::new(),
             #[cfg(feature = "std")]
             tx: None,

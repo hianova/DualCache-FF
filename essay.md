@@ -12,17 +12,20 @@ This essay serves as a comprehensive "know-how" repository and survival guide fo
 
 To bypass the classic bottlenecks of concurrent caching, DualCache-FF implements a meticulously ordered multi-tier hierarchy:
 
-1. **T0 (Global Ultra-Fast Tier)**: A tiny, direct-mapped atomic array (Wait-Free). Fits entirely in CPU L1 hardware cache.
-2. **T1 (Global Fast Tier)**: A slightly larger direct-mapped atomic array (Wait-Free). Fits in CPU L2/L3 cache.
-3. **TLS (Thread-Local Storage L1 Cache)**: A lock-free, thread-local Hash Table.
+1. **TLS (Thread-Local Storage L1 Cache)**: A zero-atomic, thread-local Array of Structs (AoS). Designed to fit natively in the CPU's L1 data cache.
+2. **T0 (Global Ultra-Fast Tier)**: A tiny, direct-mapped atomic array (Wait-Free). Functions as a shared L2.
+3. **T1 (Global Fast Tier)**: A slightly larger direct-mapped atomic array (Wait-Free). Functions as a shared L3.
 4. **T2 (Eviction Tier)**: The largest global tier, handling LRU/LFU eviction policies and background garbage collection.
 
-### The Micro-Architectural Insight: Why T0/T1 before TLS?
-A common intuition in multi-threaded programming is to check Thread-Local Storage (TLS) first to avoid global memory access. However, DualCache-FF deliberately checks the global `T0` and `T1` **before** the local `TLS`.
+### The Micro-Architectural Insight: Why TLS before T0/T1?
+A common pitfall in high-performance caching (which even our earlier designs fell victim to) is assuming that a small global wait-free array (`T0`) will be faster than a thread-local structure. Previously, `T0` was checked before `TLS` under the assumption that it would map perfectly to L1 hardware cache.
 
-**Why?** 
-TLS relies on a Hash Table which, despite being local, requires resolving hash collisions and probing memory. Conversely, `T0` and `T1` are implemented as direct-mapped arrays (`array[hash & mask]`). For the absolute hottest keys (the head of a Zipfian distribution), the `T0`/`T1` arrays are so small that they permanently reside in the physical **CPU L1/L2 Hardware Cache**. A direct index into `T0` requires exactly **one memory load** instruction and zero branch jumps. 
-By placing `T0 -> T1` before `TLS`, the hottest 1% of data bypasses software-level Hash Table logic entirely, mapping software caching directly onto hardware caching semantics. This exact micro-architectural swap elevated the cache throughput from ~20M ops/s to an astonishing **>100M ops/s** for highly skewed workloads.
+**The Reality of Cache Coherency (MESI):** 
+While `T0` is small enough to fit in L1, it is a *shared global resource*. Under heavy concurrent Zipfian load, multiple CPU cores constantly read and write to `T0`. This triggers the MESI cache coherency protocol, causing **Cache Line Bouncing (False Sharing / Invalidation)**. The `T0` cache lines are repeatedly invalidated in local L1 caches, forcing expensive L2/L3 cross-core traffic.
+
+By placing `TLS` **before** `T0 -> T1`, the hottest data is strictly isolated within the executing thread's physical L1 cache without ANY atomic instructions or cross-core synchronization. Furthermore, the `TLS` tier was refactored from a collision-resolving Hash Table into a purely flattened **Direct-Mapped Array** (AoS: `Option<TlsEntry>`), providing absolute O(1) memory probing. 
+
+This single micro-architectural swap (TLS-First) completely bypassed the CPU atomic bottleneck, elevating the cache throughput from ~20M ops/s to an astonishing **>104M ops/s** for highly skewed workloads.
 
 ## 3. Dimension 1: Hit Rate — The Capacity and Thrashing Battle
 
@@ -45,8 +48,8 @@ Throughput (ops/s) dictates how many requests the cache can handle concurrently.
 Relying on Spin-Locks or Mutexes causes massive CPU cache line invalidation under high contention. DualCache-FF circumvents this by utilizing **Wait-Free Data Structures** (`FastTier`) for its hot paths. Wait-free means every thread is guaranteed to complete its operation in a bounded number of steps.
 
 ### The Miss-Path Penalty (Uniform vs. Zipfian)
-While the `T0 -> T1 -> TLS -> T2` order maximizes throughput for skewed (Zipfian) data, it introduces a **Miss-Path Penalty** for Uniform distributions. 
-In a Uniform distribution, keys are rarely hot. A request will likely miss T0, miss T1, miss TLS, and finally fall back to T2. This sequential probing forces the CPU to execute multiple failed memory lookups, polluting the instruction pipeline. This micro-structural reality explains why Zipfian throughput can hit >100M ops/s, while Uniform throughput drops significantly (e.g., ~4M ops/s). The length of the fallback chain dictates the throughput floor.
+While the `TLS -> T0 -> T1 -> T2` order maximizes throughput for skewed (Zipfian) data by trapping hot keys in the thread-local L1, it introduces a **Miss-Path Penalty** for Uniform distributions. 
+In a Uniform distribution, keys are rarely hot. A request will likely miss TLS, miss T0, miss T1, and finally fall back to T2. This sequential probing forces the CPU to execute multiple failed memory lookups, polluting the instruction pipeline. This micro-structural reality explains why Zipfian throughput can hit >104M ops/s, while Uniform throughput drops significantly. The length of the fallback chain dictates the throughput floor.
 
 ### 64x Batch Allocation Mechanism (Amortization)
 When a cache miss occurs, the worker thread must allocate a new node from the global Arena. Traditionally, threads compete for the `free_head` via Compare-And-Swap (CAS). Under a load of millions of misses per second, this global CAS triggers a **Cache Coherence (MESI) Storm**, as the L1/L2 cache lines containing `free_head` are constantly invalidated across CPU cores.
@@ -83,7 +86,7 @@ In a bare-metal environment, there is no OS memory allocator (`malloc`/`free`). 
 ## 7. Conclusion
 
 DualCache-FF is not merely a key-value store; it is a meticulously engineered symphony of micro-architectural decisions. 
-- **Throughput** is maximized by ordering Wait-Free arrays (`T0`/`T1`) *before* local hash maps (`TLS`), mapping software directly to CPU hardware caching.
+- **Throughput** is maximized by routing the absolute hottest keys into the Thread-Local Array (`TLS`) *before* global Wait-Free arrays (`T0`/`T1`), completely bypassing the MESI cross-core invalidation bottleneck.
 - **Hit Rate** is protected by strict, high-threshold promotion logic that prevents T0 hardware-cache thrashing.
 - **Latency** is tamed by zero-branch pathways, 64-byte cache-line padding, and flawless QSBR epoch-based memory reclamation.
 
@@ -131,3 +134,18 @@ To resolve this, we introduced declarative inference macros (`define_dualcache!`
 This elegant solution achieves two opposing goals simultaneously:
 1. It perfectly adheres to the architectural "Golden Ratio" of hot vs. cold storage for optimal Hit Rates.
 2. It entirely bypasses the need for unstable `#![feature(generic_const_exprs)]` or dynamic heap allocations (`Box`/`Vec`), ensuring that the cache remains mathematically robust, purely lock-free, and fully compliant with aerospace-grade static memory constraints.
+
+## 10. Case Study 3: The Illusion of Pure Thread-Local Caching (Why T0 Exists)
+
+Given that `TLS` completely circumvents the CPU's atomic cache-bouncing bottleneck, a logical hypothesis arises: *Why not remove the global `T0` tier entirely and let each thread purely rely on its private `TLS` L1 cache?* 
+
+In a recent extreme-optimization experiment, we disabled `T0` entirely, routing all `TLS` misses directly into `T1`/`T2`. Despite freeing the system from all `T0` atomic contention, **the throughput crashed spectacularly from 104M ops/s to 26.7M ops/s.**
+
+### The Global Broadcast Channel
+This experiment uncovered the true micro-architectural purpose of `T0`. While it suffers from MESI cross-core invalidations, `T0` is so compact that it effectively resides entirely within the shared **L2 CPU Cache**. It acts as an ultra-high-speed **Global Broadcast Channel**.
+
+When Thread A discovers a newly trending "hot key" from the massive `T2` tier, it caches it in `TLS_A` and simultaneously pushes it to the global `T0`. A microsecond later, when Thread B, C, and D attempt to access the same key, they experience a `TLS` miss. However, instead of plunging into the massive, sprawling memory space of `T1` or `T2` (which causes heavy L3/DRAM traffic and redundant promotion lock-contention), they instantly intercept the key in `T0` and clone it back into their respective `TLS` arrays.
+
+If `T0` is removed (the "Pure Thread-Local" illusion), every single thread becomes an isolated silo. They must each independently traverse the deep memory tiers to discover and promote the exact same Zipfian hot keys, polluting the instruction pipeline and saturating the memory bus. 
+
+**Conclusion**: `TLS` is the ultimate L1 shield that absorbs 90% of requests with zero overhead. However, `T0` is the vital L2 bridge that prevents isolated threads from redundantly repeating expensive memory lookups. Removing `T0` breaks the cross-core broadcast mechanism and destroys system-wide Zipfian scalability.

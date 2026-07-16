@@ -157,7 +157,7 @@ impl Daemon {
                             if tier == 0 {
                                 core.put_t0(key, value, daemon_node);
                             } else {
-                                core.put(key, value, daemon_node);
+                                core.put(key, value, daemon_node, 1);
                             }
                         }
                         DaemonMessage::SetPollInterval(ms) => {
@@ -189,6 +189,7 @@ impl Daemon {
                             }
                         }
                         core.arena.free_batch(batch[0], batch[batch.len() - 1]);
+                        core.arena.allocated_count.fetch_sub(batch.len(), core::sync::atomic::Ordering::Relaxed);
                     }
                 });
 

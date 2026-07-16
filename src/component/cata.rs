@@ -1,3 +1,4 @@
+use std::string::ToString;
 #[cfg(feature = "std")]
 use crate::DualCacheFF;
 #[cfg(feature = "std")]

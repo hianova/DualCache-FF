@@ -6,11 +6,12 @@ use core::mem::MaybeUninit;
 pub const NULL_INDEX: u32 = u32::MAX;
 
 /// A lock-free static memory pool for Nodes using tagged indices to prevent ABA.
-pub struct Arena<K, V, const N: usize> {
-    nodes: [UnsafeCell<MaybeUninit<Node<K, V>>>; N],
-    next_free: [::core::sync::atomic::AtomicU32; N],
-    free_head: AtomicUsize, // Packed: (tag << 32) | index
-}
+    pub struct Arena<K, V, const N: usize> {
+        nodes: [UnsafeCell<MaybeUninit<Node<K, V>>>; N],
+        next_free: [::core::sync::atomic::AtomicU32; N],
+        free_head: AtomicUsize, // Packed: (tag << 32) | index
+        pub allocated_count: AtomicUsize,
+    }
 
 // Ensure Arena can be shared across threads
 unsafe impl<K: Send, V: Send, const N: usize> Send for Arena<K, V, N> {}
@@ -45,7 +46,17 @@ impl<K, V, const N: usize> Arena<K, V, N> {
             nodes,
             next_free,
             free_head: AtomicUsize::new(0), // tag 0, index 0
+            allocated_count: AtomicUsize::new(0),
         }
+    }
+
+    pub fn capacity(&self) -> usize {
+        N
+    }
+
+    #[inline(always)]
+    pub fn allocated_count(&self) -> usize {
+        self.allocated_count.load(Ordering::Relaxed)
     }
 
     /// Allocates a node from the free list and initializes it.
@@ -53,6 +64,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
     /// # Safety
     /// `node` must be a valid pointer.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(unused_assignments)]
     pub fn alloc(
         &self,
         key: K,
@@ -60,61 +72,39 @@ impl<K, V, const N: usize> Arena<K, V, N> {
         node: *mut crate::core::qsbr::ThreadStateNode,
     ) -> Option<usize> {
         let local_free = unsafe { &mut *(*node).local_free.get() };
+
         if let Some(idx) = local_free.pop() {
             unsafe {
                 (*self.nodes[idx as usize].get()).write(Node { key, value });
             }
+            self.allocated_count.fetch_add(1, Ordering::Relaxed);
             return Some(idx as usize);
         }
 
-        // Batch pop from free_head to amortize CAS contention
-        let mut final_count = 0;
-        let mut final_index = 0;
 
-        let result = self
-            .free_head
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |head| {
-                let index = (head & 0xFFFFFFFF) as u32;
-                if index == NULL_INDEX {
-                    return None; // OOM
-                }
 
-                // Find the 64th node to batch
-                let mut curr = index;
-                let mut count = 1;
-                while count < 64 {
-                    let next = self.next_free[curr as usize].load(Ordering::Relaxed);
-                    if next == NULL_INDEX {
-                        break;
-                    }
-                    curr = next;
-                    count += 1;
-                }
-
-                let next_after_batch = self.next_free[curr as usize].load(Ordering::Relaxed);
-                let tag = head >> 32;
-                let new_head = (tag.wrapping_add(1) << 32) | (next_after_batch as usize);
-
-                final_count = count;
-                final_index = index;
-
-                Some(new_head)
-            });
-
-        match result {
-            Ok(_) => {
-                let mut p = self.next_free[final_index as usize].load(Ordering::Relaxed);
-                for _ in 1..final_count {
-                    let _ = local_free.push(p);
-                    p = self.next_free[p as usize].load(Ordering::Relaxed);
-                }
-
-                unsafe {
-                    (*self.nodes[final_index as usize].get()).write(Node { key, value });
-                }
-                Some(final_index as usize)
+        loop {
+            let head = self.free_head.load(Ordering::Acquire);
+            let index = (head & 0xFFFFFFFF) as u32;
+            if index == NULL_INDEX {
+                return None; // OOM
             }
-            Err(_) => None,
+
+            let next = self.next_free[index as usize].load(Ordering::Relaxed);
+            let tag = head >> 32;
+            let new_head = (tag.wrapping_add(1) << 32) | (next as usize);
+
+            if self
+                .free_head
+                .compare_exchange_weak(head, new_head, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                unsafe {
+                    (*self.nodes[index as usize].get()).write(Node { key, value });
+                }
+                self.allocated_count.fetch_add(1, Ordering::Relaxed);
+                return Some(index as usize);
+            }
         }
     }
 

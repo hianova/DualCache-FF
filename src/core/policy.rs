@@ -2,7 +2,7 @@ use crate::core::slot::Slot;
 use ::core::sync::atomic::Ordering;
 
 pub trait EvictionPolicy: Send + Sync {
-    fn find_victim<'a, K, V>(&self, set: &'a [Slot<K, V>], hash: usize) -> &'a Slot<K, V>;
+    fn find_victim_idx<'a, K, V>(&self, set: &'a [Slot<K, V>], hash: usize) -> (usize, &'a Slot<K, V>);
 }
 
 /// The default Pseudo-LFU with Ring-Clock decay policy from v0.2.0
@@ -22,7 +22,7 @@ impl Default for DefaultEvictionPolicy {
 
 impl EvictionPolicy for DefaultEvictionPolicy {
     #[inline(always)]
-    fn find_victim<'a, K, V>(&self, set: &'a [Slot<K, V>], hash: usize) -> &'a Slot<K, V> {
+    fn find_victim_idx<'a, K, V>(&self, set: &'a [Slot<K, V>], hash: usize) -> (usize, &'a Slot<K, V>) {
         let mut min_hits = u16::MAX;
         let mut candidates = [0; 8]; // Assumes WAYS is at most 8
         let mut candidates_len = 0;
@@ -54,6 +54,6 @@ impl EvictionPolicy for DefaultEvictionPolicy {
             }
         }
 
-        unsafe { set.get_unchecked(victim_idx) }
+        (victim_idx, unsafe { set.get_unchecked(victim_idx) })
     }
 }

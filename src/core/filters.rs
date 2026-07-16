@@ -4,7 +4,7 @@ use crate::core::storage::Node;
 use ::core::sync::atomic::{AtomicPtr, Ordering};
 use core::ptr;
 
-/// T1 — Hottest tier: direct-mapped L1 filter (fits in CPU L1 cache).
+/// T1 — Global Fast Tier: direct-mapped L3 filter.
 ///
 /// Each slot stores a raw pointer to the most recently seen node for
 /// that hash bucket. Slot assignment is pure bitmask: `hash & mask`.
@@ -68,7 +68,7 @@ impl<K, V> T1<K, V> {
     }
 }
 
-/// T2 — Warm tier: direct-mapped L2 filter (intercepts warm data).
+/// T2 — Warm tier: direct-mapped L4 filter (intercepts warm data).
 ///
 /// Structurally identical to T1 but sized differently (20% of capacity).
 /// Logically separated so future experiments can apply different policies

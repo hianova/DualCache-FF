@@ -1,3 +1,4 @@
+use std::vec::Vec;
 use criterion::{BenchmarkId, Criterion, criterion_group};
 use std::sync::Arc;
 
@@ -52,7 +53,7 @@ fn bench_data_structure(c: &mut Criterion) {
         let mut i = 0;
         b.iter(|| {
             let _guard = qsbr::pin(node);
-            core.put(i, i, node);
+            core.put(i, i, node, 1);
             i = (i + 1) % 512;
             if i % 64 == 0 {
                 core.sync_reclaim();

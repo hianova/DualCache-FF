@@ -1,13 +1,11 @@
 use dualcache_ff::define_dualcache;
 
 define_dualcache!(
-    name: TestCache,
-    key: u64,
-    value: u64,
-    t0: 16,
-    t1: 128,
-    tls_size: 100,
-    threads: 1
+    TestCache,
+    u64,
+    u64,
+    T0 = 16,
+    TOTAL = 1536
 );
 
 #[test]

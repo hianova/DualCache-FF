@@ -12,8 +12,33 @@ use crate::component::tls::{TlsHandle, TlsRegistry};
 #[cfg(feature = "std")]
 use ::core::sync::atomic::{AtomicBool, Ordering};
 
-/// Macro to easily define a `DualCacheFF` type alias by just specifying T0 (L1 capacity per thread)
-/// and TOTAL (L2 total capacity). The macro automatically derives T1 (1/6 of TOTAL) and T2 (5/6 of TOTAL).
+#[macro_export]
+macro_rules! covopt_param {
+    ($name:expr, $default:expr, $range:expr) => {
+        {
+            #[cfg(feature = "covopt")]
+            {
+                if let Ok(val_str) = ::std::env::var(concat!("COVOPT_", $name)) {
+                    if let Ok(val) = val_str.parse() {
+                        val
+                    } else {
+                        $default
+                    }
+                } else {
+                    $default
+                }
+            }
+            #[cfg(not(feature = "covopt"))]
+            {
+                $default
+            }
+        }
+    };
+}
+
+/// Macro to easily define a `DualCacheFF` type alias by just specifying T0 (Global L2 capacity)
+/// and TOTAL (Global L3 total capacity). The macro automatically derives T1 (1/6 of TOTAL) and T2 (5/6 of TOTAL).
+/// Note: The L1 cache is strictly maintained by the Thread-Local TLS arrays, ensuring zero atomic overhead.
 #[macro_export]
 macro_rules! define_dualcache {
     (
@@ -90,15 +115,15 @@ pub struct DualCacheFF<
         K,
         V,
         crate::core::config::DefaultExponentialPolicy,
-        CAP2,
-        CAP1,
         CAP0,
+        CAP1,
+        CAP2,
         TOTAL_CAP,
     >,
     pub daemon_mode: AtomicBool,
     #[cfg(feature = "std")]
     pub cata_mode: AtomicBool,
-    pub tls_registry: TlsRegistry<K, V, 4096, 128>,
+    pub tls_registry: TlsRegistry<K, V, 65536, 128>,
     #[cfg(feature = "std")]
     #[allow(clippy::type_complexity)]
     pub global_tx: std::sync::RwLock<
@@ -257,25 +282,9 @@ where
             }
         }
 
-        let guard = ::core::mem::ManuallyDrop::new(unsafe {
-            crate::core::qsbr::Guard::unpinned(handle.qsbr_node)
-        });
         let hash = self.core.hash_key(key);
 
-        // 1. T0 (Royal Class)
-        if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
-            block.warmup_state = block.warmup_state.saturating_add(10);
-            block.cache.insert_fast_pass(hash, key.clone(), val.clone());
-            return Some(val.clone());
-        }
-
-        // 2. T1 (Elite Class) - FastTier
-        if let Some(val) = self.core.get_t1(hash, key, &guard, op_count) {
-            block.cache.insert(hash, key.clone(), val.clone());
-            return Some(val.clone());
-        }
-
-        // 3. TLS (Thread Local)
+        // 1. TLS (Thread Local L1 - Zero atomic overhead!)
         let (val_opt, promote, _sync) = block.cache.get(hash, key);
         if let Some(val) = val_opt {
             if promote {
@@ -290,19 +299,38 @@ where
                 if block.hit_batch_len == 32 {
                     if let Some(ref tx) = block.tx {
                         let mut batch = [(0, 0); 32];
-                        batch.copy_from_slice(&block.hit_batch);
-                        let _ =
-                            tx.push(crate::component::daemon::DaemonMessage::HitBatch(batch, 32));
+                        batch.copy_from_slice(&block.hit_batch[..32]);
+                        let _ = tx.push(crate::component::daemon::DaemonMessage::HitBatch(batch, 32));
                     }
                     block.hit_batch_len = 0;
                 }
             }
+            return Some(val);
+        }
+
+        let guard = ::core::mem::ManuallyDrop::new(unsafe {
+            crate::core::qsbr::Guard::unpinned(handle.qsbr_node)
+        });
+
+        // 2. T0 (Royal Class - Global L2 Fast Path)
+        if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
+            let warmup_step = covopt_param!("WARMUP_STEP", 10, 1..20);
+            block.warmup_state = block.warmup_state.saturating_add(warmup_step);
+            // Cache it in TLS
+            block.cache.insert_fast_pass(hash, key.clone(), val.clone());
             return Some(val.clone());
         }
 
-        // 3. T2 (Middle Class)
+        // 3. T1 (Elite Class - FastTier)
+        if let Some(val) = self.core.get_t1(hash, key, &guard, op_count) {
+            block.cache.insert_fast_pass(hash, key.clone(), val.clone());
+            return Some(val.clone());
+        }
+
+        // 4. T2 (Middle Class)
         if let Some(val) = self.core.get_t2(hash, key, &guard, op_count) {
-            block.warmup_state = block.warmup_state.saturating_sub(10);
+            let warmup_step = covopt_param!("WARMUP_STEP", 10, 1..20);
+            block.warmup_state = block.warmup_state.saturating_sub(warmup_step);
             block.cache.insert(hash, key.clone(), val.0.clone());
             return Some(val.0.clone());
         }
@@ -318,18 +346,17 @@ where
 
         let hash = self.core.hash_key(&key);
 
-        let (_, _, _, warmup_thresh) = self.core.blackjack.load_params();
-        if block.warmup_state > warmup_thresh {
-            block
-                .cache
-                .insert_fast_pass(hash, key.clone(), value.clone());
-            self.core.put_t0(key, value, handle.qsbr_node);
-            block.warmup_state = block.warmup_state.saturating_sub(20);
-        } else {
-            if block.cache.insert(hash, key.clone(), value.clone()) {
-                self.core.put(key, value, handle.qsbr_node);
+        let res = block.cache.insert(hash, key.clone(), value.clone());
+        if res == 1 {
+            let pct = covopt_param!("WARMUP_PCT", 95, 50..100);
+            let is_warming_up = self.core.arena.allocated_count() < (self.core.arena.capacity() * pct / 100);
+            if is_warming_up || (block.op_count & 127) == 0 {
+                self.core.put(key, value, handle.qsbr_node, block.op_count as u32);
             }
-        }
+        } else if res == 2
+            && (block.op_count & 127) == 0 {
+                self.core.put(key, value, handle.qsbr_node, block.op_count as u32);
+            }
     }
 
     /// Insert a key-value pair directly as a high-priority "genius" item.
@@ -403,6 +430,36 @@ impl<K, V, const T0_CAP: usize, const T1_CAP: usize, const T2_CAP: usize, const 
     }
 }
 
+#[cfg(feature = "std")]
+impl<
+    K: Clone + Eq + ::core::hash::Hash + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+    const CAP2: usize,
+    const CAP1: usize,
+    const CAP0: usize,
+    const TOTAL_CAP: usize,
+> crate::cache_trait::ConcurrentCache<K, V> for DualCacheFF<K, V, CAP2, CAP1, CAP0, TOTAL_CAP>
+{
+    fn get(&self, key: &K) -> Option<V> {
+        thread_local! {
+            static THREAD_HANDLE: std::cell::OnceCell<crate::component::tls::TlsHandle> = const { std::cell::OnceCell::new() };
+        }
+        THREAD_HANDLE.with(|cell| {
+            let handle = cell.get_or_init(|| self.register_thread());
+            self.get(key, handle)
+        })
+    }
+    fn put(&self, key: K, value: V) {
+        thread_local! {
+            static THREAD_HANDLE: std::cell::OnceCell<crate::component::tls::TlsHandle> = const { std::cell::OnceCell::new() };
+        }
+        THREAD_HANDLE.with(|cell| {
+            let handle = cell.get_or_init(|| self.register_thread());
+            self.insert(key, value, handle);
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,7 +468,7 @@ mod tests {
     #[test]
     fn test_static_global_cache() {
         static GLOBAL_CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, 256, 1024, 2048, 1024>> =
-            std::sync::LazyLock::new(|| DualCacheFF::new());
+            std::sync::LazyLock::new(DualCacheFF::new);
         let handle = GLOBAL_CACHE.register_thread();
         GLOBAL_CACHE.insert(1, 100, &handle);
         GLOBAL_CACHE.insert(1, 100, &handle);
@@ -421,7 +478,7 @@ mod tests {
     #[test]
     fn test_daemon_off_sync() {
         static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, 256, 1024, 2048, 4096>> =
-            std::sync::LazyLock::new(|| DualCacheFF::new());
+            std::sync::LazyLock::new(DualCacheFF::new);
         let handle = CACHE.register_thread();
 
         // Put twice to pass admission filter
@@ -441,7 +498,7 @@ mod tests {
         use std::time::Duration;
 
         static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, 8, 16, 64, 88>> =
-            std::sync::LazyLock::new(|| DualCacheFF::new());
+            std::sync::LazyLock::new(DualCacheFF::new);
 
         // Turn ON Daemon (automatically spawns daemon)
         CACHE.set_daemon_mode(true);
@@ -490,7 +547,7 @@ mod tests {
         use std::time::Duration;
 
         static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, 256, 1024, 2048, 4096>> =
-            std::sync::LazyLock::new(|| DualCacheFF::new());
+            std::sync::LazyLock::new(DualCacheFF::new);
         let handle = CACHE.register_thread();
 
         // Sync mode: insert many items to trigger evictions
@@ -598,35 +655,5 @@ mod tests {
         // Explicitly reclaim to hit coverage
         CACHE.core.try_reclaim(handle.qsbr_node);
         CACHE.core.try_reclaim(handle.qsbr_node);
-    }
-}
-
-#[cfg(feature = "std")]
-impl<
-    K: Clone + Eq + ::core::hash::Hash + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
-    const CAP2: usize,
-    const CAP1: usize,
-    const CAP0: usize,
-    const TOTAL_CAP: usize,
-> crate::cache_trait::ConcurrentCache<K, V> for DualCacheFF<K, V, CAP2, CAP1, CAP0, TOTAL_CAP>
-{
-    fn get(&self, key: &K) -> Option<V> {
-        thread_local! {
-            static THREAD_HANDLE: std::cell::OnceCell<crate::component::tls::TlsHandle> = const { std::cell::OnceCell::new() };
-        }
-        THREAD_HANDLE.with(|cell| {
-            let handle = cell.get_or_init(|| self.register_thread());
-            self.get(key, handle)
-        })
-    }
-    fn put(&self, key: K, value: V) {
-        thread_local! {
-            static THREAD_HANDLE: std::cell::OnceCell<crate::component::tls::TlsHandle> = const { std::cell::OnceCell::new() };
-        }
-        THREAD_HANDLE.with(|cell| {
-            let handle = cell.get_or_init(|| self.register_thread());
-            self.insert(key, value, handle);
-        })
     }
 }
