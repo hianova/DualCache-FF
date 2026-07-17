@@ -47,7 +47,7 @@ dualcache_ff::define_static_dualcache!(
     TOTAL = 1_572_864
 );
 
-use no_std_tool::lazy_static;
+use lazy_static;
 
 lazy_static! {
     static ref GLOBAL_CACHE: BenchCache = DualCacheFF::new();

@@ -15,7 +15,7 @@ const DATASET_SIZE: u64 = 1_000_000;
 
 dualcache_ff::define_dualcache!(BenchCache, u64, u64, T0 = 16_384, TOTAL = 1_572_864);
 
-use no_std_tool::lazy_static;
+use lazy_static;
 
 lazy_static! {
     static ref GLOBAL_CACHE: BenchCache = DualCacheFF::new();

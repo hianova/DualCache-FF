@@ -15,11 +15,13 @@ exclude = ["*.DS_Store", "/target", ".covopt/", ".agents/"]
 
 [features]
 default = ["std", "daemon"]
-std = ["ahash/std"]
+std = ["ahash/std", "no_std_tool/std"]
 daemon = ["std"]
 covopt = []
 
 [dependencies]
+lazy_static = { workspace = true }
+no_std_tool_macros = { workspace = true }
 ahash = { version = "0.8", features = ["compile-time-rng"] }
 no_std_tool = { path = "../../core/no_std_tool", version = "1.1.0" }
 

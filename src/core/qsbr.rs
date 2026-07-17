@@ -145,7 +145,7 @@ pub struct QsbrToken;
 
 #[cfg_attr(
     not(feature = "std"),
-    no_std_tool::auto_static(capacity = 256, partition = "qsbr")
+    no_std_tool_macros::auto_static(capacity = 256, partition = "qsbr")
 )]
 pub struct ThreadStateNode {
     pub active: AtomicBool,
