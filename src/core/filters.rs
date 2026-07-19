@@ -1,4 +1,5 @@
-use no_std_tool::collections::{AllocVec as Vec, Box};
+use alloc::vec::Vec;
+use alloc::boxed::Box;
 
 use crate::core::storage::Node;
 use ::core::sync::atomic::{AtomicPtr, Ordering};

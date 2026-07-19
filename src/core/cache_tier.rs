@@ -13,7 +13,7 @@ pub struct CacheTier<
     const WAYS: usize = 8,
 > {
     slots: [Slot<K, V>; CAPACITY],
-    tags: no_std_tool::collections::Box<[::core::sync::atomic::AtomicU8]>,
+    tags: alloc::boxed::Box<[::core::sync::atomic::AtomicU8]>,
     policy: P,
 }
 
@@ -29,7 +29,7 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
             "CAPACITY must be a multiple of WAYS"
         );
 
-        let mut tags = no_std_tool::collections::AllocVec::with_capacity(CAPACITY);
+        let mut tags = alloc::vec::Vec::with_capacity(CAPACITY);
         for _ in 0..CAPACITY {
             tags.push(::core::sync::atomic::AtomicU8::new(0));
         }
@@ -289,7 +289,7 @@ mod tests {
         );
         let arena = Arena::<u64, u64, 16>::new();
         let node = {
-            let node = no_std_tool::collections::Box::into_raw(no_std_tool::collections::Box::new(
+            let node = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
                 crate::core::qsbr::ThreadStateNode::new(),
             ));
             crate::core::qsbr::register_node(node);

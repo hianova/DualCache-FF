@@ -20,17 +20,17 @@ daemon = ["std"]
 covopt = []
 
 [dependencies]
-lazy_static = { workspace = true }
+covopt-macro = { workspace = true }
 no_std_tool_macros = { workspace = true }
-ahash = { version = "0.8", features = ["compile-time-rng"] }
-no_std_tool = { path = "../../core/no_std_tool", version = "1.1.0" }
+ahash = { workspace = true, features = ["compile-time-rng"] }
+no_std_tool = { workspace = true }
 
 [dev-dependencies]
-crossbeam-utils = "0.8.21"
-hdrhistogram = "7.5.4"
-rand = "0.8"
-rand_distr = "0.4"
-criterion = "0.5"
+crossbeam-utils = { workspace = true }
+hdrhistogram = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+criterion = { workspace = true }
 core_affinity = "0.8.3"
 
 [[bench]]

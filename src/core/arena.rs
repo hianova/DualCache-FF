@@ -164,7 +164,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use no_std_tool::sync::Arc;
+    use alloc::sync::Arc;
     use std::thread;
 
     #[test]
@@ -206,7 +206,7 @@ mod tests {
     fn test_arena_oom() {
         let arena = Arena::<u64, u64, 4>::new();
         let node = {
-            let node = no_std_tool::collections::Box::into_raw(no_std_tool::collections::Box::new(
+            let node = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
                 crate::core::qsbr::ThreadStateNode::new(),
             ));
             crate::core::qsbr::register_node(node);

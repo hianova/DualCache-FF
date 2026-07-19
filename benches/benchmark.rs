@@ -46,14 +46,13 @@ dualcache_ff::define_static_dualcache!(
     T0 = 16_384,
     TOTAL = 1_572_864
 );
+pub struct GBenchToken;
+#[no_std_tool_macros::auto_static(capacity = 1, partition = "g_bench")]
+pub struct GlobalBenchCacheWrapper(pub BenchCache);
 
-use lazy_static;
-
-lazy_static! {
-    static ref GLOBAL_CACHE: BenchCache = DualCacheFF::new();
-    static ref GLOBAL_STATIC_CACHE: StaticBenchCache =
-        StaticDualCache::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
-}
+pub struct GsBenchToken;
+#[no_std_tool_macros::auto_static(capacity = 1, partition = "gs_bench")]
+pub struct GlobalStaticBenchCacheWrapper(pub StaticBenchCache);
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -87,14 +86,18 @@ fn run_workload(
     mode: CacheMode,
 ) -> BenchResult {
     // With lazy_static, we initialize only the needed cache to avoid allocating
-    // multiple 120MB structures on the stack sequentially.
+    // multiple 120MB structures on the stack sequentially.    
+    let gb_token: &'static GBenchToken = &GBenchToken;
+    let gs_token: &'static GsBenchToken = &GsBenchToken;
+
     let cache = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
-        Some(&*GLOBAL_CACHE)
+        Some(&GlobalBenchCacheWrapper::get(0, gb_token).unwrap().0)
     } else {
         None
     };
+
     let static_cache = if mode == CacheMode::StaticBottomUp {
-        Some(&*GLOBAL_STATIC_CACHE)
+        Some(&GlobalStaticBenchCacheWrapper::get(0, gs_token).unwrap().0)
     } else {
         None
     };
@@ -190,11 +193,11 @@ fn run_workload(
                 let mut latencies = Vec::with_capacity((OPS_PER_THREAD / 100) + 1);
 
                 // Pin to P cores (typically the last cores on M1/M2/M3)
-                if let Some(core_ids) = core_affinity::get_core_ids() {
-                    let p_core_start = if core_ids.len() >= 8 { 4 } else { 0 };
-                    let target_core = core_ids[p_core_start + thread_id % 4];
-                    core_affinity::set_for_current(target_core);
-                }
+                // if let Some(core_ids) = core_affinity::get_core_ids() {
+                //     let p_core_start = if core_ids.len() >= 8 { 4 } else { 0 };
+                //     let target_core = core_ids[p_core_start + thread_id % 4];
+                //     core_affinity::set_for_current(target_core);
+                // }
 
                 let tls_handle =
                     if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
@@ -204,6 +207,18 @@ fn run_workload(
                     };
 
                 let tls = tls_handle.as_ref();
+
+                let (c, c_tls) = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
+                    (Some(cache.unwrap()), Some(tls.unwrap()))
+                } else {
+                    (None, None)
+                };
+
+                let sc = if mode == CacheMode::StaticBottomUp {
+                    Some(static_cache.unwrap())
+                } else {
+                    None
+                };
 
                 barrier_clone.wait(); // Synchronize all threads to start
 
@@ -217,16 +232,16 @@ fn run_workload(
                         key_idx + 1
                     };
 
-                    let sample = (local_ops % 100) == 0;
+                    let sample = false;
                     let op_start = if sample { Some(Instant::now()) } else { None };
 
                     if is_read {
                         reads += 1;
                         let hit = match mode {
                             CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
-                                cache.unwrap().get(&key, tls.unwrap()).is_some()
+                                c.unwrap().get(&key, c_tls.unwrap()).is_some()
                             }
-                            CacheMode::StaticBottomUp => static_cache.unwrap().get(&key).is_some(),
+                            CacheMode::StaticBottomUp => sc.unwrap().get(&key).is_some(),
                         };
 
                         if hit {
@@ -234,17 +249,17 @@ fn run_workload(
                         } else {
                             match mode {
                                 CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
-                                    cache.unwrap().insert(key, key, tls.unwrap())
+                                    c.unwrap().insert(key, key, c_tls.unwrap())
                                 }
-                                CacheMode::StaticBottomUp => static_cache.unwrap().put(key, key),
+                                CacheMode::StaticBottomUp => sc.unwrap().put(key, key),
                             }
                         }
                     } else {
                         match mode {
                             CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
-                                cache.unwrap().insert(key, key, tls.unwrap())
+                                c.unwrap().insert(key, key, c_tls.unwrap())
                             }
-                            CacheMode::StaticBottomUp => static_cache.unwrap().put(key, key),
+                            CacheMode::StaticBottomUp => sc.unwrap().put(key, key),
                         }
                     }
 
@@ -354,6 +369,17 @@ fn main() {
     std::thread::Builder::new()
         .stack_size(1024 * 1024 * 1024)
         .spawn(move || {
+            let mut gb_token = GBenchToken;
+            GlobalBenchCacheWrapper::insert(GlobalBenchCacheWrapper(DualCacheFF::new()), &mut gb_token);
+
+            let mut gs_token = GsBenchToken;
+            GlobalStaticBenchCacheWrapper::insert(
+                GlobalStaticBenchCacheWrapper(StaticDualCache::new(
+                    dualcache_ff::core::policy::DefaultEvictionPolicy::new(),
+                )),
+                &mut gs_token,
+            );
+
             let wait_free_configs = vec![
                 (
                     AccessPattern::Zipf,

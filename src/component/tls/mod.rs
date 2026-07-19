@@ -5,7 +5,7 @@ pub struct TlsHandle {
     pub id: usize,
     pub qsbr_node: *mut crate::core::qsbr::ThreadStateNode,
     pub block_ptr: *mut core::ffi::c_void,
-    pub registry: Option<no_std_tool::sync::Arc<dyn crate::core::qsbr::RegistryCore>>,
+    pub registry: Option<alloc::sync::Arc<dyn crate::core::qsbr::RegistryCore>>,
 }
 
 unsafe impl Send for TlsHandle {}
@@ -34,10 +34,10 @@ pub struct TlsEntry<K, V> {
 }
 
 pub struct TlsCache<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
-    pub slots: no_std_tool::collections::Box<[Option<TlsEntry<K, V>>]>,
+    pub slots: alloc::boxed::Box<[Option<TlsEntry<K, V>>]>,
     pub capacity: usize,
     pub promote_threshold: u8,
-    pub probation_filter: no_std_tool::collections::Box<[u8; 16384]>,
+    pub probation_filter: alloc::boxed::Box<[u8; 16384]>,
     pub probation_cursor: usize,
 }
 
@@ -45,23 +45,23 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     for TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
     fn default() -> Self {
-        Self::new()
+        Self::new(2)
     }
 }
 
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
     TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
-    pub fn new() -> Self {
-        let mut slots_vec = no_std_tool::collections::AllocVec::with_capacity(TLS_CAP);
+    pub fn new(promote_threshold: u8) -> Self {
+        let mut slots_vec = alloc::vec::Vec::with_capacity(TLS_CAP);
         for _ in 0..TLS_CAP {
             slots_vec.push(None);
         }
         Self {
             slots: slots_vec.into_boxed_slice(),
             capacity: TLS_CAP,
-            promote_threshold: crate::covopt_param!("T0_PROMOTE_THRESH", 2u8, 1..10),
-            probation_filter: no_std_tool::collections::Box::new([0; 16384]),
+            promote_threshold,
+            probation_filter: alloc::boxed::Box::new([0; 16384]),
             probation_cursor: 0,
         }
     }
@@ -77,7 +77,10 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
             entry.hits = entry.hits.saturating_add(1);
 
             let promote = old_hits < self.promote_threshold && entry.hits >= self.promote_threshold;
-            return (Some(entry.value.clone()), promote, entry.hits);
+            
+            // Only sync hit counts to Daemon periodically to prevent queue bottleneck
+            let sync = if entry.hits & 15 == 0 { 1 } else { 0 };
+            return (Some(entry.value.clone()), promote, sync);
         }
         (None, false, 0)
     }
@@ -177,17 +180,17 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     for TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
     fn default() -> Self {
-        Self::new()
+        Self::new(2)
     }
 }
 
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
     TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
-    pub fn new() -> Self {
+    pub fn new(promote_threshold: u8) -> Self {
         Self {
             id: 0,
-            cache: TlsCache::new(),
+            cache: TlsCache::new(promote_threshold),
             #[cfg(feature = "std")]
             tx: None,
             #[cfg(feature = "std")]
@@ -208,13 +211,13 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
 pub struct TlsRegistryState<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     #[allow(clippy::type_complexity)]
     blocks: no_std_tool::sync::SpinMutex<
-        no_std_tool::collections::AllocVec<
-            no_std_tool::collections::Box<
+        alloc::vec::Vec<
+            alloc::boxed::Box<
                 UnsafeCell<no_std_tool::sync::CachePadded<TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>>>,
             >,
         >,
     >,
-    free_list: no_std_tool::sync::SpinMutex<no_std_tool::collections::AllocVec<usize>>,
+    free_list: no_std_tool::sync::SpinMutex<alloc::vec::Vec<usize>>,
 }
 
 impl<K: Send + 'static, V: Send + 'static, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
@@ -238,7 +241,8 @@ unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync
 
 /// Registry for managing Thread-Local Caches dynamically without OS TLS.
 pub struct TlsRegistry<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
-    state: no_std_tool::sync::Arc<TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP>>,
+    state: alloc::sync::Arc<TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP>>,
+    promote_threshold: u8,
 }
 
 unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync
@@ -284,13 +288,14 @@ impl<
 > TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
     pub fn new() -> Self {
-        let blocks = no_std_tool::collections::AllocVec::with_capacity(64);
-        let free_list = no_std_tool::collections::AllocVec::with_capacity(64);
+        let blocks = alloc::vec::Vec::with_capacity(64);
+        let free_list = alloc::vec::Vec::with_capacity(64);
         Self {
-            state: no_std_tool::sync::Arc::new(TlsRegistryState {
+            state: alloc::sync::Arc::new(TlsRegistryState {
                 blocks: no_std_tool::sync::SpinMutex::new(blocks),
                 free_list: no_std_tool::sync::SpinMutex::new(free_list),
             }),
+            promote_threshold: crate::covopt_param!("T0_PROMOTE_THRESH", 2u8, 1..10) as u8,
         }
     }
 
@@ -322,9 +327,9 @@ impl<
         }
 
         if id == usize::MAX {
-            let new_block = no_std_tool::collections::Box::new(UnsafeCell::new(
+            let new_block = alloc::boxed::Box::new(UnsafeCell::new(
                 no_std_tool::sync::CachePadded {
-                    value: TlsBlock::new(),
+                    value: TlsBlock::new(self.promote_threshold),
                 },
             ));
             let mut blocks = loop {
@@ -348,7 +353,7 @@ impl<
         let block_ptr = block as *mut _ as *mut core::ffi::c_void;
 
         let registry_arc =
-            self.state.clone() as no_std_tool::sync::Arc<dyn crate::core::qsbr::RegistryCore>;
+            self.state.clone() as alloc::sync::Arc<dyn crate::core::qsbr::RegistryCore>;
 
         if !block.registered {
             crate::core::qsbr::register_node(qsbr_node);

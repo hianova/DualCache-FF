@@ -101,6 +101,7 @@ impl Daemon {
             let mut batch = std::vec::Vec::with_capacity(65536);
             let mut _poll_ms = 10;
             let mut empty_spins = 0u32;
+            let batch_limit = crate::covopt_param!("DAEMON_BATCH_LIMIT", 65536usize, 1024..131072);
             loop {
                 let mut disconnected = false;
 
@@ -111,7 +112,8 @@ impl Daemon {
                     Some(msg) => {
                         empty_spins = 0;
                         Self::compress_and_push(&mut batch, msg);
-                        while batch.len() < 65536 {
+                        // batch_limit is evaluated outside the loop
+                        while batch.len() < batch_limit {
                             if let Some(next_msg) = rx.pop() {
                                 Self::compress_and_push(&mut batch, next_msg);
                             } else {

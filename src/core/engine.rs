@@ -44,16 +44,21 @@ where
     V: Clone,
 {
     pub fn new(eviction: P::Evict) -> Self {
+        let t0_thresh = crate::covopt_param!("T0_THRESH", P::T0_THRESHOLD, 1..1000);
+        let t1_thresh = crate::covopt_param!("T1_THRESH", P::T1_THRESHOLD, 1..100);
+        let t2_thresh = crate::covopt_param!("T2_THRESH", P::T2_THRESHOLD, 1..50);
+        let warmup_thresh = crate::covopt_param!("WARMUP_THRESH", 256, 1..2000);
+
         Self {
             arena: Arena::new(),
             t0: FastTier::new(),
             t1: FastTier::new(),
             t2: CacheTier::new(eviction),
             blackjack: crate::core::blackjack::PackedBlackjack::new(
-                crate::covopt_param!("T0_THRESH", P::T0_THRESHOLD, 1..1000),
-                crate::covopt_param!("T1_THRESH", P::T1_THRESHOLD, 1..100),
-                crate::covopt_param!("T2_THRESH", P::T2_THRESHOLD, 1..50),
-                crate::covopt_param!("WARMUP_THRESH", 256, 1..2000),
+                t0_thresh,
+                t1_thresh,
+                t2_thresh,
+                warmup_thresh,
             ),
             hash_builder: ahash::RandomState::with_seeds(
                 0x1234567890ABCDEF,

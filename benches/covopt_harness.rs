@@ -15,16 +15,17 @@ const DATASET_SIZE: u64 = 1_000_000;
 
 dualcache_ff::define_dualcache!(BenchCache, u64, u64, T0 = 16_384, TOTAL = 1_572_864);
 
-use lazy_static;
+pub struct CovBenchToken;
 
-lazy_static! {
-    static ref GLOBAL_CACHE: BenchCache = DualCacheFF::new();
-}
+#[no_std_tool_macros::auto_static(capacity = 1, partition = "cov_bench")]
+pub struct GlobalBenchCacheWrapper(pub BenchCache);
 
 fn main() {
     std::thread::Builder::new()
         .stack_size(1024 * 1024 * 1024)
         .spawn(|| {
+            let mut token = CovBenchToken;
+            GlobalBenchCacheWrapper::insert(GlobalBenchCacheWrapper(DualCacheFF::new()), &mut token);
             let zipf = Zipf::new(DATASET_SIZE, 0.99).unwrap();
 
             let mut all_ops_data = Vec::new();
@@ -39,7 +40,8 @@ fn main() {
                 all_ops_data.push(ops_data);
             }
 
-            let cache = &*GLOBAL_CACHE;
+            let token: &'static CovBenchToken = &CovBenchToken;
+            let cache = &GlobalBenchCacheWrapper::get(0, token).unwrap().0;
             cache.set_daemon_mode(true);
             let warmup_handle = cache.register_thread();
             for &(key, _) in all_ops_data[0].iter().take(10_000) {

@@ -1,4 +1,5 @@
 #![cfg_attr(not(any(feature = "std", feature = "daemon", test)), no_std)]
+extern crate alloc;
 
 pub mod cache_trait;
 pub mod component;
@@ -123,6 +124,8 @@ pub struct DualCacheFF<
     pub daemon_mode: AtomicBool,
     #[cfg(feature = "std")]
     pub cata_mode: AtomicBool,
+    pub warmup_step: u8,
+    pub warmup_pct: usize,
     pub tls_registry: TlsRegistry<K, V, 65536, 128>,
     #[cfg(feature = "std")]
     #[allow(clippy::type_complexity)]
@@ -162,6 +165,8 @@ where
             daemon_mode: AtomicBool::new(false),
             #[cfg(feature = "std")]
             cata_mode: AtomicBool::new(false),
+            warmup_step: crate::covopt_param!("WARMUP_STEP", 10, 1..20) as u8,
+            warmup_pct: crate::covopt_param!("WARMUP_PCT", 95, 50..100) as usize,
             tls_registry: TlsRegistry::new(),
             #[cfg(feature = "std")]
             global_tx: std::sync::RwLock::new(None),
@@ -284,7 +289,28 @@ where
 
         let hash = self.core.hash_key(key);
 
-        // 1. TLS (Thread Local L1 - Zero atomic overhead!)
+        let guard = ::core::mem::ManuallyDrop::new(unsafe {
+            crate::core::qsbr::Guard::unpinned(handle.qsbr_node)
+        });
+
+        // 1. T0 (Royal Class - Global L2 Fast Path)
+        if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
+            block.warmup_state = block.warmup_state.saturating_add(self.warmup_step as u16);
+            if op_count & 63 == 0 {
+                block.cache.insert_fast_pass(hash, key.clone(), val.clone());
+            }
+            return Some(val.clone());
+        }
+
+        // 2. T1 (Elite Class - FastTier)
+        if let Some(val) = self.core.get_t1(hash, key, &guard, op_count) {
+            if op_count & 127 == 0 {
+                block.cache.insert_fast_pass(hash, key.clone(), val.clone());
+            }
+            return Some(val.clone());
+        }
+
+        // 3. TLS (Thread Local L1 - Zero atomic overhead!)
         let (val_opt, promote, _sync) = block.cache.get(hash, key);
         if let Some(val) = val_opt {
             if promote {
@@ -308,29 +334,9 @@ where
             return Some(val);
         }
 
-        let guard = ::core::mem::ManuallyDrop::new(unsafe {
-            crate::core::qsbr::Guard::unpinned(handle.qsbr_node)
-        });
-
-        // 2. T0 (Royal Class - Global L2 Fast Path)
-        if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
-            let warmup_step = covopt_param!("WARMUP_STEP", 10, 1..20);
-            block.warmup_state = block.warmup_state.saturating_add(warmup_step);
-            // Cache it in TLS
-            block.cache.insert_fast_pass(hash, key.clone(), val.clone());
-            return Some(val.clone());
-        }
-
-        // 3. T1 (Elite Class - FastTier)
-        if let Some(val) = self.core.get_t1(hash, key, &guard, op_count) {
-            block.cache.insert_fast_pass(hash, key.clone(), val.clone());
-            return Some(val.clone());
-        }
-
         // 4. T2 (Middle Class)
         if let Some(val) = self.core.get_t2(hash, key, &guard, op_count) {
-            let warmup_step = covopt_param!("WARMUP_STEP", 10, 1..20);
-            block.warmup_state = block.warmup_state.saturating_sub(warmup_step);
+            block.warmup_state = block.warmup_state.saturating_sub(self.warmup_step as u16);
             block.cache.insert(hash, key.clone(), val.0.clone());
             return Some(val.0.clone());
         }
@@ -348,15 +354,10 @@ where
 
         let res = block.cache.insert(hash, key.clone(), value.clone());
         if res == 1 {
-            let pct = covopt_param!("WARMUP_PCT", 95, 50..100);
-            let is_warming_up = self.core.arena.allocated_count() < (self.core.arena.capacity() * pct / 100);
-            if is_warming_up || (block.op_count & 127) == 0 {
-                self.core.put(key, value, handle.qsbr_node, block.op_count as u32);
-            }
-        } else if res == 2
-            && (block.op_count & 127) == 0 {
-                self.core.put(key, value, handle.qsbr_node, block.op_count as u32);
-            }
+            self.core.put(key, value, handle.qsbr_node, block.op_count as u32);
+        } else if res == 2 {
+            self.core.put(key, value, handle.qsbr_node, block.op_count as u32);
+        }
     }
 
     /// Insert a key-value pair directly as a high-priority "genius" item.
