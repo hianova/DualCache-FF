@@ -1,7 +1,0 @@
-[package]
-name = "covopt-tests"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-dualcache-ff = { path = "../", features = ["std"] }
