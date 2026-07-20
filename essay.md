@@ -200,3 +200,16 @@ When we removed the `& 127` sampling limit to ensure all writes correctly propag
 Furthermore, empirically reverting the lookup order to `T0 -> T1 -> TLS -> T2` dropped `Zipf (99:1)` throughput down to **58M ops/s**, directly proving the foundational argument of this essay: **The `TLS -> T0` order is mathematically and physically superior**. Forcing threads to read the global `T0` array before their thread-local `TLS` cache triggers immediate MESI cache line bouncing, destroying throughput. 
 
 **Conclusion**: The core arguments regarding cache coherency, padding, and the `TLS -> T0` hierarchy remain completely intact and valid. The illusion of 100M+ ops/s on 50:50 workloads was merely a reflection of thread-local write coalescing, not a defect in the read path.
+
+## 13. Case Study 6: cdDB Write Regression Under Zipf 50:50
+
+During heavy testing of the `cdDB` partitioned engine under a Zipf 50:50 distribution (representing extreme write-heavy workloads with high cross-core contention), we observed massive performance degradation and even memory-related aborts (`SIGBUS`/`SIGSEGV`).
+
+The root cause was traced back to `AHashMap` cloning inside the `engine/partition.rs` background worker. The worker was frantically cloning the underlying multi-vector pointer map to propagate immutable RCUs to readers upon every single write operation. Under a highly contentious 50:50 workload, these synchronous operations caused out-of-memory (OOM) situations and cache starvation.
+
+### The Mitigation: Backoff and Batching
+To solve this, we introduced a `Backoff` spin mechanism (batching). The worker thread now continuously polls the `writer_rx` channel under high load, aggregating multiple mutations into a single batch before committing an atomic `AHashMap` clone and pointer swap. This dramatically reduces the `malloc` pressure, shielding the kernel's memory allocator.
+
+### The Philosophy: To Cache or Not To Cache?
+The overarching lesson from this regression confirms our earlier thesis: **For pure write-heavy or 50:50 workloads, caching systems often act as an expensive middleman.** 
+Under Zipf 50:50, we confirmed that disabling the Daemon or bypassing `DualCache-FF` entirely in favor of static, direct `db read/write` preserves deterministic latency and eliminates write-amplification. The cache excels in read-heavy (99:1, 90:10) environments; for write-heavy pipelines, strict batching and cache bypassing are the mathematically sound approaches.
