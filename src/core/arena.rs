@@ -1,4 +1,5 @@
 #![allow(clippy::missing_safety_doc)]
+#![allow(unexpected_cfgs)]
 use ::core::sync::atomic::{AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -24,6 +25,7 @@ impl<K, V, const N: usize> Default for Arena<K, V, N> {
     }
 }
 impl<K, V, const N: usize> Arena<K, V, N> {
+    #[cfg_attr(covopt, ignore)]
     pub const fn new() -> Self {
         let mut next_free = [const { ::core::sync::atomic::AtomicU32::new(0) }; N];
         let mut i = 0;
