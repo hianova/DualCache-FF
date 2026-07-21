@@ -1,34 +1,31 @@
-use alloc::vec::Vec;
-use alloc::boxed::Box;
-
 use ::core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::ptr;
-
-/// A single cached entry. Stored in the Arena node pool.
+#[doc = " A single cached entry. Stored in the Arena node pool."]
+#[repr(C, align(64))]
 pub struct Node<K, V> {
     pub key: K,
     pub value: V,
-    /// Epoch at which this node expires (0 = no expiry).
+    #[doc = " Epoch at which this node expires (0 = no expiry)."]
     pub expire_at: u32,
-    /// Index into the Arena / Cache node arrays.
+    #[doc = " Index into the Arena / Cache node arrays."]
     pub g_idx: u32,
 }
-
-/// L3 lock-free hash index + node pointer array.
-///
-/// `index` is a flat open-addressed array of packed `u64` entries:
-///   bits[63:48] = 16-bit tag (hash >> 48)
-///   bits[47:0]  = Arena slot index
-/// Sentinel values: 0 = empty, u64::MAX = tombstone.
+#[doc = " L3 lock-free hash index + node pointer array."]
+#[doc = ""]
+#[doc = " `index` is a flat open-addressed array of packed `u64` entries:"]
+#[doc = "   bits[63:48] = 16-bit tag (hash >> 48)"]
+#[doc = "   bits[47:0]  = Arena slot index"]
+#[doc = " Sentinel values: 0 = empty, u64::MAX = tombstone."]
+#[repr(C, align(64))]
 pub struct Cache<K, V> {
     pub(crate) index_mask: usize,
     pub(crate) index: Box<[AtomicU64]>,
     pub(crate) nodes: Box<[AtomicPtr<Node<K, V>>]>,
 }
-
 unsafe impl<K: Send, V: Send> Send for Cache<K, V> {}
 unsafe impl<K: Send + Sync, V: Send + Sync> Sync for Cache<K, V> {}
-
 impl<K, V> Cache<K, V> {
     pub fn new(capacity: usize) -> Self {
         let index_size = (capacity * 2).next_power_of_two();
@@ -36,19 +33,16 @@ impl<K, V> Cache<K, V> {
         for _ in 0..index_size {
             index.push(AtomicU64::new(0));
         }
-
         let mut nodes = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             nodes.push(AtomicPtr::new(ptr::null_mut()));
         }
-
         Self {
             index_mask: index_size - 1,
             index: index.into_boxed_slice(),
             nodes: nodes.into_boxed_slice(),
         }
     }
-
     #[inline(always)]
     pub fn index_probe(&self, hash: u64, tag: u16) -> Option<usize> {
         let mut idx = hash as usize & self.index_mask;
@@ -64,7 +58,6 @@ impl<K, V> Cache<K, V> {
         }
         None
     }
-
     #[inline(always)]
     pub fn index_store(&self, hash: u64, tag: u16, entry: u64) {
         let mut idx = hash as usize & self.index_mask;
@@ -80,7 +73,6 @@ impl<K, V> Cache<K, V> {
             idx = (idx + 1) & self.index_mask;
         }
     }
-
     #[inline(always)]
     pub fn index_remove(&self, hash: u64, tag: u16, g_idx: usize) {
         let mut idx = hash as usize & self.index_mask;
@@ -99,17 +91,14 @@ impl<K, V> Cache<K, V> {
             idx = (idx + 1) & self.index_mask;
         }
     }
-
     #[inline(always)]
     pub fn index_clear_at(&self, idx: usize) {
         self.index[idx].store(0, Ordering::Relaxed);
     }
-
     #[inline(always)]
     pub fn index_len(&self) -> usize {
         self.index.len()
     }
-
     #[inline(always)]
     pub fn node_get_full(&self, idx: usize, key: &K, current_epoch: u32) -> Option<V>
     where
@@ -120,7 +109,6 @@ impl<K, V> Cache<K, V> {
         if ptr.is_null() {
             return None;
         }
-        // Safety: QSBR guarantees pointer is valid during check-in.
         let node = unsafe { &*ptr };
         if node.key == *key {
             if node.expire_at > 0 && node.expire_at < current_epoch {
@@ -131,7 +119,6 @@ impl<K, V> Cache<K, V> {
             None
         }
     }
-
     pub fn clear(&self) {
         for i in 0..self.index.len() {
             self.index[i].store(0, Ordering::Relaxed);
@@ -141,7 +128,6 @@ impl<K, V> Cache<K, V> {
         }
     }
 }
-
 impl<K, V> Drop for Cache<K, V> {
     fn drop(&mut self) {
         for node_ptr in self.nodes.iter() {

@@ -2,29 +2,25 @@
 #![allow(clippy::missing_safety_doc)]
 use ::core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use core::ptr;
-
 static GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
 static THREAD_STATES: AtomicPtr<ThreadStateNode> = AtomicPtr::new(ptr::null_mut());
-
 #[doc(hidden)]
 pub unsafe fn reset() {
     GLOBAL_EPOCH.store(1, Ordering::SeqCst);
     THREAD_STATES.store(ptr::null_mut(), Ordering::SeqCst);
 }
-
 #[derive(Copy, Clone)]
 struct RetiredNode {
     index: u32,
     epoch: u64,
 }
-
 const GARBAGE_CAP: usize = 4096;
+#[repr(C, align(64))]
 pub struct GarbageQueue {
     items: [RetiredNode; GARBAGE_CAP],
     head: AtomicUsize,
     tail: AtomicUsize,
 }
-
 impl GarbageQueue {
     const fn new() -> Self {
         Self {
@@ -34,19 +30,17 @@ impl GarbageQueue {
         }
     }
 }
-
+#[repr(C, align(64))]
 pub struct MpmcQueue<const N: usize> {
     head: AtomicUsize,
     tail: AtomicUsize,
     buffer: [::core::sync::atomic::AtomicU32; N],
 }
-
 impl<const N: usize> Default for MpmcQueue<N> {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl<const N: usize> MpmcQueue<N> {
     pub const fn new() -> Self {
         Self {
@@ -65,7 +59,6 @@ impl<const N: usize> MpmcQueue<N> {
                     Some(tail + 1)
                 }
             });
-
         match result {
             Ok(tail) => {
                 while self.buffer[tail % N].load(Ordering::Acquire) != u32::MAX {
@@ -93,7 +86,6 @@ impl<const N: usize> MpmcQueue<N> {
                     None
                 }
             });
-
         if let Ok(old_head) = result {
             self.buffer[old_head % N].store(u32::MAX, Ordering::Release);
             Some(final_val)
@@ -102,18 +94,16 @@ impl<const N: usize> MpmcQueue<N> {
         }
     }
 }
-
+#[repr(C, align(64))]
 pub struct LocalFreeQueue {
     items: [u32; 4096],
     len: usize,
 }
-
 impl Default for LocalFreeQueue {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl LocalFreeQueue {
     pub const fn new() -> Self {
         Self {
@@ -140,13 +130,13 @@ impl LocalFreeQueue {
         }
     }
 }
-
+#[repr(C, align(64))]
 pub struct QsbrToken;
-
 #[cfg_attr(
     not(feature = "std"),
     no_std_tool_macros::auto_static(capacity = 256, partition = "qsbr")
 )]
+#[repr(C, align(64))]
 pub struct ThreadStateNode {
     pub active: AtomicBool,
     pub epoch: AtomicUsize,
@@ -154,13 +144,11 @@ pub struct ThreadStateNode {
     pub garbage_queue: GarbageQueue,
     pub local_free: core::cell::UnsafeCell<LocalFreeQueue>,
 }
-
 impl Default for ThreadStateNode {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl ThreadStateNode {
     pub const fn new() -> Self {
         Self {
@@ -172,39 +160,31 @@ impl ThreadStateNode {
         }
     }
 }
-
 unsafe impl Send for ThreadStateNode {}
 unsafe impl Sync for ThreadStateNode {}
-
 pub trait RegistryCore: Send + Sync {
     fn free_id(&self, id: usize);
 }
-
-/// Register a pre-allocated thread state node. The caller should allocate this node
-/// locally or in the static TLS blocks.
+#[doc = " Register a pre-allocated thread state node. The caller should allocate this node"]
+#[doc = " locally or in the static TLS blocks."]
 pub fn register_node(node: *mut ThreadStateNode) {
     let _ = THREAD_STATES.try_update(Ordering::Release, Ordering::Relaxed, |head| {
         unsafe { (*node).next = head };
-
-        // Yield to encourage a CAS collision for coverage
         #[cfg(test)]
         core::hint::spin_loop();
-
         Some(node)
     });
 }
-
 pub fn get_global_epoch() -> usize {
     GLOBAL_EPOCH.load(Ordering::Relaxed)
 }
-
-/// A guard that pins the current thread to an epoch.
+#[doc = " A guard that pins the current thread to an epoch."]
+#[repr(C, align(64))]
 pub struct Guard {
     node: *mut ThreadStateNode,
 }
-
 impl Guard {
-    /// Create a new Guard using the explicitly provided ThreadStateNode.
+    #[doc = " Create a new Guard using the explicitly provided ThreadStateNode."]
     pub fn new(node: *mut ThreadStateNode) -> Self {
         let global_epoch = GLOBAL_EPOCH.load(Ordering::Acquire);
         unsafe {
@@ -213,26 +193,22 @@ impl Guard {
         }
         Self { node }
     }
-
     #[inline(always)]
     pub unsafe fn unpinned(node: *mut ThreadStateNode) -> Self {
         Self { node }
     }
-
     #[inline(always)]
     pub unsafe fn dummy() -> Self {
         Self {
             node: core::ptr::null_mut(),
         }
     }
-
-    /// Get the underlying ThreadStateNode pointer.
+    #[doc = " Get the underlying ThreadStateNode pointer."]
     #[inline(always)]
     pub fn node(&self) -> *mut ThreadStateNode {
         self.node
     }
 }
-
 impl Drop for Guard {
     #[inline(always)]
     fn drop(&mut self) {
@@ -242,35 +218,28 @@ impl Drop for Guard {
         }
     }
 }
-
 pub fn pin_relaxed(node: *mut ThreadStateNode) -> Guard {
     let node_ref = unsafe { &*node };
     node_ref.active.store(true, Ordering::Relaxed);
     Guard { node }
 }
-
 #[inline(always)]
 pub fn pin(node: *mut ThreadStateNode) -> Guard {
     Guard::new(node)
 }
-
-/// Retire a node index into the thread-local garbage queue safely using QSBR.
-/// This prevents ABA by ensuring the index is not freed to the Arena until all threads observing it have advanced.
+#[doc = " Retire a node index into the thread-local garbage queue safely using QSBR."]
+#[doc = " This prevents ABA by ensuring the index is not freed to the Arena until all threads observing it have advanced."]
 pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut _free_fn: F) {
     let epoch = GLOBAL_EPOCH.load(Ordering::Acquire) as u64;
     unsafe {
         let q = &mut (*node).garbage_queue;
-
-        // Wait until there's space (Daemon is slow, but we shouldn't drop)
         let mut head = q.head.load(Ordering::Relaxed);
         while head.wrapping_sub(q.tail.load(Ordering::Acquire)) >= GARBAGE_CAP {
-            // UPDATE EPOCH WHILE WAITING so daemon can advance min_epoch!
             let cur_epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
             (*node).epoch.store(cur_epoch, Ordering::Release);
             ::core::hint::spin_loop();
             head = q.head.load(Ordering::Relaxed);
         }
-
         let idx = head % GARBAGE_CAP;
         q.items[idx] = RetiredNode {
             index: index as u32,
@@ -279,31 +248,25 @@ pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut _free
         q.head.store(head.wrapping_add(1), Ordering::Release);
     }
 }
-
-/// The Daemon calls this globally to move safe nodes from GarbageQueues to Arena.
+#[doc = " The Daemon calls this globally to move safe nodes from GarbageQueues to Arena."]
 pub fn daemon_reclaim<F: FnMut(&[u32])>(mut free_batch_fn: F) {
     GLOBAL_EPOCH.fetch_add(1, Ordering::Relaxed);
     let min_epoch = get_min_epoch();
-
     let mut batch = [0u32; 128];
     let mut batch_len = 0;
-
     let mut node = THREAD_STATES.load(Ordering::Acquire);
     while !node.is_null() {
         unsafe {
             let q = &mut (*node).garbage_queue;
             let mut tail = q.tail.load(Ordering::Relaxed);
             let head = q.head.load(Ordering::Acquire);
-
             while tail < head {
                 let idx = tail % GARBAGE_CAP;
                 let retired = q.items[idx];
-
                 if retired.epoch < min_epoch as u64 {
                     batch[batch_len] = retired.index;
                     batch_len += 1;
                     tail += 1;
-
                     if batch_len == 128 {
                         free_batch_fn(&batch[..batch_len]);
                         batch_len = 0;
@@ -313,7 +276,6 @@ pub fn daemon_reclaim<F: FnMut(&[u32])>(mut free_batch_fn: F) {
                 }
             }
             q.tail.store(tail, Ordering::Release);
-
             node = (*node).next;
         }
     }
@@ -321,7 +283,6 @@ pub fn daemon_reclaim<F: FnMut(&[u32])>(mut free_batch_fn: F) {
         free_batch_fn(&batch[..batch_len]);
     }
 }
-
 fn get_min_epoch() -> usize {
     let mut min_epoch = GLOBAL_EPOCH.load(Ordering::Acquire);
     let mut node = THREAD_STATES.load(Ordering::Acquire);
@@ -338,11 +299,9 @@ fn get_min_epoch() -> usize {
     }
     min_epoch
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_qsbr_thread_state_node_new() {
         let node = ThreadStateNode::new();

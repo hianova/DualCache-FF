@@ -2,8 +2,7 @@ use super::arena::{self, Arena};
 use super::policy::{DefaultEvictionPolicy, EvictionPolicy};
 use super::qsbr;
 use super::slot::Slot;
-
-/// Represents a single cache tier (e.g., T0, T1, T2) using Set-Associative Lock-Free arrays.
+#[doc = " Represents a single cache tier (e.g., T0, T1, T2) using Set-Associative Lock-Free arrays."]
 #[repr(C, align(64))]
 pub struct CacheTier<
     K,
@@ -16,11 +15,10 @@ pub struct CacheTier<
     tags: alloc::boxed::Box<[::core::sync::atomic::AtomicU8]>,
     policy: P,
 }
-
 impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
     CacheTier<K, V, P, CAPACITY, WAYS>
 {
-    /// Create a new `CacheTier`.
+    #[doc = " Create a new `CacheTier`."]
     #[must_use]
     pub fn new(policy: P) -> Self {
         assert!(CAPACITY > 0, "CAPACITY must be greater than 0");
@@ -28,20 +26,17 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
             CAPACITY.is_multiple_of(WAYS),
             "CAPACITY must be a multiple of WAYS"
         );
-
         let mut tags = alloc::vec::Vec::with_capacity(CAPACITY);
         for _ in 0..CAPACITY {
             tags.push(::core::sync::atomic::AtomicU8::new(0));
         }
-
         Self {
             slots: [const { Slot::new() }; CAPACITY],
             tags: tags.into_boxed_slice(),
             policy,
         }
     }
-
-    /// Retrieve the set of slots for a given hash.
+    #[doc = " Retrieve the set of slots for a given hash."]
     #[inline(always)]
     pub fn get_set(&self, hash: usize) -> &[Slot<K, V>] {
         let num_sets = CAPACITY / WAYS;
@@ -49,8 +44,7 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         let start = index * WAYS;
         unsafe { self.slots.get_unchecked(start..start + WAYS) }
     }
-
-    /// Touch a slot by hash to prevent it from being evicted (Prefetch hint)
+    #[doc = " Touch a slot by hash to prevent it from being evicted (Prefetch hint)"]
     #[inline(always)]
     pub fn fetch_hint<const N: usize>(
         &self,
@@ -72,8 +66,7 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         }
         None
     }
-
-    /// Retrieve a slot if the key exists in this tier.
+    #[doc = " Retrieve a slot if the key exists in this tier."]
     #[inline(always)]
     pub fn get_slot<const N: usize>(
         &self,
@@ -88,21 +81,18 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         let num_sets = CAPACITY / WAYS;
         let index = hash % num_sets;
         let start = index * WAYS;
-        
         let expected_tag = ((hash >> 16) & 255) as u8;
         let mut match_mask = 0u8;
-        
         for i in 0..WAYS {
-            let tag = unsafe { self.tags.get_unchecked(start + i) }.load(::core::sync::atomic::Ordering::Relaxed);
+            let tag = unsafe { self.tags.get_unchecked(start + i) }
+                .load(::core::sync::atomic::Ordering::Relaxed);
             if tag == expected_tag {
                 match_mask |= 1 << i;
             }
         }
-        
         if match_mask == 0 {
             return None;
         }
-
         let set = self.get_set(hash);
         for (i, slot) in set.iter().enumerate() {
             if (match_mask & (1 << i)) != 0 {
@@ -117,8 +107,7 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         }
         None
     }
-
-    /// Insert a key and value into the tier using the provided eviction policy.
+    #[doc = " Insert a key and value into the tier using the provided eviction policy."]
     pub fn insert<const N: usize>(
         &self,
         arena: &Arena<K, V, N>,
@@ -134,34 +123,36 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         let start = index * WAYS;
         let set = self.get_set(hash);
         let guard = qsbr::pin(node);
-
-        // 1. Try to find an empty slot or overwrite the exact matching key
         for (i, slot) in set.iter().enumerate() {
             let (slot_hash, idx) = slot.read(&guard);
             if idx == arena::NULL_INDEX {
-                unsafe { self.tags.get_unchecked(start + i) }.store(((hash >> 16) & 255) as u8, ::core::sync::atomic::Ordering::Relaxed);
+                unsafe { self.tags.get_unchecked(start + i) }.store(
+                    ((hash >> 16) & 255) as u8,
+                    ::core::sync::atomic::Ordering::Relaxed,
+                );
                 slot.insert(arena, hash, key, value, node);
                 return;
             }
             if slot_hash == hash {
                 let node_data = unsafe { arena.get(idx as usize) };
                 if node_data.key == key {
-                    unsafe { self.tags.get_unchecked(start + i) }.store(((hash >> 16) & 255) as u8, ::core::sync::atomic::Ordering::Relaxed);
+                    unsafe { self.tags.get_unchecked(start + i) }.store(
+                        ((hash >> 16) & 255) as u8,
+                        ::core::sync::atomic::Ordering::Relaxed,
+                    );
                     slot.insert(arena, hash, key, value, node);
                     return;
                 }
             }
         }
-
-        // 2. Use EvictionPolicy to find victim and perform decay
         let (victim_idx, victim_slot) = self.policy.find_victim_idx(set, hash);
-
-        // 3. Evict the victim
-        unsafe { self.tags.get_unchecked(start + victim_idx) }.store(((hash >> 16) & 255) as u8, ::core::sync::atomic::Ordering::Relaxed);
+        unsafe { self.tags.get_unchecked(start + victim_idx) }.store(
+            ((hash >> 16) & 255) as u8,
+            ::core::sync::atomic::Ordering::Relaxed,
+        );
         victim_slot.insert(arena, hash, key, value, node);
     }
 }
-
 impl<K, V, const CAPACITY: usize, const WAYS: usize> Default
     for CacheTier<K, V, DefaultEvictionPolicy, CAPACITY, WAYS>
 {
@@ -169,68 +160,55 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> Default
         Self::new(DefaultEvictionPolicy::new())
     }
 }
-
-/// A direct-mapped (1-way) fast tier optimized for T0 zero-cost lookups.
-/// It uses exactly 1 atomic load for maximum throughput.
+#[doc = " A direct-mapped (1-way) fast tier optimized for T0 zero-cost lookups."]
+#[doc = " It uses exactly 1 atomic load for maximum throughput."]
 #[repr(C, align(64))]
 pub struct FastTier<const CAPACITY: usize> {
     slots: [AtomicU64; CAPACITY],
 }
-
 pub const NULL_PACKED: u64 = u64::MAX;
 pub const IDX_MASK: u64 = 0x0000_0000_FFFF_FFFF;
-
 impl<const CAPACITY: usize> Default for FastTier<CAPACITY> {
     fn default() -> Self {
         Self::new()
     }
 }
-
 use core::sync::atomic::AtomicU64;
-
 impl<const CAPACITY: usize> FastTier<CAPACITY> {
     pub const fn new() -> Self {
         assert!(
             CAPACITY > 0 && CAPACITY.is_power_of_two(),
             "CAPACITY must be a power of two"
         );
-        let slots =
-            [const { AtomicU64::new(NULL_PACKED) }; CAPACITY];
+        let slots = [const { AtomicU64::new(NULL_PACKED) }; CAPACITY];
         Self { slots }
     }
-
-    /// Retrieve the slot index from the fast tier.
+    #[doc = " Retrieve the slot index from the fast tier."]
     #[inline(always)]
     pub fn get_slot_idx(&self, hash: usize) -> u32 {
         let mask = CAPACITY - 1;
         let idx = hash & mask;
         let val = self.slots[idx].load(::core::sync::atomic::Ordering::Relaxed);
-        
         let node_idx = val & IDX_MASK;
         let tag = val & 0xFFFFFFFF00000000;
         let expected_tag = (hash as u64) & 0xFFFFFFFF00000000;
-        
         if node_idx == NULL_PACKED || tag != expected_tag {
             super::arena::NULL_INDEX
         } else {
             node_idx as u32
         }
     }
-
     #[inline(always)]
     pub fn insert_idx(&self, hash: usize, node_idx: u32) -> u32 {
         let mask = CAPACITY - 1;
         let idx = hash & mask;
-        
         let new_val = if node_idx == super::arena::NULL_INDEX {
             NULL_PACKED
         } else {
             let tag = (hash as u64) & 0xFFFFFFFF00000000;
             tag | (node_idx as u64)
         };
-        
         let old_val = self.slots[idx].swap(new_val, ::core::sync::atomic::Ordering::Release);
-        
         let old_idx = old_val & IDX_MASK;
         if old_idx == NULL_PACKED {
             super::arena::NULL_INDEX
@@ -238,10 +216,9 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
             old_idx as u32
         }
     }
-
-    /// # Safety
-    /// The caller must ensure that `node` is a valid pointer to a ThreadStateNode
-    /// and that the thread state is active.
+    #[doc = " # Safety"]
+    #[doc = " The caller must ensure that `node` is a valid pointer to a ThreadStateNode"]
+    #[doc = " and that the thread state is active."]
     pub unsafe fn insert_promote<K, V, const N: usize>(
         &self,
         arena: &super::arena::Arena<K, V, N>,
@@ -264,26 +241,19 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
             }
         }
     }
-
     pub fn clear(&self) {
         for slot in self.slots.iter() {
-            slot.store(
-                NULL_PACKED,
-                ::core::sync::atomic::Ordering::Relaxed,
-            );
+            slot.store(NULL_PACKED, ::core::sync::atomic::Ordering::Relaxed);
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::arena::Arena;
     use crate::core::qsbr;
-
     #[test]
     fn test_cache_tier_eviction() {
-        // CAPACITY=8, WAYS=8 means 1 set, 8 slots.
         let tier = CacheTier::<u64, u64, crate::core::policy::DefaultEvictionPolicy, 8, 8>::new(
             crate::core::policy::DefaultEvictionPolicy::new(),
         );
@@ -296,23 +266,17 @@ mod tests {
             node
         };
         let guard = qsbr::pin(node);
-
-        // Fill all 8 slots
         for i in 0..8 {
             tier.insert(&arena, i as usize, i, i * 10, node);
         }
-
-        // Insert 9th item to trigger eviction
         tier.insert(&arena, 8, 8, 80, node);
-
-        // One of the first 8 should be evicted. Let's check how many remain.
         let mut count = 0;
         for i in 0..9 {
             if tier.get_slot(&arena, i as usize, &i, &guard).is_some() {
                 count += 1;
             }
         }
-        assert_eq!(count, 8); // One was evicted, leaving 8.
+        assert_eq!(count, 8);
     }
     #[test]
     fn test_cache_tier_default() {
@@ -321,24 +285,17 @@ mod tests {
         let set = tier.get_set(0);
         assert_eq!(set.len(), 8);
     }
-
     #[test]
     fn test_fast_tier_logic() {
         let t0: FastTier<64> = FastTier::new();
         let hash: usize = 0x123456789ABCDEF0;
-        
         let old_idx = t0.insert_idx(hash, 42);
         assert_eq!(old_idx, super::super::arena::NULL_INDEX);
-        
         let out_idx = t0.get_slot_idx(hash);
         assert_eq!(out_idx, 42);
-        
-        // Test miss due to tag mismatch
-        let bad_hash: usize = 0x876543219ABCDEF0; // Top 8 bits differ
+        let bad_hash: usize = 0x876543219ABCDEF0;
         let out_miss = t0.get_slot_idx(bad_hash);
         assert_eq!(out_miss, super::super::arena::NULL_INDEX);
-
-        // Test clear
         t0.clear();
         assert_eq!(t0.get_slot_idx(hash), super::super::arena::NULL_INDEX);
     }

@@ -1,5 +1,4 @@
 #![allow(long_running_const_eval)]
-use std::vec::Vec;
 use crossbeam_utils::thread;
 use dualcache_ff::DualCacheFF;
 use dualcache_ff::core::static_cache::StaticDualCache;
@@ -10,6 +9,7 @@ use rand::prelude::Distribution;
 use rand_distr::Zipf;
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
+use std::vec::Vec;
 
 // ============================================================================
 // 測試參數設計理念與公允性：
@@ -86,7 +86,7 @@ fn run_workload(
     mode: CacheMode,
 ) -> BenchResult {
     // With lazy_static, we initialize only the needed cache to avoid allocating
-    // multiple 120MB structures on the stack sequentially.    
+    // multiple 120MB structures on the stack sequentially.
     let gb_token: &'static GBenchToken = &GBenchToken;
     let gs_token: &'static GsBenchToken = &GsBenchToken;
 
@@ -208,11 +208,12 @@ fn run_workload(
 
                 let tls = tls_handle.as_ref();
 
-                let (c, c_tls) = if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
-                    (Some(cache.unwrap()), Some(tls.unwrap()))
-                } else {
-                    (None, None)
-                };
+                let (c, c_tls) =
+                    if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
+                        (Some(cache.unwrap()), Some(tls.unwrap()))
+                    } else {
+                        (None, None)
+                    };
 
                 let sc = if mode == CacheMode::StaticBottomUp {
                     Some(static_cache.unwrap())
@@ -370,7 +371,10 @@ fn main() {
         .stack_size(1024 * 1024 * 1024)
         .spawn(move || {
             let mut gb_token = GBenchToken;
-            GlobalBenchCacheWrapper::insert(GlobalBenchCacheWrapper(DualCacheFF::new()), &mut gb_token);
+            GlobalBenchCacheWrapper::insert(
+                GlobalBenchCacheWrapper(DualCacheFF::new()),
+                &mut gb_token,
+            );
 
             let mut gs_token = GsBenchToken;
             GlobalStaticBenchCacheWrapper::insert(

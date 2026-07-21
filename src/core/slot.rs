@@ -1,8 +1,7 @@
 use super::arena::{self, Arena};
 use super::qsbr;
 use ::core::sync::atomic::Ordering;
-
-/// A Slot in the CacheTier.
+#[doc = " A Slot in the CacheTier."]
 #[repr(align(64))]
 pub struct Slot<K, V> {
     pub hash: ::core::sync::atomic::AtomicUsize,
@@ -11,7 +10,6 @@ pub struct Slot<K, V> {
     pub prefetch_hint: ::core::sync::atomic::AtomicUsize,
     _marker: core::marker::PhantomData<(K, V)>,
 }
-
 impl<K, V> Slot<K, V> {
     #[inline(always)]
     pub const fn new() -> Self {
@@ -23,17 +21,15 @@ impl<K, V> Slot<K, V> {
             _marker: core::marker::PhantomData,
         }
     }
-
-    /// Read the slot. The caller MUST be holding a QSBR Guard.
-    /// Returns the hash and the node index.
+    #[doc = " Read the slot. The caller MUST be holding a QSBR Guard."]
+    #[doc = " Returns the hash and the node index."]
     #[inline(always)]
     pub fn read(&self, _guard: &qsbr::Guard) -> (usize, u32) {
         let hash = self.hash.load(Ordering::Relaxed);
         let idx = self.node_idx.load(Ordering::Acquire);
         (hash, idx)
     }
-
-    /// Record a cache hit atomically and return (old_hits, new_hits).
+    #[doc = " Record a cache hit atomically and return (old_hits, new_hits)."]
     #[inline(always)]
     pub fn record_hit(&self, op_count: u32) -> (u16, u16) {
         let old_hits = self.hits.load(Ordering::Relaxed);
@@ -45,8 +41,7 @@ impl<K, V> Slot<K, V> {
         self.hits.store(new_hits, Ordering::Relaxed);
         (old_hits, new_hits)
     }
-
-    /// Insert a new node into the slot, retiring the old one safely using QSBR.
+    #[doc = " Insert a new node into the slot, retiring the old one safely using QSBR."]
     pub fn insert<const N: usize>(
         &self,
         arena: &Arena<K, V, N>,
@@ -66,17 +61,14 @@ impl<K, V> Slot<K, V> {
         }
     }
 }
-
 impl<K, V> Default for Slot<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_slot_default() {
         let slot: Slot<u64, u64> = Slot::default();
@@ -102,15 +94,11 @@ mod tests {
             n
         };
         let guard = crate::core::qsbr::pin(node);
-
         slot.insert(&arena, 100, 10, 20, node);
         assert_eq!(slot.read(&guard).0, 100);
-
         let (old_hits, new_hits) = slot.record_hit(100);
         assert_eq!(old_hits, 8);
         assert_eq!(new_hits, 108);
-
-        // Re-insert to trigger retirement of old_idx
         slot.insert(&arena, 200, 30, 40, node);
         assert_eq!(slot.read(&guard).0, 200);
     }

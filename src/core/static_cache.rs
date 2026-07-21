@@ -5,8 +5,8 @@ use crate::core::qsbr::{ThreadStateNode, pin};
 use ::core::sync::atomic::{AtomicUsize, Ordering};
 use core::hash::Hash;
 use no_std_tool::sync::SpinMutex;
-
 #[cfg(feature = "std")]
+#[repr(C, align(64))]
 pub struct StaticDualCache<
     K,
     V,
@@ -21,7 +21,6 @@ pub struct StaticDualCache<
     reclaim_lock: SpinMutex<()>,
     insert_count: AtomicUsize,
 }
-
 #[cfg(feature = "std")]
 impl<
     K,
@@ -44,47 +43,34 @@ where
             insert_count: AtomicUsize::new(0),
         }
     }
-
-    /// Retrieve a value from the cache lock-freely.
+    #[doc = " Retrieve a value from the cache lock-freely."]
     pub fn get(&self, key: &K) -> Option<V> {
-        thread_local! {
-            static THREAD_HANDLE: std::cell::OnceCell<crate::component::tls::TlsHandle> = const { std::cell::OnceCell::new() };
-        }
-
+        thread_local! { static THREAD_HANDLE : std :: cell :: OnceCell < crate :: component :: tls :: TlsHandle > = const { std :: cell :: OnceCell :: new () } ; }
         let node_ptr = THREAD_HANDLE.with(|cell| {
             cell.get_or_init(|| self.tls_registry.register_thread())
                 .qsbr_node
         });
-
         let guard = unsafe { crate::core::qsbr::Guard::unpinned(node_ptr) };
         self.core
             .get(key, &guard, 16)
             .map(|(v_ref, _tier, _hint)| v_ref.clone())
     }
-
-    /// Insert a key-value pair into the cache. Handles inline reclamation synchronously.
+    #[doc = " Insert a key-value pair into the cache. Handles inline reclamation synchronously."]
     pub fn put(&self, key: K, value: V) {
-        thread_local! {
-            static THREAD_HANDLE: std::cell::OnceCell<crate::component::tls::TlsHandle> = const { std::cell::OnceCell::new() };
-        }
-
+        thread_local! { static THREAD_HANDLE : std :: cell :: OnceCell < crate :: component :: tls :: TlsHandle > = const { std :: cell :: OnceCell :: new () } ; }
         let node_ptr = THREAD_HANDLE.with(|cell| {
             cell.get_or_init(|| self.tls_registry.register_thread())
                 .qsbr_node
         });
-
         self.core.put(key, value, node_ptr, 1);
-
         let count = self.insert_count.fetch_add(1, Ordering::Relaxed);
-
-        // Inline QSBR reclamation every 1024 inserts to prevent Arena OOM
         if count % 1024 == 1023 && self.reclaim_lock.lock().is_ok() {
             self.core.sync_reclaim();
         }
     }
 }
-
 #[cfg(not(feature = "std"))]
+#[repr(C, align(64))]
 pub struct StaticDualCache<
     K,
     V,
@@ -101,7 +87,6 @@ pub struct StaticDualCache<
     )>,
     insert_count: AtomicUsize,
 }
-
 #[cfg(not(feature = "std"))]
 impl<
     K,
@@ -122,55 +107,41 @@ where
             insert_count: AtomicUsize::new(0),
         }
     }
-
-    /// Retrieve a value from the cache synchronously.
+    #[doc = " Retrieve a value from the cache synchronously."]
     pub fn get(&self, key: &K) -> Option<V> {
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
-            Err(_) => return None, // Aerospace-grade: treat lock timeout as cache miss to guarantee bounded latency
+            Err(_) => return None,
         };
         let (engine, qsbr_node, registered) = &mut *inner;
-
         if !*registered {
             crate::core::qsbr::register_node(qsbr_node as *mut _);
             *registered = true;
         }
-
         let guard = pin(qsbr_node as *mut ThreadStateNode);
-
-        // Map the reference to an owned value to allow releasing the lock safely
-        // Pass 16 to force record_hit for static cache which doesn't have a thread local op_count
         engine
             .get(key, &guard, 16)
             .map(|(v_ref, _tier, _hint)| v_ref.clone())
     }
-
-    /// Insert a key-value pair into the cache. Handles inline reclamation synchronously.
+    #[doc = " Insert a key-value pair into the cache. Handles inline reclamation synchronously."]
     pub fn put(&self, key: K, value: V) {
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
-            Err(_) => return, // Aerospace-grade: drop insert on lock timeout to guarantee bounded latency
+            Err(_) => return,
         };
         let (engine, qsbr_node, registered) = &mut *inner;
-
         if !*registered {
             crate::core::qsbr::register_node(qsbr_node as *mut _);
             *registered = true;
         }
-
         let node_ptr = qsbr_node as *mut ThreadStateNode;
-
         engine.put(key, value, node_ptr, 1);
-
         let count = self.insert_count.fetch_add(1, Ordering::Relaxed);
-
-        // Inline QSBR reclamation every 1024 inserts to prevent Arena OOM
         if count % 1024 == 1023 {
             engine.sync_reclaim();
         }
     }
 }
-
 #[cfg(feature = "std")]
 impl<
     K,
@@ -189,7 +160,6 @@ where
         Self::new(P::Evict::default())
     }
 }
-
 #[cfg(not(feature = "std"))]
 impl<
     K,
@@ -208,8 +178,7 @@ where
         Self::new(P::Evict::default())
     }
 }
-
-/// A default configured Bottom-Up Anchoring StaticDualCache
+#[doc = " A default configured Bottom-Up Anchoring StaticDualCache"]
 pub type StaticBottomUpCache<K, V> = StaticDualCache<
     K,
     V,
@@ -219,7 +188,6 @@ pub type StaticBottomUpCache<K, V> = StaticDualCache<
     262144,
     { 64 + 4096 + 262144 },
 >;
-
 impl<
     K: Clone + Eq + core::hash::Hash + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
@@ -234,7 +202,6 @@ impl<
     fn get(&self, key: &K) -> Option<V> {
         self.get(key)
     }
-
     fn put(&self, key: K, value: V) {
         self.put(key, value)
     }

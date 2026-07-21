@@ -1,32 +1,29 @@
 use ::core::hash::Hash;
 use std::thread::{self, JoinHandle};
-
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonMessage<K, V> {
-    Hit(usize, u8),                  // hash, weight
-    HitBatch([(usize, u8); 32], u8), // batch of hits
-    Promote(usize, K, V, u8),        // hash, key, value, tier (0=T0, 2=T2)
-    /// Dynamically adjust Daemon poll interval (Power-Saving Mode) - missing from v0.5.0
+    Hit(usize, u8),
+    HitBatch([(usize, u8); 32], u8),
+    Promote(usize, K, V, u8),
+    #[doc = " Dynamically adjust Daemon poll interval (Power-Saving Mode) - missing from v0.5.0"]
     SetPollInterval(u64),
-    /// Zero-cost callbacks / blocking maintenance flush - missing from v0.5.0
+    #[doc = " Zero-cost callbacks / blocking maintenance flush - missing from v0.5.0"]
     Sync(std::sync::Arc<OneshotAck>),
-    /// Graceful shutdown - missing from v0.5.0
+    #[doc = " Graceful shutdown - missing from v0.5.0"]
     Shutdown,
 }
-
-/// The Daemon manages background tasks like TLS-to-Core promotion
-/// and QSBR memory reclamation.
+#[doc = " The Daemon manages background tasks like TLS-to-Core promotion"]
+#[doc = " and QSBR memory reclamation."]
+#[repr(C, align(64))]
 pub struct Daemon {
     handle: Option<JoinHandle<()>>,
 }
-
 impl Daemon {
     pub fn join(&mut self) {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
     }
-
     fn compress_and_push<K, V>(
         batch: &mut std::vec::Vec<DaemonMessage<K, V>>,
         msg: DaemonMessage<K, V>,
@@ -69,8 +66,7 @@ impl Daemon {
             }
         }
     }
-
-    /// Spawn the daemon thread. Returns the Daemon handle.
+    #[doc = " Spawn the daemon thread. Returns the Daemon handle."]
     #[inline(never)]
     pub fn spawn<
         K,
@@ -104,15 +100,11 @@ impl Daemon {
             let batch_limit = crate::covopt_param!("DAEMON_BATCH_LIMIT", 65536usize, 1024..131072);
             loop {
                 let mut disconnected = false;
-
-                // 1. Log Compaction (High Fidelity Compression)
                 let msg_opt = rx.pop();
-
                 match msg_opt {
                     Some(msg) => {
                         empty_spins = 0;
                         Self::compress_and_push(&mut batch, msg);
-                        // batch_limit is evaluated outside the loop
                         while batch.len() < batch_limit {
                             if let Some(next_msg) = rx.pop() {
                                 Self::compress_and_push(&mut batch, next_msg);
@@ -139,8 +131,6 @@ impl Daemon {
                         }
                     }
                 }
-
-                // 2. Process batch and Broadcast
                 let mut last_hash: Option<usize> = None;
                 for msg in batch.drain(..) {
                     match msg {
@@ -173,11 +163,7 @@ impl Daemon {
                         }
                     }
                 }
-
-                // Pin daemon node so it updates its QSBR epoch and participates in GC
                 let _guard = crate::core::qsbr::pin(daemon_node);
-
-                // GC: Move safe nodes from thread-local garbage queues to the Arena directly
                 crate::core::qsbr::daemon_reclaim(|batch| {
                     if batch.is_empty() {
                         return;
@@ -191,10 +177,11 @@ impl Daemon {
                             }
                         }
                         core.arena.free_batch(batch[0], batch[batch.len() - 1]);
-                        core.arena.allocated_count.fetch_sub(batch.len(), core::sync::atomic::Ordering::Relaxed);
+                        core.arena
+                            .allocated_count
+                            .fetch_sub(batch.len(), core::sync::atomic::Ordering::Relaxed);
                     }
                 });
-
                 if disconnected {
                     let node_ref = unsafe { &*daemon_node };
                     node_ref.active.store(false, Ordering::Release);
@@ -207,26 +194,22 @@ impl Daemon {
         }
     }
 }
-
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-
+#[repr(C, align(64))]
 pub struct OneshotAck {
     ready: AtomicBool,
 }
-
 impl OneshotAck {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             ready: AtomicBool::new(false),
         })
     }
-
     #[inline(always)]
     pub fn signal(&self) {
         self.ready.store(true, Ordering::Release);
     }
-
     #[inline(always)]
     pub fn wait(&self) {
         let mut spins = 0;
@@ -240,18 +223,15 @@ impl OneshotAck {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn test_daemon_compress_and_push() {
         let mut batch: std::vec::Vec<DaemonMessage<u64, u64>> = std::vec::Vec::new();
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 10));
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 5));
         Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(2, 5));
-
         let mut arr = [(0usize, 0u8); 32];
         arr[0] = (2, 5);
         arr[1] = (3, 10);

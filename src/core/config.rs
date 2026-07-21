@@ -1,18 +1,15 @@
-//! Static Configuration Policy for DualCacheCore
-//! Uses a Trait-based Static Config pattern for maximum extensibility and zero runtime overhead.
-
+#![doc = " Static Configuration Policy for DualCacheCore"]
+#![doc = " Uses a Trait-based Static Config pattern for maximum extensibility and zero runtime overhead."]
 pub trait CachePolicy {
     type Evict: crate::core::policy::EvictionPolicy + Default;
-
-    /// Hit count threshold to promote from Local TLS Cache to T2 Core Cache.
+    #[doc = " Hit count threshold to promote from Local TLS Cache to T2 Core Cache."]
     const T2_THRESHOLD: u16;
-    /// Hit count threshold to promote from T2 to T1.
+    #[doc = " Hit count threshold to promote from T2 to T1."]
     const T1_THRESHOLD: u16;
-    /// Hit count threshold to promote from T1 to T0.
+    #[doc = " Hit count threshold to promote from T1 to T0."]
     const T0_THRESHOLD: u16;
-
-    /// Compile-Time Assertions
-    /// Forces the user-defined thresholds to be powers of two.
+    #[doc = " Compile-Time Assertions"]
+    #[doc = " Forces the user-defined thresholds to be powers of two."]
     const _ASSERT_POWER_OF_TWO: () = {
         assert!(
             Self::T2_THRESHOLD.is_power_of_two(),
@@ -28,14 +25,12 @@ pub trait CachePolicy {
         );
     };
 }
-
-/// The default Exponential Policy scaling latency thresholds by 2^n.
+#[doc = " The default Exponential Policy scaling latency thresholds by 2^n."]
+#[repr(C, align(64))]
 pub struct DefaultExponentialPolicy;
-
 impl CachePolicy for DefaultExponentialPolicy {
     type Evict = crate::core::policy::DefaultEvictionPolicy;
-
-    const T2_THRESHOLD: u16 = 2; // Local to T2 (T2 threshold not strictly defined in earlier prompts but 2 fits 2^1)
-    const T1_THRESHOLD: u16 = 16; // T2 to T1
-    const T0_THRESHOLD: u16 = 256; // T1 to T0
+    const T2_THRESHOLD: u16 = 2;
+    const T1_THRESHOLD: u16 = 16;
+    const T0_THRESHOLD: u16 = 256;
 }

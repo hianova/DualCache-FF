@@ -1,5 +1,4 @@
 #![allow(long_running_const_eval)]
-use std::vec::Vec;
 use crossbeam_utils::thread;
 use dualcache_ff::DualCacheFF;
 use rand::Rng;
@@ -7,6 +6,7 @@ use rand::prelude::Distribution;
 use rand_distr::Zipf;
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
+use std::vec::Vec;
 
 const THREAD_COUNT: usize = 4;
 const TOTAL_OPS: usize = 4_000_000;
@@ -25,7 +25,10 @@ fn main() {
         .stack_size(1024 * 1024 * 1024)
         .spawn(|| {
             let mut token = CovBenchToken;
-            GlobalBenchCacheWrapper::insert(GlobalBenchCacheWrapper(DualCacheFF::new()), &mut token);
+            GlobalBenchCacheWrapper::insert(
+                GlobalBenchCacheWrapper(DualCacheFF::new()),
+                &mut token,
+            );
             let zipf = Zipf::new(DATASET_SIZE, 0.99).unwrap();
 
             let mut all_ops_data = Vec::new();
@@ -70,7 +73,11 @@ fn main() {
 
                             while local_ops < OPS_PER_THREAD {
                                 let (key, is_read) = ops_data[key_idx];
-                                key_idx = if key_idx + 1 == ops_len { 0 } else { key_idx + 1 };
+                                key_idx = if key_idx + 1 == ops_len {
+                                    0
+                                } else {
+                                    key_idx + 1
+                                };
 
                                 if is_read {
                                     if cache.get(&key, tls).is_none() {

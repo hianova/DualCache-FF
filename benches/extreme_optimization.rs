@@ -1,6 +1,6 @@
-use std::vec::Vec;
 use criterion::{BenchmarkId, Criterion, criterion_group};
 use std::sync::Arc;
+use std::vec::Vec;
 
 use dualcache_ff::component::tls::TlsRegistry;
 use dualcache_ff::core::config::DefaultExponentialPolicy;
