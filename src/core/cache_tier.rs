@@ -36,6 +36,22 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
             policy,
         }
     }
+
+    pub fn init_in_place(&mut self, policy: P) {
+        for i in 0..CAPACITY {
+            unsafe {
+                core::ptr::write(&mut self.slots[i], Slot::new());
+            }
+        }
+        let mut tags = alloc::vec::Vec::with_capacity(CAPACITY);
+        for _ in 0..CAPACITY {
+            tags.push(::core::sync::atomic::AtomicU8::new(0));
+        }
+        unsafe {
+            core::ptr::write(&mut self.tags, tags.into_boxed_slice());
+            core::ptr::write(&mut self.policy, policy);
+        }
+    }
     #[doc = " Retrieve the set of slots for a given hash."]
     #[inline(always)]
     pub fn get_set(&self, hash: usize) -> &[Slot<K, V>] {
@@ -182,6 +198,12 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
         );
         let slots = [const { AtomicU64::new(NULL_PACKED) }; CAPACITY];
         Self { slots }
+    }
+    
+    pub fn init_in_place(&mut self) {
+        for i in 0..CAPACITY {
+            self.slots[i] = AtomicU64::new(NULL_PACKED);
+        }
     }
     #[doc = " Retrieve the slot index from the fast tier."]
     #[inline(always)]

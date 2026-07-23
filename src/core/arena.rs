@@ -28,22 +28,25 @@ impl<K, V, const N: usize> Default for Arena<K, V, N> {
 impl<K, V, const N: usize> Arena<K, V, N> {
     #[cfg_attr(covopt, ignore)]
     pub const fn new() -> Self {
-        let mut next_free = [const { ::core::sync::atomic::AtomicU32::new(0) }; N];
-        let mut i = 0;
-        while i < N - 1 {
-            next_free[i] = ::core::sync::atomic::AtomicU32::new((i + 1) as u32);
-            i += 1;
-        }
-        next_free[N - 1] = ::core::sync::atomic::AtomicU32::new(NULL_INDEX);
+        let next_free = [const { ::core::sync::atomic::AtomicU32::new(NULL_INDEX) }; N];
         let nodes: [UnsafeCell<MaybeUninit<Node<K, V>>>; N] =
             unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         Self {
             nodes,
             next_free,
-            free_head: AtomicUsize::new(0),
+            free_head: AtomicUsize::new(NULL_INDEX as usize),
             allocated_count: AtomicUsize::new(0),
             cursor: core::sync::atomic::AtomicU32::new(0),
         }
+    }
+
+    pub fn init_in_place(&mut self) {
+        for i in 0..N {
+            self.next_free[i] = core::sync::atomic::AtomicU32::new(NULL_INDEX);
+        }
+        self.free_head = AtomicUsize::new(NULL_INDEX as usize);
+        self.allocated_count = AtomicUsize::new(0);
+        self.cursor = core::sync::atomic::AtomicU32::new(0);
     }
     pub fn capacity(&self) -> usize {
         N

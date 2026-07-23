@@ -41,29 +41,39 @@ where
     V: Clone,
 {
     pub fn new(eviction: P::Evict) -> Self {
+        *Self::new_boxed(eviction)
+    }
+
+    pub fn new_boxed(eviction: P::Evict) -> alloc::boxed::Box<Self> {
         let t0_thresh = crate::covopt_param!("T0_THRESH", P::T0_THRESHOLD, 1..1000);
         let t1_thresh = crate::covopt_param!("T1_THRESH", P::T1_THRESHOLD, 1..100);
         let t2_thresh = crate::covopt_param!("T2_THRESH", P::T2_THRESHOLD, 1..50);
         let warmup_thresh = crate::covopt_param!("WARMUP_THRESH", 256, 1..2000);
-        Self {
-            arena: Arena::new(),
-            t0: FastTier::new(),
-            t1: FastTier::new(),
-            t2: CacheTier::new(eviction),
-            blackjack: crate::core::blackjack::PackedBlackjack::new(
-                t0_thresh,
-                t1_thresh,
-                t2_thresh,
-                warmup_thresh,
-            ),
-            hash_builder: ahash::RandomState::with_seeds(
-                0x1234567890ABCDEF,
-                0xFEDCBA0987654321,
-                0x13579BDF02468ACE,
-                0xECA86420FDB97531,
-            ),
-            _marker: core::marker::PhantomData,
+        
+        let mut b = unsafe { alloc::boxed::Box::<Self>::new_zeroed().assume_init() };
+        
+        b.arena.init_in_place();
+        b.t0.init_in_place();
+        b.t1.init_in_place();
+        b.t2.init_in_place(eviction);
+        
+        unsafe {
+            core::ptr::write(
+                &mut b.blackjack,
+                crate::core::blackjack::PackedBlackjack::new(
+                    t0_thresh,
+                    t1_thresh,
+                    t2_thresh,
+                    warmup_thresh,
+                ),
+            );
+            core::ptr::write(
+                &mut b.hash_builder,
+                ahash::RandomState::with_seeds(0x1234567890ABCDEF, 0, 0, 0),
+            );
+            core::ptr::write(&mut b._marker, core::marker::PhantomData);
         }
+        b
     }
     #[inline(always)]
     pub fn hash_key(&self, key: &K) -> usize {

@@ -19,9 +19,11 @@
 use dualcache_ff::DualCacheFF;
 use dualcache_ff::core::config::DefaultExponentialPolicy;
 
-// Initialize a 3-tier global cache with 10 maximum threads
-// T0: 256, T1: 1024, T2: 2048, Total: 4096
-static CACHE: DualCacheFF<u64, u64, DefaultExponentialPolicy, 256, 1024, 2048, 4096, 10, 256, 512> = DualCacheFF::new();
+// Initialize a multi-tier global cache.
+// Note: Due to large internal structures being Box-allocated to prevent stack overflows,
+// `DualCacheFF::new()` is not a `const fn`. Use `std::sync::LazyLock` for statics.
+static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, DefaultExponentialPolicy, 256, 1024, 2048, 4096, 10, 3328>> = 
+    std::sync::LazyLock::new(DualCacheFF::new);
 
 fn worker_thread() {
     // 1. Register thread to acquire a fast TLS handle & QSBR node

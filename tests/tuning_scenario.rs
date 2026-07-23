@@ -23,6 +23,7 @@ fn test_tuning_scenario() {
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
         .spawn(|| {
+            println!("Size of TestCache: {}", std::mem::size_of::<TestCache>());
             static CACHE: std::sync::LazyLock<TestCache> = std::sync::LazyLock::new(TestCache::new);
 
             // Disable background daemon for deterministic testing

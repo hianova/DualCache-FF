@@ -93,7 +93,7 @@ pub struct DualCacheFF<
     const TLS_INDEX_CAP: usize = 16,
     const TOTAL_CAP: usize = { 131072 + 16384 + 262144 },
 > {
-    core: crate::core::DualCacheCore<
+    core: alloc::boxed::Box<crate::core::DualCacheCore<
         K,
         V,
         P,
@@ -101,7 +101,7 @@ pub struct DualCacheFF<
         T1_CAP,
         T2_CAP,
         TOTAL_CAP,
-    >,
+    >>,
     pub daemon_mode: AtomicBool,
     pub reclaim_lock: AtomicBool,
     #[cfg(feature = "std")]
@@ -158,7 +158,7 @@ where
     V: Clone + Send + Sync + 'static,
 {
     pub fn new() -> Self {
-        Self { core : crate :: core :: DualCacheCore :: new (P :: Evict :: default ()) , daemon_mode : AtomicBool :: new (false) , reclaim_lock : AtomicBool :: new (false) , # [cfg (feature = "std")] cata_mode : AtomicBool :: new (false) , warmup_step : crate :: covopt_param ! ("WARMUP_STEP" , 10 , 1 .. 20) , warmup_pct : crate :: covopt_param ! ("WARMUP_PCT" , 95 , 50 .. 100) , tls_registry : TlsRegistry :: new () , # [cfg (feature = "std")] global_tx : std :: sync :: RwLock :: new (None) , # [cfg (feature = "std")] daemon_handle : std :: sync :: RwLock :: new (None) , }
+        Self { core : crate :: core :: DualCacheCore :: new_boxed (P :: Evict :: default ()) , daemon_mode : AtomicBool :: new (false) , reclaim_lock : AtomicBool :: new (false) , # [cfg (feature = "std")] cata_mode : AtomicBool :: new (false) , warmup_step : crate :: covopt_param ! ("WARMUP_STEP" , 10 , 1 .. 20) , warmup_pct : crate :: covopt_param ! ("WARMUP_PCT" , 95 , 50 .. 100) , tls_registry : TlsRegistry :: new () , # [cfg (feature = "std")] global_tx : std :: sync :: RwLock :: new (None) , # [cfg (feature = "std")] daemon_handle : std :: sync :: RwLock :: new (None) , }
     }
     #[doc = " Start the CATA-DC Demiurge tuning engine in the background"]
     #[cfg(feature = "std")]
