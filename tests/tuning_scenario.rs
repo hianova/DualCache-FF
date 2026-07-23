@@ -1,4 +1,4 @@
-type TestCache = dualcache_ff::DualCacheFF<u64, u64, 4096, 1024, 1024, 8192>;
+type TestCache = dualcache_ff::DualCacheFF<u64, u64, dualcache_ff::core::config::DefaultExponentialPolicy, 4096, 1024, 1024, 8192>;
 
 // A simple deterministic pseudo-random number generator
 struct Lcg {

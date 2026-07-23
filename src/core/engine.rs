@@ -11,10 +11,10 @@ pub struct DualCacheCore<
     K,
     V,
     P: CachePolicy = DefaultExponentialPolicy,
-    const T0_CAP: usize = 64,
-    const T1_CAP: usize = 4096,
+    const T0_CAP: usize = 131072,
+    const T1_CAP: usize = 16384,
     const T2_CAP: usize = 262144,
-    const TOTAL_CAP: usize = { 64 + 4096 + 262144 },
+    const TOTAL_CAP: usize = { 131072 + 16384 + 262144 },
 > {
     pub arena: Arena<K, V, TOTAL_CAP>,
     pub t0: FastTier<T0_CAP>,
@@ -26,7 +26,7 @@ pub struct DualCacheCore<
 }
 #[doc = " A default configured Bottom-Up Anchoring DualCacheCore"]
 pub type BottomUpCache<K, V> =
-    DualCacheCore<K, V, DefaultExponentialPolicy, 64, 4096, 262144, { 64 + 4096 + 262144 }>;
+    DualCacheCore<K, V, DefaultExponentialPolicy, 131072, 16384, 262144, { 131072 + 16384 + 262144 }>;
 impl<
     K,
     V,

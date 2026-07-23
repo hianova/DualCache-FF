@@ -11,6 +11,7 @@ pub struct Arena<K, V, const N: usize> {
     next_free: [::core::sync::atomic::AtomicU32; N],
     free_head: AtomicUsize,
     pub allocated_count: AtomicUsize,
+    pub(crate) cursor: core::sync::atomic::AtomicU32,
 }
 unsafe impl<K: Send, V: Send, const N: usize> Send for Arena<K, V, N> {}
 unsafe impl<K: Sync, V: Sync, const N: usize> Sync for Arena<K, V, N> {}
@@ -41,6 +42,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
             next_free,
             free_head: AtomicUsize::new(0),
             allocated_count: AtomicUsize::new(0),
+            cursor: core::sync::atomic::AtomicU32::new(0),
         }
     }
     pub fn capacity(&self) -> usize {
@@ -48,7 +50,7 @@ impl<K, V, const N: usize> Arena<K, V, N> {
     }
     #[inline(always)]
     pub fn allocated_count(&self) -> usize {
-        self.allocated_count.load(Ordering::Relaxed)
+        self.cursor.load(Ordering::Relaxed) as usize
     }
     #[doc = " Allocates a node from the free list and initializes it."]
     #[doc = " Returns the index of the allocated node."]
@@ -67,8 +69,20 @@ impl<K, V, const N: usize> Arena<K, V, N> {
             unsafe {
                 (*self.nodes[idx as usize].get()).write(Node { key, value });
             }
-            self.allocated_count.fetch_add(1, Ordering::Relaxed);
             return Some(idx as usize);
+        }
+        let cur = self.cursor.load(Ordering::Relaxed);
+        if (cur as usize) < N {
+            let idx = self.cursor.fetch_add(1, Ordering::Relaxed);
+            if (idx as usize) < N {
+                unsafe {
+                    (*self.nodes[idx as usize].get()).write(Node { key, value });
+                }
+                if idx & 63 == 0 {
+                    self.allocated_count.fetch_add(64, Ordering::Relaxed);
+                }
+                return Some(idx as usize);
+            }
         }
         loop {
             let head = self.free_head.load(Ordering::Acquire);
@@ -87,7 +101,9 @@ impl<K, V, const N: usize> Arena<K, V, N> {
                 unsafe {
                     (*self.nodes[index as usize].get()).write(Node { key, value });
                 }
-                self.allocated_count.fetch_add(1, Ordering::Relaxed);
+                if tag & 63 == 0 {
+                    self.allocated_count.fetch_add(64, Ordering::Relaxed);
+                }
                 return Some(index as usize);
             }
         }

@@ -10,7 +10,6 @@ use std::vec::Vec;
     not(any(target_arch = "aarch64", target_arch = "arm")),
     repr(C, align(64))
 )]
-#[repr(C, align(64))]
 pub struct BatchBuf<K, V> {
     items: [MaybeUninit<(K, V, u64)>; 32],
     len: usize,
@@ -73,7 +72,6 @@ unsafe impl<K: Sync, V: Sync> Sync for BatchBuf<K, V> {}
     not(any(target_arch = "aarch64", target_arch = "arm")),
     repr(C, align(64))
 )]
-#[repr(C, align(64))]
 pub struct WorkerSlot<K, V> {
     inner: UnsafeCell<BatchBuf<K, V>>,
 }

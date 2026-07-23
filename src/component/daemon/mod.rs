@@ -177,9 +177,7 @@ impl Daemon {
                             }
                         }
                         core.arena.free_batch(batch[0], batch[batch.len() - 1]);
-                        core.arena
-                            .allocated_count
-                            .fetch_sub(batch.len(), core::sync::atomic::Ordering::Relaxed);
+                        core.arena.allocated_count.fetch_sub(batch.len(), core::sync::atomic::Ordering::Relaxed);
                     }
                 });
                 if disconnected {

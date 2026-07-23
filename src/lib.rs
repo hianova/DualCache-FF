@@ -37,8 +37,17 @@ macro_rules! covopt_param {
 #[macro_export]
 macro_rules! define_dualcache {
     ($ name : ident , $ k : ty , $ v : ty , T0 = $ t0 : expr , TOTAL = $ total : expr) => {
-        pub type $name =
-            $crate::DualCacheFF<$k, $v, { $total - ($total / 6) }, { $total / 6 }, $t0, $total>;
+        pub type $name = $crate::DualCacheFF<
+            $k,
+            $v,
+            $crate::core::config::DefaultExponentialPolicy,
+            $t0,
+            { $total / 6 },
+            { $total - ($total / 6) },
+            65536,
+            16,
+            $total,
+        >;
     };
 }
 #[doc = " Macro to easily define a `StaticDualCache` type alias by just specifying T0 and TOTAL."]
@@ -76,20 +85,21 @@ macro_rules! define_core_cache {
 #[doc = " background daemon for garbage collection and memory reclamation."]
 #[repr(C, align(64))]
 pub struct DualCacheFF<
-    K,
-    V,
-    const CAP2: usize,
-    const CAP1: usize,
-    const CAP0: usize,
-    const TOTAL_CAP: usize,
+    K, V, P: crate::core::config::CachePolicy + Send + Sync + 'static = crate::core::config::DefaultExponentialPolicy,
+    const T0_CAP: usize = 131072,
+    const T1_CAP: usize = 16384,
+    const T2_CAP: usize = 262144,
+    const TLS_CAP: usize = 65536,
+    const TLS_INDEX_CAP: usize = 16,
+    const TOTAL_CAP: usize = { 131072 + 16384 + 262144 },
 > {
     core: crate::core::DualCacheCore<
         K,
         V,
-        crate::core::config::DefaultExponentialPolicy,
-        CAP0,
-        CAP1,
-        CAP2,
+        P,
+        T0_CAP,
+        T1_CAP,
+        T2_CAP,
         TOTAL_CAP,
     >,
     pub daemon_mode: AtomicBool,
@@ -112,8 +122,17 @@ pub struct DualCacheFF<
     pub daemon_handle: std::sync::RwLock<Option<crate::component::daemon::Daemon>>,
 }
 #[cfg(feature = "std")]
-impl<K, V, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize> Default
-    for DualCacheFF<K, V, CAP2, CAP1, CAP0, TOTAL_CAP>
+impl<
+    K,
+    V,
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+    const T0_CAP: usize,
+    const T1_CAP: usize,
+    const T2_CAP: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+    const TOTAL_CAP: usize,
+> Default for DualCacheFF<K, V, P, T0_CAP, T1_CAP, T2_CAP, TLS_CAP, TLS_INDEX_CAP, TOTAL_CAP>
 where
     K: Clone + Eq + ::core::hash::Hash + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
@@ -123,14 +142,23 @@ where
     }
 }
 #[cfg(feature = "std")]
-impl<K, V, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>
-    DualCacheFF<K, V, CAP2, CAP1, CAP0, TOTAL_CAP>
+impl<
+    K,
+    V,
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+    const T0_CAP: usize,
+    const T1_CAP: usize,
+    const T2_CAP: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+    const TOTAL_CAP: usize,
+> DualCacheFF<K, V, P, T0_CAP, T1_CAP, T2_CAP, TLS_CAP, TLS_INDEX_CAP, TOTAL_CAP>
 where
     K: Clone + Eq + ::core::hash::Hash + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
     pub fn new() -> Self {
-        Self { core : crate :: core :: DualCacheCore :: new (< crate :: core :: config :: DefaultExponentialPolicy as crate :: core :: config :: CachePolicy > :: Evict :: default ()) , daemon_mode : AtomicBool :: new (false) , reclaim_lock : AtomicBool :: new (false) , # [cfg (feature = "std")] cata_mode : AtomicBool :: new (false) , warmup_step : crate :: covopt_param ! ("WARMUP_STEP" , 10 , 1 .. 20) as u8 , warmup_pct : crate :: covopt_param ! ("WARMUP_PCT" , 95 , 50 .. 100) as usize , tls_registry : TlsRegistry :: new () , # [cfg (feature = "std")] global_tx : std :: sync :: RwLock :: new (None) , # [cfg (feature = "std")] daemon_handle : std :: sync :: RwLock :: new (None) , }
+        Self { core : crate :: core :: DualCacheCore :: new (P :: Evict :: default ()) , daemon_mode : AtomicBool :: new (false) , reclaim_lock : AtomicBool :: new (false) , # [cfg (feature = "std")] cata_mode : AtomicBool :: new (false) , warmup_step : crate :: covopt_param ! ("WARMUP_STEP" , 10 , 1 .. 20) , warmup_pct : crate :: covopt_param ! ("WARMUP_PCT" , 95 , 50 .. 100) , tls_registry : TlsRegistry :: new () , # [cfg (feature = "std")] global_tx : std :: sync :: RwLock :: new (None) , # [cfg (feature = "std")] daemon_handle : std :: sync :: RwLock :: new (None) , }
     }
     #[doc = " Start the CATA-DC Demiurge tuning engine in the background"]
     #[cfg(feature = "std")]
@@ -244,6 +272,7 @@ where
         let guard = ::core::mem::ManuallyDrop::new(unsafe {
             crate::core::qsbr::Guard::unpinned(handle.qsbr_node)
         });
+
         if let Some(val) = self.core.get_t0(hash, key, &guard, op_count) {
             block.warmup_state = block.warmup_state.saturating_add(self.warmup_step as u16);
             if op_count & 63 == 0 {
@@ -307,12 +336,15 @@ where
         let hash = self.core.hash_key(&key);
         let res = block.cache.insert(hash, key.clone(), value.clone());
         if res == 1 {
-            self.core
-                .put(key, value, handle.qsbr_node, block.op_count as u32);
-        } else if res == 2 {
-            self.core
-                .put(key, value, handle.qsbr_node, block.op_count as u32);
-        }
+            let pct = covopt_param!("WARMUP_PCT", 95, 50..100);
+            let is_warming_up = self.core.arena.allocated_count() < (self.core.arena.capacity() * pct / 100);
+            if is_warming_up || (block.op_count & 127) == 0 {
+                self.core.put(key, value, handle.qsbr_node, block.op_count as u32);
+            }
+        } else if res == 2
+            && (block.op_count & 127) == 0 {
+                self.core.put(key, value, handle.qsbr_node, block.op_count as u32);
+            }
     }
     #[doc = " Insert a key-value pair directly as a high-priority \"genius\" item."]
     #[doc = " This bypasses normal promotion and pins the item directly in the hottest tier (T0)."]
@@ -342,18 +374,43 @@ where
     }
 }
 #[cfg(feature = "std")]
-unsafe impl<K, V, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>
-    Send for DualCacheFF<K, V, CAP2, CAP1, CAP0, TOTAL_CAP>
-{
-}
+unsafe impl<
+    K,
+    V,
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+    const T0_CAP: usize,
+    const T1_CAP: usize,
+    const T2_CAP: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+    const TOTAL_CAP: usize,
+> Send for DualCacheFF<K, V, P, T0_CAP, T1_CAP, T2_CAP, TLS_CAP, TLS_INDEX_CAP, TOTAL_CAP>
+{}
 #[cfg(feature = "std")]
-unsafe impl<K, V, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>
-    Sync for DualCacheFF<K, V, CAP2, CAP1, CAP0, TOTAL_CAP>
-{
-}
+unsafe impl<
+    K,
+    V,
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+    const T0_CAP: usize,
+    const T1_CAP: usize,
+    const T2_CAP: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+    const TOTAL_CAP: usize,
+> Sync for DualCacheFF<K, V, P, T0_CAP, T1_CAP, T2_CAP, TLS_CAP, TLS_INDEX_CAP, TOTAL_CAP>
+{}
 #[cfg(feature = "std")]
-impl<K, V, const CAP2: usize, const CAP1: usize, const CAP0: usize, const TOTAL_CAP: usize>
-    DualCacheFF<K, V, CAP2, CAP1, CAP0, TOTAL_CAP>
+impl<
+    K,
+    V,
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+    const T0_CAP: usize,
+    const T1_CAP: usize,
+    const T2_CAP: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+    const TOTAL_CAP: usize,
+> DualCacheFF<K, V, P, T0_CAP, T1_CAP, T2_CAP, TLS_CAP, TLS_INDEX_CAP, TOTAL_CAP>
 where
     K: Clone + Eq + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
@@ -363,8 +420,17 @@ where
     }
 }
 #[cfg(feature = "std")]
-impl<K, V, const T0_CAP: usize, const T1_CAP: usize, const T2_CAP: usize, const TOTAL_CAP: usize>
-    Drop for DualCacheFF<K, V, T0_CAP, T1_CAP, T2_CAP, TOTAL_CAP>
+impl<
+    K,
+    V,
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+    const T0_CAP: usize,
+    const T1_CAP: usize,
+    const T2_CAP: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+    const TOTAL_CAP: usize,
+> Drop for DualCacheFF<K, V, P, T0_CAP, T1_CAP, T2_CAP, TLS_CAP, TLS_INDEX_CAP, TOTAL_CAP>
 {
     fn drop(&mut self) {
         self.daemon_mode
@@ -389,24 +455,27 @@ impl<K, V, const T0_CAP: usize, const T1_CAP: usize, const T2_CAP: usize, const 
 impl<
     K: Clone + Eq + ::core::hash::Hash + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
-    const CAP2: usize,
-    const CAP1: usize,
-    const CAP0: usize,
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+    const T0_CAP: usize,
+    const T1_CAP: usize,
+    const T2_CAP: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
     const TOTAL_CAP: usize,
-> crate::cache_trait::ConcurrentCache<K, V> for DualCacheFF<K, V, CAP2, CAP1, CAP0, TOTAL_CAP>
+> crate::cache_trait::ConcurrentCache<K, V> for DualCacheFF<K, V, P, T0_CAP, T1_CAP, T2_CAP, TLS_CAP, TLS_INDEX_CAP, TOTAL_CAP>
 {
     fn get(&self, key: &K) -> Option<V> {
         thread_local! { static THREAD_HANDLE : std :: cell :: OnceCell < crate :: component :: tls :: TlsHandle > = const { std :: cell :: OnceCell :: new () } ; }
         THREAD_HANDLE.with(|cell| {
             let handle = cell.get_or_init(|| self.register_thread());
-            self.get(key, handle)
+            DualCacheFF::get(self, key, handle)
         })
     }
     fn put(&self, key: K, value: V) {
         thread_local! { static THREAD_HANDLE : std :: cell :: OnceCell < crate :: component :: tls :: TlsHandle > = const { std :: cell :: OnceCell :: new () } ; }
         THREAD_HANDLE.with(|cell| {
             let handle = cell.get_or_init(|| self.register_thread());
-            self.insert(key, value, handle);
+            DualCacheFF::insert(self, key, value, handle);
         })
     }
 }
@@ -419,7 +488,7 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {
-                static GLOBAL_CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, 256, 1024, 2048, 1024>> =
+                static GLOBAL_CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 256, 1024, 2048, 1024>> =
                     std::sync::LazyLock::new(DualCacheFF::new);
                 let handle = GLOBAL_CACHE.register_thread();
                 GLOBAL_CACHE.insert(1, 100, &handle);
@@ -435,7 +504,7 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {
-                static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, 256, 1024, 2048, 4096>> =
+                static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 256, 1024, 2048, 4096>> =
                     std::sync::LazyLock::new(DualCacheFF::new);
                 let handle = CACHE.register_thread();
                 CACHE.insert(1, 100, &handle);
@@ -456,7 +525,7 @@ mod tests {
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {
                 use std::time::Duration;
-                static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, 8, 16, 64, 88>> =
+                static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 8, 16, 64, 88>> =
                     std::sync::LazyLock::new(DualCacheFF::new);
                 CACHE.set_daemon_mode(true);
                 let handle = CACHE.register_thread();
@@ -491,7 +560,7 @@ mod tests {
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {
                 use std::time::Duration;
-                static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, 256, 1024, 2048, 4096>> =
+                static CACHE: std::sync::LazyLock<DualCacheFF<u64, u64, crate::core::config::DefaultExponentialPolicy, 256, 1024, 2048, 4096>> =
                     std::sync::LazyLock::new(DualCacheFF::new);
                 let handle = CACHE.register_thread();
                 for i in 0..100 {

@@ -46,6 +46,46 @@ harness = false
 name = "covopt_harness"
 harness = false
 
+[[bench]]
+name = "thesis_hit_rate_capacity"
+harness = false
+
+[[bench]]
+name = "thesis_throughput_contention"
+harness = false
+
+[[bench]]
+name = "thesis_tail_latency"
+harness = false
+
+[[bench]]
+name = "thesis_decoupling_iron_triangle"
+harness = false
+
+[[bench]]
+name = "thesis_fetch_update"
+harness = false
+
+[[bench]]
+name = "thesis_tls_vs_global"
+harness = false
+
+[[bench]]
+name = "thesis_probabilistic_promotion"
+harness = false
+
+[[bench]]
+name = "thesis_write_asymmetry"
+harness = false
+
+[[bench]]
+name = "thesis_cddb_regression"
+harness = false
+
+[[bench]]
+name = "thesis_l3_barrier"
+harness = false
+
 [profile.bench]
 debug = true
 

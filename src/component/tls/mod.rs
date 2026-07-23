@@ -34,7 +34,8 @@ pub struct TlsEntry<K, V> {
 pub struct TlsCache<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     pub slots: alloc::boxed::Box<[Option<TlsEntry<K, V>>]>,
     pub capacity: usize,
-    pub promote_threshold: u8,
+    pub probation_threshold: u8,
+    pub t0_promote_threshold: u8,
     pub probation_filter: alloc::boxed::Box<[u8; 16384]>,
     pub probation_cursor: usize,
 }
@@ -42,13 +43,13 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     for TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
     fn default() -> Self {
-        Self::new(2)
+        Self::new(2, 16)
     }
 }
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
     TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
-    pub fn new(promote_threshold: u8) -> Self {
+    pub fn new(probation_threshold: u8, t0_promote_threshold: u8) -> Self {
         let mut slots_vec = alloc::vec::Vec::with_capacity(TLS_CAP);
         for _ in 0..TLS_CAP {
             slots_vec.push(None);
@@ -56,7 +57,8 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
         Self {
             slots: slots_vec.into_boxed_slice(),
             capacity: TLS_CAP,
-            promote_threshold,
+            probation_threshold,
+            t0_promote_threshold,
             probation_filter: alloc::boxed::Box::new([0; 16384]),
             probation_cursor: 0,
         }
@@ -70,8 +72,8 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
         {
             let old_hits = entry.hits;
             entry.hits = entry.hits.saturating_add(1);
-            let promote = old_hits < self.promote_threshold && entry.hits >= self.promote_threshold;
-            let sync = if entry.hits & 15 == 0 { 1 } else { 0 };
+            let promote = old_hits < self.t0_promote_threshold && entry.hits >= self.t0_promote_threshold;
+            let sync = if entry.hits & 127 == 0 { 1 } else { 0 };
             return (Some(entry.value.clone()), promote, sync);
         }
         (None, false, 0)
@@ -88,7 +90,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
         unsafe {
             *self.probation_filter.get_unchecked_mut(filter_idx) = count;
         }
-        if count < self.promote_threshold {
+        if count < self.probation_threshold {
             return 0;
         }
         let idx = hash & (self.capacity - 1);
@@ -112,7 +114,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
     #[inline(always)]
     pub fn insert_fast_pass(&mut self, hash: usize, key: K, value: V) {
         let idx = hash & (self.capacity - 1);
-        let hits = self.promote_threshold;
+        let hits = self.t0_promote_threshold;
         unsafe {
             *self.slots.get_unchecked_mut(idx) = Some(TlsEntry {
                 hash,
@@ -162,16 +164,16 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     for TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
     fn default() -> Self {
-        Self::new(2)
+        Self::new(2, 16)
     }
 }
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
     TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
-    pub fn new(promote_threshold: u8) -> Self {
+    pub fn new(probation_threshold: u8, t0_promote_threshold: u8) -> Self {
         Self {
             id: 0,
-            cache: TlsCache::new(promote_threshold),
+            cache: TlsCache::new(probation_threshold, t0_promote_threshold),
             #[cfg(feature = "std")]
             tx: None,
             #[cfg(feature = "std")]
@@ -221,7 +223,8 @@ unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync
 #[repr(C, align(64))]
 pub struct TlsRegistry<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
     state: alloc::sync::Arc<TlsRegistryState<K, V, TLS_CAP, TLS_INDEX_CAP>>,
-    promote_threshold: u8,
+    probation_threshold: u8,
+    t0_promote_threshold: u8,
 }
 unsafe impl<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> Sync
     for TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP>
@@ -270,7 +273,8 @@ impl<
                 blocks: no_std_tool::sync::SpinMutex::new(blocks),
                 free_list: no_std_tool::sync::SpinMutex::new(free_list),
             }),
-            promote_threshold: crate::covopt_param!("T0_PROMOTE_THRESH", 2u8, 1..10) as u8,
+            probation_threshold: 2,
+            t0_promote_threshold: crate::covopt_param!("T0_PROMOTE_THRESH", 1u8, 1..100),
         }
     }
     pub fn max_threads(&self) -> usize {
@@ -299,7 +303,7 @@ impl<
         if id == usize::MAX {
             let new_block =
                 alloc::boxed::Box::new(UnsafeCell::new(no_std_tool::sync::CachePadded {
-                    value: TlsBlock::new(self.promote_threshold),
+                    value: TlsBlock::new(self.probation_threshold, self.t0_promote_threshold),
                 }));
             let mut blocks = loop {
                 if let Ok(guard) = self.state.blocks.lock() {

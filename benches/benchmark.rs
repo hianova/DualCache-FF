@@ -181,9 +181,9 @@ fn run_workload(
     thread::scope(|s| {
         let mut handles = vec![];
 
-        for thread_id in 0..THREAD_COUNT {
+        for ops_data in all_ops_data.iter().take(THREAD_COUNT) {
             let barrier_clone = barrier.clone();
-            let ops_data = all_ops_data[thread_id].clone();
+            let ops_data = ops_data.clone();
 
             handles.push(s.spawn(move |_| {
                 let _hist = Histogram::<u64>::new(3).unwrap();

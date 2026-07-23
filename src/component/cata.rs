@@ -54,12 +54,19 @@ impl CataState {
     }
 }
 #[cfg(feature = "std")]
-pub fn spawn_demiurge<K, V, const T2: usize, const T1: usize, const T0: usize, const TOTAL: usize>(
-    cache: &'static DualCacheFF<K, V, T2, T1, T0, TOTAL>,
-) where
-    K: core::cmp::Eq + core::hash::Hash + Clone + Send + Sync + 'static,
+pub fn spawn_demiurge<
+    K: Clone + Eq + ::core::hash::Hash + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
-{
+    P: crate::core::config::CachePolicy + Send + Sync + 'static,
+    const T0: usize,
+    const T1: usize,
+    const T2: usize,
+    const TLS_CAP: usize,
+    const TLS_INDEX_CAP: usize,
+    const TOTAL: usize,
+>(
+    cache: &'static DualCacheFF<K, V, P, T0, T1, T2, TLS_CAP, TLS_INDEX_CAP, TOTAL>,
+) {
     std::thread::Builder::new()
         .name("CATA-DC-Demiurge".to_string())
         .stack_size(2 * 1024 * 1024)
@@ -75,9 +82,9 @@ pub fn spawn_demiurge<K, V, const T2: usize, const T1: usize, const T0: usize, c
             let mut best_loss = f32::MAX;
             let mut temperature = 1.0;
             while cache.cata_mode.load(std::sync::atomic::Ordering::SeqCst) {
-                let (start_ops, _) = cache.get_metrics();
+                let (start_ops, _) = cache.tls_registry.get_metrics();
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                let (end_ops, _) = cache.get_metrics();
+                let (end_ops, _) = cache.tls_registry.get_metrics();
                 let delta = end_ops.saturating_sub(start_ops);
                 if delta < 1000 {
                     cache.core.blackjack.store_params(
@@ -97,10 +104,10 @@ pub fn spawn_demiurge<K, V, const T2: usize, const T1: usize, const T0: usize, c
                     candidate.warmup as u16,
                 );
                 let start_time = Instant::now();
-                let (start_ops_eval, start_hits_eval) = cache.get_metrics();
+                let (start_ops_eval, start_hits_eval) = cache.tls_registry.get_metrics();
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 let elapsed = start_time.elapsed().as_secs_f64();
-                let (end_ops_eval, end_hits_eval) = cache.get_metrics();
+                let (end_ops_eval, end_hits_eval) = cache.tls_registry.get_metrics();
                 cache.core.blackjack.store_params(
                     best_state.t0 as u16,
                     best_state.t1 as u16,
