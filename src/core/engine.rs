@@ -1,9 +1,12 @@
+use crate::covopt_param;
 use crate::core::arena::Arena;
 use crate::core::cache_tier::{CacheTier, FastTier};
 use crate::core::config::{CachePolicy, DefaultExponentialPolicy};
 use crate::core::qsbr::Guard;
 use ahash::RandomState;
 use core::hash::Hash;
+
+pub type GetResult<'g, V, K> = Option<(&'g V, u8, Option<(K, V)>)>;
 #[doc = " The independent orchestrator that glues T0, T1, and T2 together."]
 #[doc = " Designed for `no_std` environments."]
 #[repr(align(64))]
@@ -11,10 +14,10 @@ pub struct DualCacheCore<
     K,
     V,
     P: CachePolicy = DefaultExponentialPolicy,
-    const T0_CAP: usize = 131072,
-    const T1_CAP: usize = 16384,
-    const T2_CAP: usize = 262144,
-    const TOTAL_CAP: usize = { 131072 + 16384 + 262144 },
+    const T0_CAP: usize = { covopt_param!("M_17_28", 131072) },
+    const T1_CAP: usize = { covopt_param!("M_18_28", 16384) },
+    const T2_CAP: usize = { covopt_param!("M_19_28", 262144) },
+    const TOTAL_CAP: usize = { covopt_param!("M_20_31", 131072) + covopt_param!("M_20_40", 16384) + covopt_param!("M_20_48", 262144) },
 > {
     pub arena: Arena<K, V, TOTAL_CAP>,
     pub t0: FastTier<T0_CAP>,
@@ -45,10 +48,10 @@ where
     }
 
     pub fn new_boxed(eviction: P::Evict) -> alloc::boxed::Box<Self> {
-        let t0_thresh = crate::covopt_param!("T0_THRESH", P::T0_THRESHOLD, 1..1000);
-        let t1_thresh = crate::covopt_param!("T1_THRESH", P::T1_THRESHOLD, 1..100);
-        let t2_thresh = crate::covopt_param!("T2_THRESH", P::T2_THRESHOLD, 1..50);
-        let warmup_thresh = crate::covopt_param!("WARMUP_THRESH", 256, 1..2000);
+        let t0_thresh = P::T0_THRESHOLD;
+        let t1_thresh = P::T1_THRESHOLD;
+        let t2_thresh = P::T2_THRESHOLD;
+        let warmup_thresh = covopt_param!("M_54_28", 256);
         
         let mut b = unsafe { alloc::boxed::Box::<Self>::new_zeroed().assume_init() };
         
@@ -69,7 +72,7 @@ where
             );
             core::ptr::write(
                 &mut b.hash_builder,
-                ahash::RandomState::with_seeds(0x1234567890ABCDEF, 0, 0, 0),
+                ahash::RandomState::with_seeds(covopt_param!("M_75_47", 1311768467294899695), 0, 0, 0),
             );
             core::ptr::write(&mut b._marker, core::marker::PhantomData);
         }
@@ -114,14 +117,13 @@ where
         None
     }
     #[inline(always)]
-    #[allow(clippy::type_complexity)]
     pub fn get_t2<'g>(
         &'g self,
         hash: usize,
         key: &K,
         guard: &'g crate::core::qsbr::Guard,
         op_count: u32,
-    ) -> Option<(&'g V, u8, Option<(K, V)>)> {
+    ) -> GetResult<'g, V, K> {
         let (_t0_thresh, t1_thresh, _, _) = self.blackjack.load_params();
         if let Some(val) = self.get_t0(hash, key, guard, op_count) {
             return Some((val, 0, None));
@@ -160,13 +162,12 @@ where
         None
     }
     #[inline(never)]
-    #[allow(clippy::type_complexity)]
     pub fn get<'g>(
         &'g self,
         key: &K,
         guard: &'g Guard,
         op_count: u32,
-    ) -> Option<(&'g V, u8, Option<(K, V)>)> {
+    ) -> GetResult<'g, V, K> {
         #[repr(align(64))]
         struct CachePadded;
         let _pad = CachePadded;
@@ -182,8 +183,9 @@ where
         }
         None
     }
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn put_t0(&self, key: K, value: V, node: *mut crate::core::qsbr::ThreadStateNode) {
+    #[doc = " # Safety"]
+    #[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
+    pub unsafe fn put_t0(&self, key: K, value: V, node: *mut crate::core::qsbr::ThreadStateNode) {
         if crate::utils::likely(true) {
             let hash = self.hash_key(&key);
             unsafe {
@@ -191,8 +193,9 @@ where
             }
         }
     }
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn put_t1(&self, key: K, value: V, node: *mut crate::core::qsbr::ThreadStateNode) {
+    #[doc = " # Safety"]
+    #[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
+    pub unsafe fn put_t1(&self, key: K, value: V, node: *mut crate::core::qsbr::ThreadStateNode) {
         if crate::utils::likely(true) {
             let hash = self.hash_key(&key);
             unsafe {
@@ -200,8 +203,10 @@ where
             }
         }
     }
+    #[doc = " # Safety"]
+    #[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
     #[inline(never)]
-    pub fn put(
+    pub unsafe fn put(
         &self,
         key: K,
         value: V,
@@ -209,7 +214,7 @@ where
         _op_count: u32,
     ) {
         let hash = self.hash_key(&key);
-        self.t2.insert(&self.arena, hash, key, value, node);
+        unsafe { self.t2.insert(&self.arena, hash, key, value, node); }
     }
     pub fn try_reclaim(&self, _node: *mut crate::core::qsbr::ThreadStateNode) {}
     #[doc = " Synchronous inline reclamation for Lock-based caches (e.g., StaticDualCache)"]
@@ -236,7 +241,7 @@ where
     #[doc = " Used by the Daemon to propagate TLS hits into the global T2 cache."]
     pub fn record_remote_hit(&self, hash: usize, _weight: u8) {
         let set = self.t2.get_set(hash);
-        for i in 0..8 {
+        for i in 0..covopt_param!("M_244_20", 8) {
             let slot = unsafe { set.get_unchecked(i) };
             if slot.hash.load(::core::sync::atomic::Ordering::Relaxed) == hash {
                 let old_hits = slot.hits.load(::core::sync::atomic::Ordering::Relaxed);
@@ -249,7 +254,7 @@ where
     }
     pub fn set_prefetch_hint(&self, hash: usize, next_hash: usize) {
         let set = self.t2.get_set(hash);
-        for i in 0..8 {
+        for i in 0..covopt_param!("M_257_20", 8) {
             let slot = unsafe { set.get_unchecked(i) };
             if slot.hash.load(::core::sync::atomic::Ordering::Relaxed) == hash {
                 slot.prefetch_hint
@@ -302,14 +307,14 @@ mod tests {
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
         let thread_node = {
             let node = &raw mut TEST_NODE as *mut _;
-            qsbr::register_node(node);
+            unsafe { qsbr::register_node(node); }
             node
         };
-        let guard = qsbr::pin(thread_node);
-        core.put(100, 200, thread_node, 0);
-        core.put_t1(300, 400, thread_node);
+        let guard = unsafe { qsbr::pin(thread_node) };
+        unsafe { core.put(covopt_param!("M_314_26", 100), covopt_param!("M_314_31", 200), thread_node, 0); }
+        unsafe { core.put_t1(covopt_param!("M_315_29", 300), covopt_param!("M_315_34", 400), thread_node); }
         assert_eq!(core.get(&300, &guard, 0), Some((&400, 1, None)));
-        core.put_t0(500, 600, thread_node);
+        unsafe { core.put_t0(covopt_param!("M_317_29", 500), covopt_param!("M_317_34", 600), thread_node); }
         assert_eq!(core.get(&500, &guard, 0), Some((&600, 0, None)));
     }
     #[test]
@@ -318,15 +323,15 @@ mod tests {
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
         let thread_node = {
             let node = &raw mut TEST_NODE as *mut _;
-            qsbr::register_node(node);
+            unsafe { qsbr::register_node(node); }
             node
         };
-        let guard = qsbr::pin(thread_node);
+        let guard = unsafe { qsbr::pin(thread_node) };
         assert_eq!(core.get(&99, &guard, 0), None);
-        core.put(300, 400, thread_node, 0);
-        core.record_remote_hit(core.hash_key(&300), 10);
+        unsafe { core.put(covopt_param!("M_331_26", 300), covopt_param!("M_331_31", 400), thread_node, 0); }
+        core.record_remote_hit(core.hash_key(&covopt_param!("M_332_46", 300)), covopt_param!("M_332_52", 10));
         assert_eq!(core.get(&300, &guard, 0), Some((&400, 2, None)));
-        core.put_t0(500, 600, thread_node);
+        unsafe { core.put_t0(covopt_param!("M_334_29", 500), covopt_param!("M_334_34", 600), thread_node); }
         assert_eq!(core.get(&500, &guard, 0), Some((&600, 0, None)));
     }
     #[test]
@@ -335,20 +340,20 @@ mod tests {
         static mut TEST_NODE: qsbr::ThreadStateNode = qsbr::ThreadStateNode::new();
         let thread_node = {
             let node = &raw mut TEST_NODE as *mut _;
-            qsbr::register_node(node);
+            unsafe { qsbr::register_node(node); }
             node
         };
-        let guard = qsbr::pin(thread_node);
-        let hash1 = core.hash_key(&1000);
+        let guard = unsafe { qsbr::pin(thread_node) };
+        let hash1 = core.hash_key(&covopt_param!("M_347_35", 1000));
         unsafe {
             core.t1
-                .insert_promote(&core.arena, hash1, 1000, 2000, thread_node);
+                .insert_promote(&core.arena, hash1, covopt_param!("M_350_52", 1000), covopt_param!("M_350_58", 2000), thread_node);
         }
         assert_eq!(core.get(&1000, &guard, 0), Some((&2000, 1, None)));
-        let hash0 = core.hash_key(&3000);
+        let hash0 = core.hash_key(&covopt_param!("M_353_35", 3000));
         unsafe {
             core.t0
-                .insert_promote(&core.arena, hash0, 3000, 4000, thread_node);
+                .insert_promote(&core.arena, hash0, covopt_param!("M_356_52", 3000), covopt_param!("M_356_58", 4000), thread_node);
         }
         assert_eq!(core.get(&3000, &guard, 0), Some((&4000, 0, None)));
         let idx = core.t1.get_slot_idx(hash1);

@@ -1,6 +1,5 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use dualcache_ff::DualCacheFF;
-use rand::Rng;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
 use std::time::Instant;
@@ -40,15 +39,16 @@ fn main() {
     println!("Benchmarking Small Cache (8K)...");
     let start = Instant::now();
     for _ in 0..TOTAL_OPS {
-        let key = zipf.sample(&mut rng) as u64;
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
         reads += 1;
-        if cache_small.get(&key, &tls_small).is_some() {
+        if std::hint::black_box(cache_small.get(&key, &tls_small)).is_some() {
             hits += 1;
         } else {
             cache_small.insert(key, key, &tls_small);
+            std::hint::black_box(());
         }
     }
     let elapsed = start.elapsed();
-    let hit_rate = (hits as f64 / reads as f64) * 100.0;
+    let hit_rate = (hits as f64 / reads as f64) * covopt_param!("M_51_50", 100.0);
     println!("Small Cache: Hit Rate = {:.2}%, Throughput = {:.0} ops/s", hit_rate, (TOTAL_OPS as f64) / elapsed.as_secs_f64());
 }

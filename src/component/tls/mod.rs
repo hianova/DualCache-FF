@@ -1,3 +1,4 @@
+use crate::covopt_param;
 use ::core::sync::atomic::Ordering;
 use core::cell::UnsafeCell;
 #[repr(C, align(64))]
@@ -43,7 +44,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     for TlsCache<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
     fn default() -> Self {
-        Self::new(2, 16)
+        Self::new(2, covopt_param!("M_47_21", 16))
     }
 }
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
@@ -73,16 +74,16 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
             let old_hits = entry.hits;
             entry.hits = entry.hits.saturating_add(1);
             let promote = old_hits < self.t0_promote_threshold && entry.hits >= self.t0_promote_threshold;
-            let sync = if entry.hits & 127 == 0 { 1 } else { 0 };
+            let sync = if entry.hits & covopt_param!("M_77_39", 127) == 0 { 1 } else { 0 };
             return (Some(entry.value.clone()), promote, sync);
         }
         (None, false, 0)
     }
     #[inline(always)]
     pub fn insert(&mut self, hash: usize, key: K, value: V) -> u8 {
-        let filter_idx = hash & 16383;
+        let filter_idx = hash & covopt_param!("M_84_32", 16383);
         self.probation_cursor = self.probation_cursor.wrapping_add(1);
-        let decay_idx = self.probation_cursor & 16383;
+        let decay_idx = self.probation_cursor & covopt_param!("M_86_48", 16383);
         unsafe {
             *self.probation_filter.get_unchecked_mut(decay_idx) = 0;
         }
@@ -164,7 +165,7 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> 
     for TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
     fn default() -> Self {
-        Self::new(2, 16)
+        Self::new(2, covopt_param!("M_168_21", 16))
     }
 }
 impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
@@ -190,16 +191,13 @@ impl<K: Clone + Eq, V: Clone, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
         }
     }
 }
-#[repr(C, align(64))]
+pub type TlsBlockBox<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> =
+    alloc::boxed::Box<UnsafeCell<no_std_tool::sync::CachePadded<TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>>>>;
+
+#[repr(align(64))]
+#[repr(C)]
 pub struct TlsRegistryState<K, V, const TLS_CAP: usize, const TLS_INDEX_CAP: usize> {
-    #[allow(clippy::type_complexity)]
-    blocks: no_std_tool::sync::SpinMutex<
-        alloc::vec::Vec<
-            alloc::boxed::Box<
-                UnsafeCell<no_std_tool::sync::CachePadded<TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>>>,
-            >,
-        >,
-    >,
+    blocks: no_std_tool::sync::SpinMutex<alloc::vec::Vec<TlsBlockBox<K, V, TLS_CAP, TLS_INDEX_CAP>>>,
     free_list: no_std_tool::sync::SpinMutex<alloc::vec::Vec<usize>>,
 }
 impl<K: Send + 'static, V: Send + 'static, const TLS_CAP: usize, const TLS_INDEX_CAP: usize>
@@ -266,15 +264,15 @@ impl<
 > TlsRegistry<K, V, TLS_CAP, TLS_INDEX_CAP>
 {
     pub fn new() -> Self {
-        let blocks = alloc::vec::Vec::with_capacity(64);
-        let free_list = alloc::vec::Vec::with_capacity(64);
+        let blocks = alloc::vec::Vec::with_capacity(covopt_param!("M_267_52", 64));
+        let free_list = alloc::vec::Vec::with_capacity(covopt_param!("M_268_55", 64));
         Self {
             state: alloc::sync::Arc::new(TlsRegistryState {
                 blocks: no_std_tool::sync::SpinMutex::new(blocks),
                 free_list: no_std_tool::sync::SpinMutex::new(free_list),
             }),
             probation_threshold: 2,
-            t0_promote_threshold: crate::covopt_param!("T0_PROMOTE_THRESH", 1u8, 1..100),
+            t0_promote_threshold: 1u8,
         }
     }
     pub fn max_threads(&self) -> usize {
@@ -326,7 +324,7 @@ impl<
         let registry_arc =
             self.state.clone() as alloc::sync::Arc<dyn crate::core::qsbr::RegistryCore>;
         if !block.registered {
-            crate::core::qsbr::register_node(qsbr_node);
+            unsafe { crate::core::qsbr::register_node(qsbr_node); }
             block.registered = true;
         } else {
             unsafe { (*qsbr_node).active.store(true, Ordering::Release) };
@@ -343,14 +341,15 @@ impl<
             free_list.push(handle.id);
         }
     }
+    #[doc = " # Safety"]
+    #[doc = " Caller must guarantee exclusive access to the thread local block."]
     #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub fn get_block_mut(&self, handle: &TlsHandle) -> &mut TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP> {
+    pub unsafe fn get_block_mut(&self, handle: &TlsHandle) -> *mut TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP> {
         if handle.block_ptr.is_null() {
             let blocks = self.state.blocks.lock().unwrap();
-            unsafe { &mut (*blocks[handle.id].get()).value }
+            unsafe { &raw mut (*blocks[handle.id].get()).value }
         } else {
-            unsafe { &mut *(handle.block_ptr as *mut TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>) }
+            handle.block_ptr as *mut TlsBlock<K, V, TLS_CAP, TLS_INDEX_CAP>
         }
     }
 }

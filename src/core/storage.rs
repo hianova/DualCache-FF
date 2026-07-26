@@ -1,3 +1,4 @@
+use crate::covopt_param;
 use ::core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -18,7 +19,8 @@ pub struct Node<K, V> {
 #[doc = "   bits[63:48] = 16-bit tag (hash >> 48)"]
 #[doc = "   bits[47:0]  = Arena slot index"]
 #[doc = " Sentinel values: 0 = empty, u64::MAX = tombstone."]
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct Cache<K, V> {
     pub(crate) index_mask: usize,
     pub(crate) index: Box<[AtomicU64]>,
@@ -46,13 +48,13 @@ impl<K, V> Cache<K, V> {
     #[inline(always)]
     pub fn index_probe(&self, hash: u64, tag: u16) -> Option<usize> {
         let mut idx = hash as usize & self.index_mask;
-        for _ in 0..16 {
+        for _ in 0..covopt_param!("M_51_20", 16) {
             let entry = self.index[idx].load(Ordering::Acquire);
             if entry == 0 {
                 return None;
             }
-            if entry != u64::MAX && (entry >> 48) as u16 == tag {
-                return Some((entry & 0x0000_FFFF_FFFF_FFFF) as usize);
+            if entry != u64::MAX && (entry >> covopt_param!("M_56_46", 48)) as u16 == tag {
+                return Some((entry & covopt_param!("M_57_37", 281474976710655)) as usize);
             }
             idx = (idx + 1) & self.index_mask;
         }
@@ -61,13 +63,13 @@ impl<K, V> Cache<K, V> {
     #[inline(always)]
     pub fn index_store(&self, hash: u64, tag: u16, entry: u64) {
         let mut idx = hash as usize & self.index_mask;
-        for i in 0..16 {
+        for i in 0..covopt_param!("M_66_20", 16) {
             let prev = self.index[idx].load(Ordering::Acquire);
-            if prev == 0 || prev == u64::MAX || (prev >> 48) == (tag as u64) {
+            if prev == 0 || prev == u64::MAX || (prev >> covopt_param!("M_68_57", 48)) == (tag as u64) {
                 self.index[idx].store(entry, Ordering::Release);
                 return;
             }
-            if i == 15 {
+            if i == covopt_param!("M_72_20", 15) {
                 self.index[hash as usize & self.index_mask].store(entry, Ordering::Release);
             }
             idx = (idx + 1) & self.index_mask;
@@ -76,14 +78,14 @@ impl<K, V> Cache<K, V> {
     #[inline(always)]
     pub fn index_remove(&self, hash: u64, tag: u16, g_idx: usize) {
         let mut idx = hash as usize & self.index_mask;
-        for _ in 0..16 {
+        for _ in 0..covopt_param!("M_81_20", 16) {
             let entry = self.index[idx].load(Ordering::Acquire);
             if entry == 0 {
                 return;
             }
             if entry != u64::MAX
-                && (entry >> 48) as u16 == tag
-                && (entry & 0x0000_FFFF_FFFF_FFFF) == (g_idx as u64)
+                && (entry >> covopt_param!("M_87_29", 48)) as u16 == tag
+                && (entry & covopt_param!("M_88_28", 281474976710655)) == (g_idx as u64)
             {
                 self.index[idx].store(u64::MAX, Ordering::Release);
                 return;

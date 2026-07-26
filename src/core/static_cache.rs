@@ -1,3 +1,4 @@
+use crate::covopt_param;
 use crate::core::config::CachePolicy;
 use crate::core::engine::DualCacheCore;
 #[cfg(not(feature = "std"))]
@@ -6,7 +7,8 @@ use ::core::sync::atomic::{AtomicUsize, Ordering};
 use core::hash::Hash;
 use no_std_tool::sync::SpinMutex;
 #[cfg(feature = "std")]
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct StaticDualCache<
     K,
     V,
@@ -52,7 +54,7 @@ where
         });
         let guard = unsafe { crate::core::qsbr::Guard::unpinned(node_ptr) };
         self.core
-            .get(key, &guard, 16)
+            .get(key, &guard, covopt_param!("M_57_30", 16))
             .map(|(v_ref, _tier, _hint)| v_ref.clone())
     }
     #[doc = " Insert a key-value pair into the cache. Handles inline reclamation synchronously."]
@@ -62,15 +64,16 @@ where
             cell.get_or_init(|| self.tls_registry.register_thread())
                 .qsbr_node
         });
-        self.core.put(key, value, node_ptr, 1);
+        unsafe { self.core.put(key, value, node_ptr, 1); }
         let count = self.insert_count.fetch_add(1, Ordering::Relaxed);
-        if count % 1024 == 1023 && self.reclaim_lock.lock().is_ok() {
+        if count % covopt_param!("M_69_19", 1024) == covopt_param!("M_69_27", 1023) && self.reclaim_lock.lock().is_ok() {
             self.core.sync_reclaim();
         }
     }
 }
 #[cfg(not(feature = "std"))]
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct StaticDualCache<
     K,
     V,
@@ -120,7 +123,7 @@ where
         }
         let guard = pin(qsbr_node as *mut ThreadStateNode);
         engine
-            .get(key, &guard, 16)
+            .get(key, &guard, covopt_param!("M_126_30", 16))
             .map(|(v_ref, _tier, _hint)| v_ref.clone())
     }
     #[doc = " Insert a key-value pair into the cache. Handles inline reclamation synchronously."]
@@ -137,7 +140,7 @@ where
         let node_ptr = qsbr_node as *mut ThreadStateNode;
         engine.put(key, value, node_ptr, 1);
         let count = self.insert_count.fetch_add(1, Ordering::Relaxed);
-        if count % 1024 == 1023 {
+        if count % covopt_param!("M_143_19", 1024) == covopt_param!("M_143_27", 1023) {
             engine.sync_reclaim();
         }
     }

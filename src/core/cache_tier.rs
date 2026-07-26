@@ -1,15 +1,17 @@
+use crate::covopt_param;
 use super::arena::{self, Arena};
 use super::policy::{DefaultEvictionPolicy, EvictionPolicy};
 use super::qsbr;
 use super::slot::Slot;
 #[doc = " Represents a single cache tier (e.g., T0, T1, T2) using Set-Associative Lock-Free arrays."]
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct CacheTier<
     K,
     V,
     P: EvictionPolicy = DefaultEvictionPolicy,
     const CAPACITY: usize = 0,
-    const WAYS: usize = 8,
+    const WAYS: usize = { covopt_param!("M_14_26", 8) },
 > {
     slots: [Slot<K, V>; CAPACITY],
     tags: alloc::boxed::Box<[::core::sync::atomic::AtomicU8]>,
@@ -73,14 +75,16 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         V: Clone,
     {
         let set = self.get_set(hash);
+        let mut found_node = None;
         for slot in set {
             let (slot_hash, idx) = slot.read(guard);
             if slot_hash == hash && idx != super::arena::NULL_INDEX {
                 let node = unsafe { arena.get(idx as usize) };
-                return Some((node.key.clone(), node.value.clone()));
+                found_node = Some(node);
+                break;
             }
         }
-        None
+        found_node.map(|node| (node.key.clone(), node.value.clone()))
     }
     #[doc = " Retrieve a slot if the key exists in this tier."]
     #[inline(always)]
@@ -97,7 +101,7 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         let num_sets = CAPACITY / WAYS;
         let index = hash % num_sets;
         let start = index * WAYS;
-        let expected_tag = ((hash >> 16) & 255) as u8;
+        let expected_tag = ((hash >> covopt_param!("M_104_37", 16)) & covopt_param!("M_104_43", 255)) as u8;
         let mut match_mask = 0u8;
         for i in 0..WAYS {
             let tag = unsafe { self.tags.get_unchecked(start + i) }
@@ -124,7 +128,9 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         None
     }
     #[doc = " Insert a key and value into the tier using the provided eviction policy."]
-    pub fn insert<const N: usize>(
+    #[doc = " # Safety"]
+    #[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
+    pub unsafe fn insert<const N: usize>(
         &self,
         arena: &Arena<K, V, N>,
         hash: usize,
@@ -138,35 +144,35 @@ impl<K, V, P: EvictionPolicy, const CAPACITY: usize, const WAYS: usize>
         let index = hash % num_sets;
         let start = index * WAYS;
         let set = self.get_set(hash);
-        let guard = qsbr::pin(node);
+        let guard = unsafe { qsbr::pin(node) };
         for (i, slot) in set.iter().enumerate() {
             let (slot_hash, idx) = slot.read(&guard);
             if idx == arena::NULL_INDEX {
                 unsafe { self.tags.get_unchecked(start + i) }.store(
-                    ((hash >> 16) & 255) as u8,
+                    ((hash >> covopt_param!("M_152_30", 16)) & covopt_param!("M_152_36", 255)) as u8,
                     ::core::sync::atomic::Ordering::Relaxed,
                 );
-                slot.insert(arena, hash, key, value, node);
+                unsafe { slot.insert(arena, hash, key, value, node); }
                 return;
             }
             if slot_hash == hash {
                 let node_data = unsafe { arena.get(idx as usize) };
                 if node_data.key == key {
                     unsafe { self.tags.get_unchecked(start + i) }.store(
-                        ((hash >> 16) & 255) as u8,
+                        ((hash >> covopt_param!("M_162_34", 16)) & covopt_param!("M_162_40", 255)) as u8,
                         ::core::sync::atomic::Ordering::Relaxed,
                     );
-                    slot.insert(arena, hash, key, value, node);
+                    unsafe { slot.insert(arena, hash, key, value, node); }
                     return;
                 }
             }
         }
         let (victim_idx, victim_slot) = self.policy.find_victim_idx(set, hash);
         unsafe { self.tags.get_unchecked(start + victim_idx) }.store(
-            ((hash >> 16) & 255) as u8,
+            ((hash >> covopt_param!("M_172_22", 16)) & covopt_param!("M_172_28", 255)) as u8,
             ::core::sync::atomic::Ordering::Relaxed,
         );
-        victim_slot.insert(arena, hash, key, value, node);
+        unsafe { victim_slot.insert(arena, hash, key, value, node); }
     }
 }
 impl<K, V, const CAPACITY: usize, const WAYS: usize> Default
@@ -178,7 +184,8 @@ impl<K, V, const CAPACITY: usize, const WAYS: usize> Default
 }
 #[doc = " A direct-mapped (1-way) fast tier optimized for T0 zero-cost lookups."]
 #[doc = " It uses exactly 1 atomic load for maximum throughput."]
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct FastTier<const CAPACITY: usize> {
     slots: [AtomicU64; CAPACITY],
 }
@@ -251,7 +258,7 @@ impl<const CAPACITY: usize> FastTier<CAPACITY> {
     ) where
         K: PartialEq,
     {
-        if let Some(new_idx) = arena.alloc(key, value, node) {
+        if let Some(new_idx) = unsafe { arena.alloc(key, value, node) } {
             let old_idx = self.insert_idx(hash, new_idx as u32);
             if old_idx != super::arena::NULL_INDEX {
                 unsafe {
@@ -284,16 +291,16 @@ mod tests {
             let node = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
                 crate::core::qsbr::ThreadStateNode::new(),
             ));
-            crate::core::qsbr::register_node(node);
+            unsafe { crate::core::qsbr::register_node(node); }
             node
         };
-        let guard = qsbr::pin(node);
-        for i in 0..8 {
-            tier.insert(&arena, i as usize, i, i * 10, node);
+        let guard = unsafe { qsbr::pin(node) };
+        for i in 0..covopt_param!("M_298_20", 8) {
+            unsafe { tier.insert(&arena, i as usize, i, i * covopt_param!("M_299_60", 10), node); }
         }
-        tier.insert(&arena, 8, 8, 80, node);
+        unsafe { tier.insert(&arena, covopt_param!("M_301_37", 8), covopt_param!("M_301_40", 8), covopt_param!("M_301_43", 80), node); }
         let mut count = 0;
-        for i in 0..9 {
+        for i in 0..covopt_param!("M_303_20", 9) {
             if tier.get_slot(&arena, i as usize, &i, &guard).is_some() {
                 count += 1;
             }
@@ -310,8 +317,8 @@ mod tests {
     #[test]
     fn test_fast_tier_logic() {
         let t0: FastTier<64> = FastTier::new();
-        let hash: usize = 0x123456789ABCDEF0;
-        let old_idx = t0.insert_idx(hash, 42);
+        let hash: usize = covopt_param!("M_320_26", 1311768467463790320);
+        let old_idx = t0.insert_idx(hash, covopt_param!("M_321_42", 42));
         assert_eq!(old_idx, super::super::arena::NULL_INDEX);
         let out_idx = t0.get_slot_idx(hash);
         assert_eq!(out_idx, 42);

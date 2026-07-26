@@ -1,3 +1,4 @@
+use crate::covopt_param;
 use crate::core::slot::Slot;
 use ::core::sync::atomic::Ordering;
 pub trait EvictionPolicy: Send + Sync {
@@ -37,7 +38,7 @@ impl EvictionPolicy for DefaultEvictionPolicy {
                 candidates_len = 0;
                 candidates[candidates_len] = i;
                 candidates_len += 1;
-            } else if hits == min_hits && candidates_len < 8 {
+            } else if hits == min_hits && candidates_len < covopt_param!("M_41_59", 8) {
                 candidates[candidates_len] = i;
                 candidates_len += 1;
             }

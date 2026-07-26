@@ -1,5 +1,4 @@
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
-#![allow(clippy::missing_safety_doc)]
+use crate::covopt_param;
 use ::core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use core::ptr;
 static GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
@@ -15,7 +14,8 @@ struct RetiredNode {
     epoch: u64,
 }
 const GARBAGE_CAP: usize = 4096;
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct GarbageQueue {
     items: [RetiredNode; GARBAGE_CAP],
     head: AtomicUsize,
@@ -30,7 +30,8 @@ impl GarbageQueue {
         }
     }
 }
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct MpmcQueue<const N: usize> {
     head: AtomicUsize,
     tail: AtomicUsize,
@@ -121,7 +122,7 @@ impl LocalFreeQueue {
     }
     #[must_use]
     pub fn push(&mut self, val: u32) -> bool {
-        if self.len < 4096 {
+        if self.len < covopt_param!("M_125_22", 4096) {
             self.items[self.len] = val;
             self.len += 1;
             true
@@ -136,7 +137,8 @@ pub struct QsbrToken;
     not(feature = "std"),
     no_std_tool_macros::auto_static(capacity = 256, partition = "qsbr")
 )]
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct ThreadStateNode {
     pub active: AtomicBool,
     pub epoch: AtomicUsize,
@@ -167,7 +169,9 @@ pub trait RegistryCore: Send + Sync {
 }
 #[doc = " Register a pre-allocated thread state node. The caller should allocate this node"]
 #[doc = " locally or in the static TLS blocks."]
-pub fn register_node(node: *mut ThreadStateNode) {
+#[doc = " # Safety"]
+#[doc = " `node` must be a valid, non-null pointer."]
+pub unsafe fn register_node(node: *mut ThreadStateNode) {
     let _ = THREAD_STATES.try_update(Ordering::Release, Ordering::Relaxed, |head| {
         unsafe { (*node).next = head };
         #[cfg(test)]
@@ -185,7 +189,9 @@ pub struct Guard {
 }
 impl Guard {
     #[doc = " Create a new Guard using the explicitly provided ThreadStateNode."]
-    pub fn new(node: *mut ThreadStateNode) -> Self {
+    #[doc = " # Safety"]
+    #[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
+    pub unsafe fn new(node: *mut ThreadStateNode) -> Self {
         let global_epoch = GLOBAL_EPOCH.load(Ordering::Acquire);
         unsafe {
             (*node).epoch.store(global_epoch, Ordering::Release);
@@ -193,10 +199,14 @@ impl Guard {
         }
         Self { node }
     }
+    #[doc = " # Safety"]
+    #[doc = " Caller must ensure node pointer invariant is preserved."]
     #[inline(always)]
     pub unsafe fn unpinned(node: *mut ThreadStateNode) -> Self {
         Self { node }
     }
+    #[doc = " # Safety"]
+    #[doc = " Creates an unpinned dummy guard."]
     #[inline(always)]
     pub unsafe fn dummy() -> Self {
         Self {
@@ -218,18 +228,24 @@ impl Drop for Guard {
         }
     }
 }
-pub fn pin_relaxed(node: *mut ThreadStateNode) -> Guard {
+#[doc = " # Safety"]
+#[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
+pub unsafe fn pin_relaxed(node: *mut ThreadStateNode) -> Guard {
     let node_ref = unsafe { &*node };
     node_ref.active.store(true, Ordering::Relaxed);
     Guard { node }
 }
+#[doc = " # Safety"]
+#[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
 #[inline(always)]
-pub fn pin(node: *mut ThreadStateNode) -> Guard {
-    Guard::new(node)
+pub unsafe fn pin(node: *mut ThreadStateNode) -> Guard {
+    unsafe { Guard::new(node) }
 }
 #[doc = " Retire a node index into the thread-local garbage queue safely using QSBR."]
 #[doc = " This prevents ABA by ensuring the index is not freed to the Arena until all threads observing it have advanced."]
-pub fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut _free_fn: F) {
+#[doc = " # Safety"]
+#[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
+pub unsafe fn retire<F: FnMut(u32)>(index: usize, node: *mut ThreadStateNode, mut _free_fn: F) {
     let epoch = GLOBAL_EPOCH.load(Ordering::Acquire) as u64;
     unsafe {
         let q = &mut (*node).garbage_queue;
@@ -267,7 +283,7 @@ pub fn daemon_reclaim<F: FnMut(&[u32])>(mut free_batch_fn: F) {
                     batch[batch_len] = retired.index;
                     batch_len += 1;
                     tail += 1;
-                    if batch_len == 128 {
+                    if batch_len == covopt_param!("M_286_36", 128) {
                         free_batch_fn(&batch[..batch_len]);
                         batch_len = 0;
                     }

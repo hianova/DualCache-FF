@@ -1,4 +1,4 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use dualcache_ff::DualCacheFF;
 use rand::Rng;
 use rand::prelude::Distribution;
@@ -31,12 +31,13 @@ fn run_asym(name: &str, read_ratio: u8) {
 
     let start = Instant::now();
     for _ in 0..TOTAL_OPS {
-        let key = zipf.sample(&mut rng) as u64;
-        let is_read = rng.gen_range(0..100) < read_ratio;
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
+        let is_read = std::hint::black_box(rng.gen_range(0..covopt_param!("M_34_60", 100)) < read_ratio);
         if is_read {
-            let _ = cache.get(&key, &tls);
+            let _ = std::hint::black_box(cache.get(&key, &tls));
         } else {
             cache.insert(key, key, &tls);
+            std::hint::black_box(());
         }
     }
     let elapsed = start.elapsed();
@@ -47,10 +48,8 @@ fn main() {
     println!("=== Case Study 5: Read/Write Asymmetry and Global Sampling Rates ===");
     println!("Comparing inflated throughput of 50:50 writes (due to thread-local sampling) vs 99:1 reads.");
 
-    run_asym("Zipf (99:1 Read/Write)", 99);
+    run_asym("Zipf (99:1 Read/Write)", covopt_param!("M_50_39", 99));
     
-    // We recreate the token mapping since run_asym resets it, wait actually run_asym is just a simulation 
-    // and multiple inserts to the static macro in the same thread might panic if not cleared. 
     let mut token2 = Asym2BenchToken;
     AsymWrapper2::insert_large_std(|| AsymWrapper2(DualCacheFF::new()), &mut token2);
     let cache2 = &AsymWrapper2::get(0, &Asym2BenchToken).unwrap().0;
@@ -61,12 +60,13 @@ fn main() {
 
     let start = Instant::now();
     for _ in 0..TOTAL_OPS {
-        let key = zipf.sample(&mut rng) as u64;
-        let is_read = rng.gen_range(0..100) < 50;
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
+        let is_read = std::hint::black_box(rng.gen_range(0..covopt_param!("M_63_60", 100)) < covopt_param!("M_63_67", 50));
         if is_read {
-            let _ = cache2.get(&key, &tls2);
+            let _ = std::hint::black_box(cache2.get(&key, &tls2));
         } else {
             cache2.insert(key, key, &tls2);
+            std::hint::black_box(());
         }
     }
     let elapsed = start.elapsed();

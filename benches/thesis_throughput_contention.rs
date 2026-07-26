@@ -1,6 +1,5 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use dualcache_ff::DualCacheFF;
-use rand::Rng;
 use rand::distributions::Uniform;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
@@ -30,17 +29,19 @@ fn main() {
     let uniform = Uniform::new(0, DATASET_SIZE);
 
     // Warmup
-    for _ in 0..10_000 {
-        let key = zipf.sample(&mut rng) as u64;
+    for _ in 0..covopt_param!("M_31_16", 10000) {
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
         cache.insert(key, key, &tls);
+        std::hint::black_box(());
     }
 
     // Zipfian Test
     let start = Instant::now();
     for _ in 0..TOTAL_OPS {
-        let key = zipf.sample(&mut rng) as u64;
-        if cache.get(&key, &tls).is_none() {
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
+        if std::hint::black_box(cache.get(&key, &tls)).is_none() {
             cache.insert(key, key, &tls);
+            std::hint::black_box(());
         }
     }
     let elapsed = start.elapsed();
@@ -49,9 +50,10 @@ fn main() {
     // Uniform Test
     let start = Instant::now();
     for _ in 0..TOTAL_OPS {
-        let key = uniform.sample(&mut rng);
-        if cache.get(&key, &tls).is_none() {
+        let key = std::hint::black_box(uniform.sample(&mut rng));
+        if std::hint::black_box(cache.get(&key, &tls)).is_none() {
             cache.insert(key, key, &tls);
+            std::hint::black_box(());
         }
     }
     let elapsed = start.elapsed();

@@ -1,3 +1,4 @@
+use covopt_macro::covopt_param;
 use criterion::{BenchmarkId, Criterion, criterion_group};
 use std::sync::Arc;
 use std::vec::Vec;
@@ -23,14 +24,16 @@ fn bench_data_structure(c: &mut Criterion) {
         let core: CoreType =
             DualCacheCore::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
-        qsbr::register_node(node);
+        unsafe { qsbr::register_node(node); }
 
         let mut i = 0;
         b.iter(|| {
-            let _guard = qsbr::pin(node);
-            core.put_t0(i, i, node);
-            i = (i + 1) % 512;
-            if i % 64 == 0 {
+            let _guard = unsafe { qsbr::pin(node) };
+            let key = std::hint::black_box(i);
+            unsafe { core.put_t0(key, key, node); }
+            std::hint::black_box(());
+            i = (i + 1) % covopt_param!("M_34_26", 512);
+            if i % covopt_param!("M_35_19", 64) == 0 {
                 core.sync_reclaim();
             }
         });
@@ -48,14 +51,16 @@ fn bench_data_structure(c: &mut Criterion) {
         let core: CoreType2 =
             DualCacheCore::new(dualcache_ff::core::policy::DefaultEvictionPolicy::new());
         let node = Box::into_raw(Box::new(qsbr::ThreadStateNode::new()));
-        qsbr::register_node(node);
+        unsafe { qsbr::register_node(node); }
 
         let mut i = 0;
         b.iter(|| {
-            let _guard = qsbr::pin(node);
-            core.put(i, i, node, 1);
-            i = (i + 1) % 512;
-            if i % 64 == 0 {
+            let _guard = unsafe { qsbr::pin(node) };
+            let key = std::hint::black_box(i);
+            unsafe { core.put(key, key, node, 1); }
+            std::hint::black_box(());
+            i = (i + 1) % covopt_param!("M_61_26", 512);
+            if i % covopt_param!("M_62_19", 64) == 0 {
                 core.sync_reclaim();
             }
         });
@@ -68,7 +73,7 @@ fn bench_data_structure(c: &mut Criterion) {
 fn bench_tls(c: &mut Criterion) {
     let mut group = c.benchmark_group("tls_parallel_overhead");
 
-    for threads in [1, 4, 8, 16].iter() {
+    for threads in [1, covopt_param!("M_75_23", 4), covopt_param!("M_75_26", 8), covopt_param!("M_75_29", 16)].iter() {
         group.bench_with_input(
             BenchmarkId::new("get_block_mut_contention", threads),
             threads,
@@ -84,8 +89,8 @@ fn bench_tls(c: &mut Criterion) {
                         for handle in &handles {
                             let reg = registry.clone();
                             s.spawn(move || {
-                                for _ in 0..10_000 {
-                                    let block = reg.get_block_mut(handle);
+                                for _ in 0..covopt_param!("M_91_44", 10000) {
+                                    let block = unsafe { &mut *reg.get_block_mut(handle) };
                                     criterion::black_box(block.op_count);
                                 }
                             });
@@ -103,7 +108,7 @@ criterion_group!(benches, bench_data_structure, bench_tls);
 
 fn main() {
     std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
+        .stack_size(covopt_param!("M_110_20", 32) * covopt_param!("M_110_25", 1024) * covopt_param!("M_110_32", 1024))
         .spawn(|| {
             benches();
         })

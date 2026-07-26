@@ -1,6 +1,4 @@
-#![allow(long_running_const_eval)]
 use dualcache_ff::DualCacheFF;
-use rand::Rng;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
 use std::time::Instant;
@@ -29,9 +27,10 @@ fn main() {
 
     let start = Instant::now();
     for _ in 0..TOTAL_OPS {
-        let key = zipf.sample(&mut rng) as u64;
-        if cache.get(&key, &tls).is_none() {
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
+        if std::hint::black_box(cache.get(&key, &tls)).is_none() {
             cache.insert(key, key, &tls);
+        std::hint::black_box(());
         }
     }
     let elapsed = start.elapsed();

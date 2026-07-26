@@ -8,7 +8,8 @@ use core::ptr;
 #[doc = " Each slot stores a raw pointer to the most recently seen node for"]
 #[doc = " that hash bucket. Slot assignment is pure bitmask: `hash & mask`."]
 #[doc = " Collisions simply overwrite; no chaining, no locks."]
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct T1<K, V> {
     pub(crate) mask: usize,
     pub(crate) slots: Box<[AtomicPtr<Node<K, V>>]>,
@@ -64,7 +65,8 @@ impl<K, V> T1<K, V> {
 #[doc = " Structurally identical to T1 but sized differently (20% of capacity)."]
 #[doc = " Logically separated so future experiments can apply different policies"]
 #[doc = " (e.g., T2 uses CLOCK-Pro promotion while T1 uses LRU-hot demotion)."]
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct T2<K, V> {
     pub(crate) mask: usize,
     pub(crate) slots: Box<[AtomicPtr<Node<K, V>>]>,

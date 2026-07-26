@@ -1,3 +1,4 @@
+use crate::covopt_param;
 use super::arena::Arena;
 use super::cache_tier::CacheTier;
 use super::config::{CachePolicy, DefaultExponentialPolicy};
@@ -11,10 +12,10 @@ pub struct DualCacheCore<
     K,
     V,
     P: CachePolicy = DefaultExponentialPolicy,
-    const T0_CAP: usize = 64,
-    const T1_CAP: usize = 4096,
-    const T2_CAP: usize = 262144,
-    const TOTAL_CAP: usize = { 64 + 4096 + 262144 },
+    const T0_CAP: usize = covopt_param!("M_15_26", 64),
+    const T1_CAP: usize = covopt_param!("M_16_26", 4096),
+    const T2_CAP: usize = covopt_param!("M_17_26", 262144),
+    const TOTAL_CAP: usize = { covopt_param!("M_18_31", 64) + covopt_param!("M_18_36", 4096) + covopt_param!("M_18_43", 262144) },
 > {
     arena: Arena<K, V, TOTAL_CAP>,
     pub t0: CacheTier<K, V, T0_CAP, 8>,
@@ -55,7 +56,6 @@ where
     }
     #[doc = " Retrieve a value from the core, cascading through T0 -> T1 -> T2."]
     #[doc = " Performs internal promotion synchronously if thresholds are reached."]
-    #[allow(path_statements)]
     pub fn get<'g>(&self, key: &K, guard: &'g Guard) -> Option<(&'g V, u8)>
     where
         K: PartialEq + core::hash::Hash + Clone,
@@ -133,10 +133,10 @@ where
     #[doc = " Used by the Daemon to propagate TLS hits into the global T2 cache."]
     pub fn record_remote_hit(&self, hash: usize, _weight: u8) {
         let set = self.t2.get_set(hash);
-        for i in 0..8 {
+        for i in 0..covopt_param!("M_136_20", 8) {
             let slot = unsafe { set.get_unchecked(i) };
             if slot.hash.load(::core::sync::atomic::Ordering::Relaxed) == hash {
-                let new_hits = 8;
+                let new_hits = covopt_param!("M_139_31", 8);
                 slot.hits
                     .store(new_hits, ::core::sync::atomic::Ordering::Relaxed);
                 break;
@@ -184,7 +184,7 @@ mod tests {
         };
         let guard = qsbr::pin(thread_node);
         assert_eq!(core.get(&100, &guard), None);
-        core.put(100, 200, thread_node);
+        core.put(covopt_param!("M_187_17", 100), covopt_param!("M_187_22", 200), thread_node);
         assert_eq!(core.get(&100, &guard), Some((&200, 2)));
         assert_eq!(core.get(&100, &guard), Some((&200, 2)));
         core.try_reclaim(thread_node);
@@ -199,11 +199,11 @@ mod tests {
             node
         };
         let guard = qsbr::pin(thread_node);
-        core.put(1, 10, thread_node);
-        core.put(2, 20, thread_node);
-        core.put(3, 30, thread_node);
-        core.put(4, 40, thread_node);
-        core.put(5, 50, thread_node);
+        core.put(1, covopt_param!("M_202_20", 10), thread_node);
+        core.put(2, covopt_param!("M_203_20", 20), thread_node);
+        core.put(covopt_param!("M_204_17", 3), covopt_param!("M_204_20", 30), thread_node);
+        core.put(covopt_param!("M_205_17", 4), covopt_param!("M_205_20", 40), thread_node);
+        core.put(covopt_param!("M_206_17", 5), covopt_param!("M_206_20", 50), thread_node);
         assert_eq!(core.get(&99, &guard), None);
     }
     #[test]
@@ -216,11 +216,11 @@ mod tests {
             node
         };
         let guard = qsbr::pin(thread_node);
-        core.put_t0(300, 400, thread_node);
+        core.put_t0(covopt_param!("M_219_20", 300), covopt_param!("M_219_25", 400), thread_node);
         assert_eq!(core.get(&300, &guard), Some((&400, 0)));
-        core.put(500, 600, thread_node);
-        let hash = core.hash_key(&500);
-        core.record_remote_hit(hash, 5);
+        core.put(covopt_param!("M_221_17", 500), covopt_param!("M_221_22", 600), thread_node);
+        let hash = core.hash_key(&covopt_param!("M_222_34", 500));
+        core.record_remote_hit(hash, covopt_param!("M_223_37", 5));
         assert_eq!(core.get(&500, &guard), Some((&600, 2)));
     }
     #[test]
@@ -233,12 +233,12 @@ mod tests {
             node
         };
         let guard = qsbr::pin(thread_node);
-        let hash1 = core.hash_key(&1000);
-        core.t1.insert(&core.arena, hash1, 1000, 2000, thread_node);
+        let hash1 = core.hash_key(&covopt_param!("M_236_35", 1000));
+        core.t1.insert(&core.arena, hash1, covopt_param!("M_237_43", 1000), covopt_param!("M_237_49", 2000), thread_node);
         assert_eq!(core.get(&1000, &guard), Some((&2000, 1)));
-        let hash0 = core.hash_key(&3000);
-        core.t0.insert(&core.arena, hash0, 3000, 4000, thread_node);
+        let hash0 = core.hash_key(&covopt_param!("M_239_35", 3000));
+        core.t0.insert(&core.arena, hash0, covopt_param!("M_240_43", 3000), covopt_param!("M_240_49", 4000), thread_node);
         assert_eq!(core.get(&3000, &guard), Some((&4000, 0)));
-        let _slot = core.t1.get_slot(&core.arena, hash1, &1000, &guard).unwrap();
+        let _slot = core.t1.get_slot(&core.arena, hash1, &covopt_param!("M_242_58", 1000), &guard).unwrap();
     }
 }

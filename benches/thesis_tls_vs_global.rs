@@ -1,6 +1,5 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use dualcache_ff::DualCacheFF;
-use rand::Rng;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
 use std::time::Instant;
@@ -30,21 +29,23 @@ fn main() {
     let zipf_99 = Zipf::new(DATASET_SIZE, 1.0).unwrap();
     let start = Instant::now();
     for _ in 0..TOTAL_OPS {
-        let key = zipf_99.sample(&mut rng) as u64;
-        if cache.get(&key, &tls).is_none() {
+        let key = std::hint::black_box(zipf_99.sample(&mut rng) as u64);
+        if std::hint::black_box(cache.get(&key, &tls)).is_none() {
             cache.insert(key, key, &tls);
+            std::hint::black_box(());
         }
     }
     let elapsed = start.elapsed();
     println!("Zipf 99:1 Throughput (Hot keys absorbed by TLS): {:.0} ops/s", (TOTAL_OPS as f64) / elapsed.as_secs_f64());
 
     // Zipf 50:50
-    let zipf_50 = Zipf::new(DATASET_SIZE, 0.5).unwrap();
+    let zipf_50 = Zipf::new(DATASET_SIZE, covopt_param!("M_41_42", 0.5)).unwrap();
     let start2 = Instant::now();
     for _ in 0..TOTAL_OPS {
-        let key = zipf_50.sample(&mut rng) as u64;
-        if cache.get(&key, &tls).is_none() {
+        let key = std::hint::black_box(zipf_50.sample(&mut rng) as u64);
+        if std::hint::black_box(cache.get(&key, &tls)).is_none() {
             cache.insert(key, key, &tls);
+            std::hint::black_box(());
         }
     }
     let elapsed2 = start2.elapsed();

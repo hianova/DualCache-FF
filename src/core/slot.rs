@@ -1,3 +1,4 @@
+use crate::covopt_param;
 use super::arena::{self, Arena};
 use super::qsbr;
 use ::core::sync::atomic::Ordering;
@@ -42,7 +43,9 @@ impl<K, V> Slot<K, V> {
         (old_hits, new_hits)
     }
     #[doc = " Insert a new node into the slot, retiring the old one safely using QSBR."]
-    pub fn insert<const N: usize>(
+    #[doc = " # Safety"]
+    #[doc = " `node` must be a valid, non-null ThreadStateNode pointer."]
+    pub unsafe fn insert<const N: usize>(
         &self,
         arena: &Arena<K, V, N>,
         hash: usize,
@@ -50,14 +53,16 @@ impl<K, V> Slot<K, V> {
         value: V,
         node: *mut crate::core::qsbr::ThreadStateNode,
     ) {
-        let new_idx = arena.alloc(key, value, node).expect("Arena OOM!");
+        let new_idx = unsafe { arena.alloc(key, value, node) }.expect("Arena OOM!");
         self.hash.store(hash, Ordering::Relaxed);
-        self.hits.store(8, Ordering::Relaxed);
+        self.hits.store(covopt_param!("M_58_24", 8), Ordering::Relaxed);
         let old_idx = self.node_idx.swap(new_idx as u32, Ordering::Release);
         if old_idx != arena::NULL_INDEX {
-            crate::core::qsbr::retire(old_idx as usize, node, |idx| unsafe {
-                arena.free(idx as usize)
-            });
+            unsafe {
+                crate::core::qsbr::retire(old_idx as usize, node, |idx| {
+                    arena.free(idx as usize)
+                });
+            }
         }
     }
 }
@@ -76,10 +81,10 @@ mod tests {
             static mut TEST_NODE: crate::core::qsbr::ThreadStateNode =
                 crate::core::qsbr::ThreadStateNode::new();
             let n = &raw mut TEST_NODE as *mut _;
-            crate::core::qsbr::register_node(n);
+            unsafe { crate::core::qsbr::register_node(n); }
             n
         };
-        let guard = crate::core::qsbr::pin(node);
+        let guard = unsafe { crate::core::qsbr::pin(node) };
         assert_eq!(slot.read(&guard), (0, super::super::arena::NULL_INDEX));
     }
     #[test]
@@ -90,16 +95,16 @@ mod tests {
             static mut TEST_NODE: crate::core::qsbr::ThreadStateNode =
                 crate::core::qsbr::ThreadStateNode::new();
             let n = &raw mut TEST_NODE as *mut _;
-            crate::core::qsbr::register_node(n);
+            unsafe { crate::core::qsbr::register_node(n); }
             n
         };
-        let guard = crate::core::qsbr::pin(node);
-        slot.insert(&arena, 100, 10, 20, node);
+        let guard = unsafe { crate::core::qsbr::pin(node) };
+        unsafe { slot.insert(&arena, covopt_param!("M_102_37", 100), covopt_param!("M_102_42", 10), covopt_param!("M_102_46", 20), node); }
         assert_eq!(slot.read(&guard).0, 100);
-        let (old_hits, new_hits) = slot.record_hit(100);
+        let (old_hits, new_hits) = slot.record_hit(covopt_param!("M_104_51", 100));
         assert_eq!(old_hits, 8);
         assert_eq!(new_hits, 108);
-        slot.insert(&arena, 200, 30, 40, node);
+        unsafe { slot.insert(&arena, covopt_param!("M_107_37", 200), covopt_param!("M_107_42", 30), covopt_param!("M_107_46", 40), node); }
         assert_eq!(slot.read(&guard).0, 200);
     }
 }

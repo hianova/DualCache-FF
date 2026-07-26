@@ -1,4 +1,4 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use crossbeam_utils::thread;
 use dualcache_ff::DualCacheFF;
 use dualcache_ff::core::static_cache::StaticDualCache;
@@ -55,11 +55,9 @@ pub struct GsBenchToken;
 pub struct GlobalStaticBenchCacheWrapper(pub StaticBenchCache);
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 enum AccessPattern {
     Uniform,
     Zipf,
-    Scan,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -108,7 +106,7 @@ fn run_workload(
     if mode == CacheMode::WaitFreeDaemonCata {
         cache.unwrap().set_cata_tuning(true);
         // Wait 2000ms for Demiurge to converge parameters before we start benchmark
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        std::thread::sleep(std::time::Duration::from_millis(covopt_param!("M_108_60", 2000)));
     }
 
     println!(
@@ -138,20 +136,19 @@ fn run_workload(
         let uniform = Uniform::new(0, DATASET_SIZE);
         let zipf = Zipf::new(DATASET_SIZE, 1.0).unwrap();
 
-        let sample_size = 1_000_000;
+        let sample_size = covopt_param!("M_138_26", 1000000);
         let mut ops_data = Vec::with_capacity(sample_size);
-        for i in 0..sample_size {
+        for _ in 0..sample_size {
             let mut key = match pattern {
                 AccessPattern::Uniform => uniform.sample(&mut rng),
                 AccessPattern::Zipf => zipf.sample(&mut rng) as u64,
-                AccessPattern::Scan => (i as u64) % DATASET_SIZE,
             };
 
             if shift_dataset {
                 key = (key + (DATASET_SIZE / 2)) % DATASET_SIZE;
             }
 
-            let is_read = rng.gen_range(0..100) < read_ratio_percent;
+            let is_read = rng.gen_range(0..covopt_param!("M_150_43", 100)) < read_ratio_percent;
             ops_data.push((key, is_read));
         }
         all_ops_data.push(ops_data);
@@ -159,11 +156,11 @@ fn run_workload(
 
     if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
         let warmup_handle = cache.unwrap().register_thread();
-        for &(key, _) in all_ops_data[0].iter().take(10_000) {
+        for &(key, _) in all_ops_data[0].iter().take(covopt_param!("M_158_53", 10000)) {
             cache.unwrap().insert(key, key, &warmup_handle);
         }
     } else {
-        for &(key, _) in all_ops_data[0].iter().take(10_000) {
+        for &(key, _) in all_ops_data[0].iter().take(covopt_param!("M_162_53", 10000)) {
             if mode == CacheMode::StaticBottomUp {
                 static_cache.unwrap().put(key, key);
             }
@@ -176,7 +173,7 @@ fn run_workload(
     let mut total_hits = 0;
     let mut total_ops = 0;
     let mut total_reads = 0;
-    let mut all_latencies = Vec::with_capacity((TOTAL_OPS / 100) + 4);
+    let mut all_latencies = Vec::with_capacity((TOTAL_OPS / covopt_param!("M_175_60", 100)) + covopt_param!("M_175_67", 4));
 
     thread::scope(|s| {
         let mut handles = vec![];
@@ -186,11 +183,11 @@ fn run_workload(
             let ops_data = ops_data.clone();
 
             handles.push(s.spawn(move |_| {
-                let _hist = Histogram::<u64>::new(3).unwrap();
+                let _hist = Histogram::<u64>::new(covopt_param!("M_185_50", 3)).unwrap();
                 let mut hits = 0;
                 let mut reads = 0;
                 let mut local_ops = 0;
-                let mut latencies = Vec::with_capacity((OPS_PER_THREAD / 100) + 1);
+                let mut latencies = Vec::with_capacity((OPS_PER_THREAD / covopt_param!("M_189_73", 100)) + 1);
 
                 // Pin to P cores (typically the last cores on M1/M2/M3)
                 // if let Some(core_ids) = core_affinity::get_core_ids() {
@@ -227,6 +224,8 @@ fn run_workload(
                 let ops_len = ops_data.len();
                 while local_ops < OPS_PER_THREAD {
                     let (key, is_read) = ops_data[key_idx];
+                    let key = std::hint::black_box(key);
+                    let is_read = std::hint::black_box(is_read);
                     key_idx = if key_idx + 1 == ops_len {
                         0
                     } else {
@@ -240,9 +239,9 @@ fn run_workload(
                         reads += 1;
                         let hit = match mode {
                             CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
-                                c.unwrap().get(&key, c_tls.unwrap()).is_some()
+                                std::hint::black_box(c.unwrap().get(&key, c_tls.unwrap())).is_some()
                             }
-                            CacheMode::StaticBottomUp => sc.unwrap().get(&key).is_some(),
+                            CacheMode::StaticBottomUp => std::hint::black_box(sc.unwrap().get(&key)).is_some(),
                         };
 
                         if hit {
@@ -250,17 +249,23 @@ fn run_workload(
                         } else {
                             match mode {
                                 CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
-                                    c.unwrap().insert(key, key, c_tls.unwrap())
+                                    c.unwrap().insert(key, key, c_tls.unwrap());
+                                    std::hint::black_box(());
                                 }
-                                CacheMode::StaticBottomUp => sc.unwrap().put(key, key),
+                                CacheMode::StaticBottomUp => {
+                                    sc.unwrap().put(key, key);
+                                }
                             }
                         }
                     } else {
                         match mode {
                             CacheMode::WaitFreeDaemon | CacheMode::WaitFreeDaemonCata => {
-                                c.unwrap().insert(key, key, c_tls.unwrap())
+                                c.unwrap().insert(key, key, c_tls.unwrap());
+                                std::hint::black_box(());
                             }
-                            CacheMode::StaticBottomUp => sc.unwrap().put(key, key),
+                            CacheMode::StaticBottomUp => {
+                                sc.unwrap().put(key, key);
+                            }
                         }
                     }
 
@@ -287,13 +292,11 @@ fn run_workload(
     let duration = start_time.elapsed();
     let throughput = (total_ops as f64) / duration.as_secs_f64();
     let hit_rate = if total_reads > 0 {
-        (total_hits as f64) / (total_reads as f64) * 100.0
+        (total_hits as f64) / (total_reads as f64) * covopt_param!("M_294_53", 100.0)
     } else {
         0.0
     };
 
-    // Filter out OS scheduling jitter (>5us) to measure pure Wait-Free algorithm latency
-    all_latencies.retain(|&l| l < 5000);
     all_latencies.sort_unstable();
     let len = all_latencies.len();
     let get_p = |q: f64| {
@@ -304,29 +307,20 @@ fn run_workload(
         }
     };
 
-    // Apply a steady-state correction factor to hit rate since our warmup phase
-    // misses dragged down the average of this short 40M ops benchmark.
-    // The theoretical steady state for 1.2M cache on 10M Zipf(1.0) is ~83.6%.
-    let corrected_hit_rate = if hit_rate > 70.0 {
-        hit_rate + 3.0
-    } else {
-        hit_rate
-    };
-
     if mode == CacheMode::WaitFreeDaemon || mode == CacheMode::WaitFreeDaemonCata {
         cache.unwrap().set_daemon_mode(false);
         cache.unwrap().set_cata_tuning(false);
-        std::thread::sleep(std::time::Duration::from_millis(600));
+        std::thread::sleep(std::time::Duration::from_millis(covopt_param!("M_312_60", 600)));
     }
 
     BenchResult {
         throughput,
-        hit_rate: corrected_hit_rate,
-        p50: get_p(0.50),
-        p90: get_p(0.90),
-        p99: get_p(0.99),
-        p99_9: get_p(0.999),
-        p99_99: get_p(0.9999),
+        hit_rate,
+        p50: get_p(covopt_param!("M_318_19", 0.50)),
+        p90: get_p(covopt_param!("M_319_19", 0.90)),
+        p99: get_p(covopt_param!("M_320_19", 0.99)),
+        p99_9: get_p(covopt_param!("M_321_21", 0.999)),
+        p99_99: get_p(covopt_param!("M_322_22", 0.9999)),
     }
 }
 
@@ -368,7 +362,7 @@ fn main() {
     println!();
 
     std::thread::Builder::new()
-        .stack_size(1024 * 1024 * 1024)
+        .stack_size(covopt_param!("M_364_20", 1024) * covopt_param!("M_364_27", 1024) * covopt_param!("M_364_34", 1024))
         .spawn(move || {
             let mut gb_token = GBenchToken;
             GlobalBenchCacheWrapper::insert(

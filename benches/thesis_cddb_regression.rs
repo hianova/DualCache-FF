@@ -1,4 +1,4 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use rand::Rng;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
@@ -13,22 +13,22 @@ fn main() {
 
     // We will simulate the overhead of cloning maps or complex cache writes vs direct writes
     let mut rng = rand::thread_rng();
-    let zipf = Zipf::new(DATASET_SIZE, 0.5).unwrap();
+    let zipf = Zipf::new(DATASET_SIZE, covopt_param!("M_15_39", 0.5)).unwrap();
 
     let start = Instant::now();
     let mut dummy_map = std::collections::HashMap::new();
     
     // Simulate Cache + DB write overhead (allocations, clones)
     for _ in 0..TOTAL_OPS {
-        let key = zipf.sample(&mut rng) as u64;
-        let is_read = rng.gen_range(0..100) < 50;
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
+        let is_read = std::hint::black_box(rng.gen_range(0..covopt_param!("M_23_60", 100)) < covopt_param!("M_23_67", 50));
         
         if !is_read {
             // Simulate heavy cloning / allocation overhead of a cache partition sync
             let mut clone = dummy_map.clone();
-            clone.insert(key, key);
+            std::hint::black_box(clone.insert(key, key));
             dummy_map = clone;
-            if dummy_map.len() > 100 {
+            if dummy_map.len() > covopt_param!("M_30_33", 100) {
                 dummy_map.clear();
             }
         }
@@ -40,12 +40,12 @@ fn main() {
     let start2 = Instant::now();
     let mut db_map = std::collections::HashMap::new();
     for _ in 0..TOTAL_OPS {
-        let key = zipf.sample(&mut rng) as u64;
-        let is_read = rng.gen_range(0..100) < 50;
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
+        let is_read = std::hint::black_box(rng.gen_range(0..covopt_param!("M_43_60", 100)) < covopt_param!("M_43_67", 50));
         
         if !is_read {
             // Direct write without clone
-            db_map.insert(key, key);
+            std::hint::black_box(db_map.insert(key, key));
         }
     }
     let elapsed2 = start2.elapsed();

@@ -1,4 +1,4 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use crossbeam_utils::thread;
 use dualcache_ff::DualCacheFF;
 use rand::Rng;
@@ -22,14 +22,14 @@ pub struct GlobalBenchCacheWrapper(pub BenchCache);
 
 fn main() {
     std::thread::Builder::new()
-        .stack_size(1024 * 1024 * 1024)
+        .stack_size(covopt_param!("M_24_20", 1024) * covopt_param!("M_24_27", 1024) * covopt_param!("M_24_34", 1024))
         .spawn(|| {
             let mut token = CovBenchToken;
             GlobalBenchCacheWrapper::insert(
                 GlobalBenchCacheWrapper(DualCacheFF::new()),
                 &mut token,
             );
-            let zipf = Zipf::new(DATASET_SIZE, 0.99).unwrap();
+            let zipf = Zipf::new(DATASET_SIZE, covopt_param!("M_31_47", 0.99)).unwrap();
 
             let mut all_ops_data = Vec::new();
             for _thread_id in 0..THREAD_COUNT {
@@ -37,7 +37,7 @@ fn main() {
                 let mut ops_data = Vec::with_capacity(OPS_PER_THREAD);
                 for _ in 0..OPS_PER_THREAD {
                     let key = zipf.sample(&mut rng) as u64;
-                    let is_read = rng.gen_range(0..100) < 50;
+                    let is_read = rng.gen_range(0..covopt_param!("M_39_51", 100)) < covopt_param!("M_39_58", 50);
                     ops_data.push((key, is_read));
                 }
                 all_ops_data.push(ops_data);
@@ -47,7 +47,7 @@ fn main() {
             let cache = &GlobalBenchCacheWrapper::get(0, token).unwrap().0;
             cache.set_daemon_mode(true);
             let warmup_handle = cache.register_thread();
-            for &(key, _) in all_ops_data[0].iter().take(10_000) {
+            for &(key, _) in all_ops_data[0].iter().take(covopt_param!("M_49_57", 10000)) {
                 cache.insert(key, key, &warmup_handle);
             }
 
@@ -73,6 +73,8 @@ fn main() {
 
                             while local_ops < OPS_PER_THREAD {
                                 let (key, is_read) = ops_data[key_idx];
+                                let key = std::hint::black_box(key);
+                                let is_read = std::hint::black_box(is_read);
                                 key_idx = if key_idx + 1 == ops_len {
                                     0
                                 } else {
@@ -80,11 +82,13 @@ fn main() {
                                 };
 
                                 if is_read {
-                                    if cache.get(&key, tls).is_none() {
+                                    if std::hint::black_box(cache.get(&key, tls)).is_none() {
                                         cache.insert(key, key, tls);
+                                        std::hint::black_box(());
                                     }
                                 } else {
                                     cache.insert(key, key, tls);
+                                    std::hint::black_box(());
                                 }
                                 local_ops += 1;
                             }

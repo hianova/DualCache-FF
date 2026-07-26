@@ -1,6 +1,5 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use dualcache_ff::DualCacheFF;
-use rand::Rng;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
 use std::time::Instant;
@@ -41,16 +40,17 @@ fn main() {
                 b.wait();
 
                 for _ in 0..(TOTAL_OPS / THREADS) {
-                    let key = zipf.sample(&mut rng) as u64;
+                    let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
                     let start = Instant::now();
-                    if cache.get(&key, &tls).is_none() {
+                    if std::hint::black_box(cache.get(&key, &tls)).is_none() {
                         cache.insert(key, key, &tls);
+                        std::hint::black_box(());
                     }
                     latencies.push(start.elapsed().as_nanos() as u64);
                 }
 
                 latencies.sort_unstable();
-                latencies[(latencies.len() as f64 * 0.99) as usize]
+                latencies[(latencies.len() as f64 * covopt_param!("M_52_52", 0.99)) as usize]
             }));
         }
 

@@ -1,9 +1,9 @@
+use crate::covopt_param;
 use ::core::hash::Hash;
 use std::thread::{self, JoinHandle};
-#[allow(clippy::large_enum_variant)]
 pub enum DaemonMessage<K, V> {
     Hit(usize, u8),
-    HitBatch([(usize, u8); 32], u8),
+    HitBatch(std::boxed::Box<([(usize, u8); 32], u8)>),
     Promote(usize, K, V, u8),
     #[doc = " Dynamically adjust Daemon poll interval (Power-Saving Mode) - missing from v0.5.0"]
     SetPollInterval(u64),
@@ -38,7 +38,8 @@ impl Daemon {
                 }
                 batch.push(DaemonMessage::Hit(hash, weight));
             }
-            DaemonMessage::HitBatch(arr, len) => {
+            DaemonMessage::HitBatch(boxed) => {
+                let (arr, len) = *boxed;
                 for &(hash, weight) in arr[..(len as usize)].iter() {
                     let mut found = false;
                     if let Some(DaemonMessage::Hit(last_hash, last_weight)) = batch.last_mut()
@@ -94,10 +95,10 @@ impl Daemon {
         let daemon_node_ptr = daemon_node as usize;
         let handle = thread::spawn(move || {
             let daemon_node = daemon_node_ptr as *mut crate::core::qsbr::ThreadStateNode;
-            let mut batch = std::vec::Vec::with_capacity(65536);
-            let mut _poll_ms = 10;
+            let mut batch = std::vec::Vec::with_capacity(covopt_param!("M_98_57", 65536));
+            let mut _poll_ms = covopt_param!("M_99_31", 10);
             let mut empty_spins = 0u32;
-            let batch_limit = crate::covopt_param!("DAEMON_BATCH_LIMIT", 65536usize, 1024..131072);
+            let batch_limit = covopt_param!("M_101_30", 65536);
             loop {
                 let mut disconnected = false;
                 let msg_opt = rx.pop();
@@ -118,12 +119,12 @@ impl Daemon {
                         if std::sync::Arc::strong_count(&rx) == 1 {
                             disconnected = true;
                         } else {
-                            if empty_spins < 100 {
+                            if empty_spins < covopt_param!("M_122_45", 100) {
                                 core::hint::spin_loop();
-                            } else if empty_spins < 200 {
+                            } else if empty_spins < covopt_param!("M_124_52", 200) {
                                 std::thread::yield_now();
                             } else {
-                                let shift = core::cmp::min((empty_spins - 200) / 10, 6);
+                                let shift = core::cmp::min((empty_spins - covopt_param!("M_127_74", 200)) / covopt_param!("M_127_81", 10), covopt_param!("M_127_85", 6));
                                 let backoff = 1u64 << shift;
                                 let sleep_ms = core::cmp::min(backoff, _poll_ms);
                                 thread::sleep(std::time::Duration::from_millis(sleep_ms));
@@ -144,12 +145,12 @@ impl Daemon {
                                 let _ = tx.push((hash, weight));
                             }
                         }
-                        DaemonMessage::HitBatch(_, _) => unreachable!(),
+                        DaemonMessage::HitBatch(_) => unreachable!(),
                         DaemonMessage::Promote(_hash, key, value, tier) => {
                             if tier == 0 {
-                                core.put_t0(key, value, daemon_node);
+                                unsafe { core.put_t0(key, value, daemon_node); }
                             } else {
-                                core.put(key, value, daemon_node, 1);
+                                unsafe { core.put(key, value, daemon_node, 1); }
                             }
                         }
                         DaemonMessage::SetPollInterval(ms) => {
@@ -163,7 +164,7 @@ impl Daemon {
                         }
                     }
                 }
-                let _guard = crate::core::qsbr::pin(daemon_node);
+                let _guard = unsafe { crate::core::qsbr::pin(daemon_node) };
                 crate::core::qsbr::daemon_reclaim(|batch| {
                     if batch.is_empty() {
                         return;
@@ -194,7 +195,8 @@ impl Daemon {
 }
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-#[repr(C, align(64))]
+#[repr(align(64))]
+#[repr(C)]
 pub struct OneshotAck {
     ready: AtomicBool,
 }
@@ -212,7 +214,7 @@ impl OneshotAck {
     pub fn wait(&self) {
         let mut spins = 0;
         while !self.ready.load(Ordering::Acquire) {
-            if spins < 100 {
+            if spins < covopt_param!("M_217_23", 100) {
                 core::hint::spin_loop();
                 spins += 1;
             } else {
@@ -227,12 +229,12 @@ mod tests {
     #[test]
     fn test_daemon_compress_and_push() {
         let mut batch: std::vec::Vec<DaemonMessage<u64, u64>> = std::vec::Vec::new();
-        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 10));
-        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, 5));
-        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(2, 5));
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, covopt_param!("M_232_68", 10)));
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(1, covopt_param!("M_233_68", 5)));
+        Daemon::compress_and_push(&mut batch, DaemonMessage::Hit(2, covopt_param!("M_234_68", 5)));
         let mut arr = [(0usize, 0u8); 32];
-        arr[0] = (2, 5);
-        arr[1] = (3, 10);
-        Daemon::compress_and_push(&mut batch, DaemonMessage::HitBatch(arr, 2));
+        arr[0] = (2, covopt_param!("M_236_21", 5));
+        arr[1] = (covopt_param!("M_237_18", 3), covopt_param!("M_237_21", 10));
+        Daemon::compress_and_push(&mut batch, DaemonMessage::HitBatch(std::boxed::Box::new((arr, 2))));
     }
 }

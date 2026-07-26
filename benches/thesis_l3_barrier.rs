@@ -1,6 +1,5 @@
-#![allow(long_running_const_eval)]
+use covopt_macro::covopt_param;
 use dualcache_ff::DualCacheFF;
-use rand::Rng;
 use rand::prelude::Distribution;
 use rand_distr::Zipf;
 use std::time::Instant;
@@ -30,20 +29,22 @@ fn main() {
 
     // Warmup to scatter nodes across the 6.55MB Arena
     println!("Warming up and fragmenting Arena memory...");
-    for _ in 0..100_000 {
-        let key = zipf.sample(&mut rng) as u64;
+    for _ in 0..covopt_param!("M_31_16", 100000) {
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
         cache.insert(key, key, &tls);
+        std::hint::black_box(());
     }
 
     let start = Instant::now();
-    let mut hits = 0;
+    let mut hits = 0usize;
     
     for _ in 0..TOTAL_OPS {
-        let key = zipf.sample(&mut rng) as u64;
-        if cache.get(&key, &tls).is_some() {
+        let key = std::hint::black_box(zipf.sample(&mut rng) as u64);
+        if std::hint::black_box(cache.get(&key, &tls)).is_some() {
             hits += 1;
         }
     }
+    std::hint::black_box(hits);
     
     let elapsed = start.elapsed();
     let throughput = (TOTAL_OPS as f64) / elapsed.as_secs_f64();

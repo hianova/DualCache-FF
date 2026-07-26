@@ -1,3 +1,4 @@
+use crate::covopt_param;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use std::vec::Vec;
@@ -33,7 +34,7 @@ impl<K, V> BatchBuf<K, V> {
     pub fn push(&mut self, item: (K, V, u64)) -> bool {
         self.items[self.len] = MaybeUninit::new(item);
         self.len += 1;
-        self.len == 32
+        self.len == covopt_param!("M_37_20", 32)
     }
     pub fn len(&self) -> usize {
         self.len
@@ -94,9 +95,8 @@ impl<K, V> WorkerSlot<K, V> {
     #[doc = " The caller must guarantee that only one thread accesses this slot at a time."]
     #[doc = " In DualCache-FF this is enforced by the WORKER_ID TLS invariant."]
     #[inline(always)]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get_mut_unchecked(&self) -> &mut BatchBuf<K, V> {
-        unsafe { &mut *self.inner.get() }
+    pub unsafe fn get_mut_unchecked(&self) -> *mut BatchBuf<K, V> {
+        self.inner.get()
     }
 }
 unsafe impl<K: Send, V: Send> Send for WorkerSlot<K, V> {}

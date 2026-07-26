@@ -1,6 +1,6 @@
 [package]
 name = "dualcache-ff"
-version = "1.1.0"
+version = "2.0.0"
 edition = "2024"
 authors = ["hianova"]
 description = "A wait-free, high-performance concurrent cache optimized for extreme read-to-write ratios."
@@ -15,7 +15,7 @@ exclude = ["*.DS_Store", "/target", ".covopt/", ".agents/"]
 
 [features]
 default = ["std", "daemon"]
-std = ["ahash/std", "no_std_tool/std"]
+std = ["ahash/std", "no_std_tool/std", "dep:arc-swap"]
 daemon = ["std"]
 covopt = []
 
@@ -24,6 +24,7 @@ covopt-macro = { workspace = true }
 no_std_tool_macros = { workspace = true }
 ahash = { workspace = true, features = ["compile-time-rng"] }
 no_std_tool = { workspace = true }
+arc-swap = { workspace = true, optional = true }
 
 [dev-dependencies]
 crossbeam-utils = { workspace = true }
@@ -85,13 +86,6 @@ harness = false
 [[bench]]
 name = "thesis_l3_barrier"
 harness = false
-
-[profile.bench]
-debug = true
-
-[profile.release]
-debug = true
-
 
 [lints.rust]
 warnings = "deny"
